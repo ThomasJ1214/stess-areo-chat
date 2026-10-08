@@ -43,7 +43,7 @@ the local last-session file is a convenience, not a backup.
 6. Select the primary deployment event and delay. Motor ejection requires the
    actual delay after burnout. If recovery was absent/unusable in the ORK file,
    enter the real settings and enable **Recovery settings confirmed**.
-7. Save the flight configuration, then **Save project**.
+7. Click **Apply flight setup**, then **Save project**.
 
 The first release supports passive single-stage, single-motor high-power rockets
 through Mach 2. Flight is a point-mass model; it does not solve attitude,
@@ -61,11 +61,13 @@ For example, replace an OpenRocket payload body tube with the actual payload CAD
    Y/Z are transverse. An offset is relative to the selected component's axial
    position, not the whole rocket origin. Rotations are XYZ Euler degrees;
    **Uniform scale** multiplies all three dimensions.
-4. Inspect the real dimensions and alignment. A 100 mm part should appear as
-   0.1 m internally; a factor-of-1,000 error usually means incorrect STL units.
-5. Click **Attach & use detailed geometry**. This replaces only the selected
+4. Click **Attach & use detailed geometry** to display the imported part. This replaces only the selected
    component. Other components, their transforms and original shapes stay as
    they were. Repeated non-fin components retain their repeated placement.
+5. Inspect its dimensions and alignment, adjust translation, rotation or scale,
+   and click **Apply alignment / mode** to display each change. A 100 mm part
+   should appear as 0.1 m internally; a factor-of-1,000 error usually means
+   incorrect STL units.
 6. Turn on **Original geometry** in the viewport to compare. Use **Analysis
    geometry → Original** and reapply when you want the reference shape again.
    Retain your saved pre-edit file for an explicit backup.

@@ -99,6 +99,12 @@ export default function UserGuide({
             density, so inspect any mismatch with the flight mass model.
           </p>
           <p>
+            In <strong>Component</strong>, enable <strong>External surface</strong>
+            {" "}for parts exposed to air; disable it for enclosed electronics,
+            ballast and internal hardware. Click <strong>Apply component changes</strong>.
+            {" "}<strong>Enabled</strong> controls the entire part and its subtree.
+          </p>
+          <p>
             CFD solves only air connected to the exterior. Sealed cavities and
             enclosed internal parts add no wetted pressure faces. Open bores and
             leaks can admit real exterior flow; cap them in CAD only if the
