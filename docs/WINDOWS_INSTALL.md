@@ -18,7 +18,7 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-The [initial successful Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37785106043#artifacts)
+The [verified version 0.1.1 Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37811145867#artifacts)
 produced the approximately 1.5 GB installer download and passed its installed
 engine/native-desktop checks. See the [validation record](VALIDATION.md).
 
@@ -30,13 +30,13 @@ engine/native-desktop checks. See the [validation record](VALIDATION.md).
    of that run. GitHub may ask you to sign in for a private repository artifact.
 4. Right-click the downloaded ZIP and choose **Extract All**. The extracted files
    include the installer, a SHA-256 checksum and a dependency manifest. Open the
-   `release` folder if the download contains that folder. The updated package
+   `release` folder if the download contains that folder. The package
    includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
    **User guide** button.
 5. Optionally check the installer in PowerShell with
-   `Get-FileHash .\RocketWorkbench-0.1.0-windows-x64-setup.exe -Algorithm SHA256`
+   `Get-FileHash .\RocketWorkbench-0.1.1-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
-6. Double-click `RocketWorkbench-0.1.0-windows-x64-setup.exe`. Select a user-local
+6. Double-click `RocketWorkbench-0.1.1-windows-x64-setup.exe`. Select a user-local
    install location and optionally enable the desktop shortcut. No administrator
    privileges are required for the default location.
 7. Open **Rocket Workbench** from Start or the desktop shortcut.
@@ -162,7 +162,8 @@ Workbench → Uninstall**. Your separately saved project files are yours to keep
 
 ## Build status
 
-The initial Windows workflow completed successfully for source commit `0da5203`.
+The version 0.1.1 Windows workflow passed its build and installation checks for
+source commit `d5a0131`.
 Its installer is a real build artifact; generated binaries are kept out of Git
 source history. The workflow checked silent installation, installed engineering
 calculations and actual native desktop/API-session/WebGL startup using software
