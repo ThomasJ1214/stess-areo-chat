@@ -14,9 +14,9 @@
 
 ## Get the one-download package
 
-These instructions apply after a successful Windows workflow produces its
-artifact. At the [recorded checkpoint](VALIDATION.md), the Linux environment has
-not built or validated a Windows installer; the source includes its build recipe.
+The [initial successful Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37785106043#artifacts)
+produced the approximately 1.5 GB installer download and passed its installed
+engine/native-desktop checks. See the [validation record](VALIDATION.md).
 
 1. Open the repository's **Actions** tab and choose **Windows offline installer**.
 2. Choose a successful run for the version you want. If there is no successful
@@ -25,7 +25,8 @@ not built or validated a Windows installer; the source includes its build recipe
 3. Download the **RocketWorkbench-windows-x64-installer** artifact at the bottom
    of that run. GitHub may ask you to sign in for a private repository artifact.
 4. Right-click the downloaded ZIP and choose **Extract All**. The extracted files
-   include the installer, a SHA-256 checksum and a dependency manifest.
+   include the installer, a SHA-256 checksum and a dependency manifest. Open the
+   `release` folder if the download contains that folder.
 5. Optionally check the installer in PowerShell with
    `Get-FileHash .\RocketWorkbench-0.1.0-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
@@ -39,6 +40,9 @@ unless its builder separately signs it; Windows can display a publisher warning.
 Check the file came from your repository workflow before deciding to run it.
 The app does not download solvers at startup. An existing NVIDIA display driver
 is the one external GPU runtime prerequisite.
+
+GitHub may require sign-in even for a public repository's artifact. Artifacts
+expire after 30 days; request a new workflow run if the download has expired.
 
 ## First engineering workflow
 
@@ -143,11 +147,10 @@ Workbench → Uninstall**. Your separately saved project files are yours to keep
 
 ## Build status
 
-The source repository contains the complete packaging recipe. It does not
-contain a fabricated prebuilt Windows executable. A successful Windows build and
-installed smoke check are required before claiming that a particular installer
-works. The CI machines generally have no NVIDIA GPU: CPU tests and packaged
-library presence do not validate GPU execution on your graphics hardware.
-The Windows workflow also runs the installed native desktop/API-session/WebGL
-smoke check using software WebGL on the hosted VM; workstation graphics and
-CUDA execution require separate hardware checks.
+The initial Windows workflow completed successfully for source commit `0da5203`.
+Its installer is a real build artifact; generated binaries are kept out of Git
+source history. The workflow checked silent installation, installed engineering
+calculations and actual native desktop/API-session/WebGL startup using software
+WebGL. Workstation graphics, physical CUDA execution and a fresh consumer PC
+still require separate hardware checks. CPU tests and packaged library presence
+do not validate GPU performance on your graphics hardware.

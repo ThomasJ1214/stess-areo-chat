@@ -14,15 +14,18 @@ Mach setting does not establish validated supersonic accuracy.
 
 ## Install on Windows
 
-The single-download installer is built by the
-[Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml).
-A Windows binary has to pass that workflow before it is
-available; a source checkout or successful Linux test is not a Windows release.
-At the recorded validation checkpoint, no Windows installer has been built in
-this Linux environment. The packaging recipe still needs its Windows run.
-Download the workflow's installer artifact, unzip it, and run
+The initial installer passed its Windows build, silent installation, installed
+engineering-engine and native desktop/API/WebGL checks.
+Open the [successful installer build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37785106043#artifacts),
+sign in to GitHub, and download **RocketWorkbench-windows-x64-installer**
+(approximately 1.5 GB). Unzip it, open `release/` if present, and run
 `RocketWorkbench-0.1.0-windows-x64-setup.exe`. No Python, Node.js, separate CAD
 program, Gmsh installation, or CUDA Toolkit installation is required for use.
+
+Artifacts are retained for 30 days. If the download has expired, run the
+[Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml)
+again. The initial artifact identifies source commit `0da5203` in its manifest;
+later documentation updates do not change that binary's identity.
 
 See [step-by-step Windows installation](docs/WINDOWS_INSTALL.md). The normal build
 includes CUDA runtime libraries for supported NVIDIA GPU calculations. An NVIDIA
