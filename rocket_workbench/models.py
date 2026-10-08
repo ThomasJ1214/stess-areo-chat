@@ -89,6 +89,7 @@ class Motor(Model):
     propellant_mass: float = Field(default=0.5, ge=0)
     curve: list[list[float]] = Field(default_factory=list)
     source: str = "User supplied"
+    provenance: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_curve(self):

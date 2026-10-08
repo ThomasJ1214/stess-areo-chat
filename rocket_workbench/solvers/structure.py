@@ -654,6 +654,7 @@ def _transfer_cfd_pressure(xyz, faces, options, cancelled=None):
 def solve_fea(project: Project, component_id: str, conditions: Conditions, options: dict,
               progress=None, cancelled=None) -> dict:
     """Real linear-static isotropic solid FEA of a selected actual component."""
+    from ..fea_setup import mesh_sizing, validate_solid_surface
     from ..geometry import component_mesh
     from .aero import atmosphere, freestream
 
@@ -698,34 +699,18 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
     acceleration = np.asarray(options.get("acceleration_m_s2", [0, 0, 0]), dtype=float)
     if acceleration.shape != (3,) or not np.isfinite(acceleration).all():
         raise ValueError("acceleration_m_s2 must be a finite [x,y,z] vector.")
-    if component.geometry_mode == "replacement":
-        asset = next((asset for asset in project.assets if asset.id == component.asset_id), None)
-        if asset is not None and not asset.watertight:
-            raise ValueError("Solid FEA requires a replacement asset with verified enclosed material volume. Repair open/overlapping CAD geometry or provide a valid unioned solid before meshing.")
     surface = component_mesh(project, component)
-    if (not len(surface.faces) or not surface.is_watertight or not surface.is_winding_consistent or
-            not math.isfinite(float(surface.volume)) or surface.volume <= 0 or surface.metadata.get("volume_ambiguous")):
-        raise ValueError("Solid FEA requires watertight outward-oriented solid geometry; open STL surfaces and zero-thickness shells are unsupported.")
+    validate_solid_surface(project, component, surface)
     scale = float(surface.extents.max())
-    default_size = scale / 12
-    if not (component.asset_id and component.geometry_mode == "replacement"):
-        default_size = min(default_size, component.thickness / 2)
-    mesh_size = float(options.get("mesh_size", default_size))
-    max_elements = int(options.get("max_elements", 100000))
-    if not math.isfinite(mesh_size) or mesh_size <= 0 or not 20 <= max_elements <= 300000:
-        raise ValueError("mesh_size must be positive; max_elements must be between 20 and 300000.")
+    sizing = mesh_sizing(surface, component, options)
+    mesh_size, max_elements = sizing.mesh_size, sizing.max_elements
     notes = ["Linear static 4-node tetrahedral FEA: homogeneous isotropic material, small strain/displacement; no plasticity, shell buckling, contact, laminate failure, flutter or transient structural response.",
              "Verify the root clamp and load directions. CAD geometry alone does not define supports, joints, or reliable material properties.",
              "Element stresses are constant per tetrahedron. Displayed nodal von Mises values are volume-weighted averages, not additional solved quantities.",
              "A single mesh is not a convergence study; repeat with finer meshes and compare displacement/strain energy away from clamp singularities."]
     if material.poisson_ratio > 0.45:
         notes.append("Near-incompressible material: linear tetrahedra can exhibit volumetric locking; use a mixed/high-order solver for reliable results.")
-    if not (component.asset_id and component.geometry_mode == "replacement") and mesh_size > component.thickness / 2 * 1.001:
-        raise ValueError("Solid bending FEA requires mesh_size <= thickness/2 for this thin component; a coarse volume mesh would give misleading stiffness. Select a local region or shell solver for large thin structures.")
-    # Budget check prevents multi-million-cell thin-tube jobs before meshing.
-    minimum_budget_size = (float(surface.volume) * 6 / (max_elements * 4))**(1 / 3)
-    if mesh_size < minimum_budget_size:
-        raise ValueError(f"Estimated solid mesh is too large for the {max_elements:,}-element budget. Analyze a local region; a thin-shell solver is required for a whole thin rocket body.")
+    sizing.require_admissible()
     tolerance = float(options.get("clamp_tolerance", max(scale * 1e-7, mesh_size * 0.08)))
     if not math.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("clamp_tolerance must be positive and finite.")

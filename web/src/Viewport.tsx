@@ -5,17 +5,36 @@ import {
   useRef,
   Component as ReactComponent,
 } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Html, Line } from "@react-three/drei";
 import * as THREE from "three";
-import { Maximize2, RotateCcw, MousePointer2, Move3D } from "lucide-react";
-import type { MeshResponse, Overlays, Units } from "./types";
+import {
+  Maximize2,
+  RotateCcw,
+  MousePointer2,
+  Move3D,
+  Focus,
+  Camera,
+  Wind,
+} from "lucide-react";
+import type { Conditions, MeshResponse, Overlays, Units } from "./types";
+import { defaultConditions } from "./types";
 import { fmt, quantity, fitSphereDistance } from "./units";
 import { flightDragDirection, fieldRange } from "./viewerData";
+import {
+  ambientWind,
+  flightLocalDrag,
+  flightPose,
+  followCameraDistance,
+  railDirection,
+  trajectoryPoints,
+} from "./launchScene";
+import type { FlightEvent } from "./launchScene";
 
 interface Props {
   meshes: MeshResponse | null;
   originalMeshes: MeshResponse | null;
+  alignmentPreview?: MeshResponse | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
   overlays: Overlays;
@@ -27,6 +46,10 @@ interface Props {
   workspace: string;
   trajectory: any[];
   units: Units;
+  launchConditions?: Conditions;
+  playing?: boolean;
+  launchReady?: boolean;
+  flightEvents?: FlightEvent[];
 }
 const palette = [
   "#d5dce2",
@@ -95,6 +118,43 @@ function Solid({
         side={THREE.DoubleSide}
       />
     </mesh>
+  );
+}
+function PlacementPreview({
+  part,
+}: {
+  part: NonNullable<MeshResponse>["components"][0];
+}) {
+  const g = useMemo(() => geometry(part.vertices, part.faces), [part]);
+  useEffect(() => () => g.dispose(), [g]);
+  return (
+    <group name={`CAD placement preview: ${part.name}`}>
+      <mesh geometry={g} raycast={() => undefined} renderOrder={2}>
+        <meshBasicMaterial
+          color="#ffbd67"
+          transparent
+          opacity={0.34}
+          depthTest={false}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-1}
+          toneMapped={false}
+        />
+      </mesh>
+      <mesh geometry={g} raycast={() => undefined} renderOrder={3}>
+        <meshBasicMaterial
+          color="#ffe0a7"
+          wireframe
+          transparent
+          opacity={0.28}
+          depthTest={false}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
+    </group>
   );
 }
 function FEA({
@@ -192,19 +252,25 @@ function Arrow({
   length: number;
   color: string;
 }) {
-  const arrow = useMemo(() => {
+  const arrow = useMemo(() => new THREE.ArrowHelper(), []);
+  useEffect(() => {
     const dir = new THREE.Vector3(
       ...(direction as [number, number, number]),
     ).normalize();
-    return new THREE.ArrowHelper(
-      dir,
-      new THREE.Vector3(...(start as [number, number, number])),
-      length,
-      color,
-      length * 0.18,
-      length * 0.08,
-    );
-  }, [start.join(","), direction.join(","), length, color]);
+    if (dir.lengthSq() > 0) arrow.setDirection(dir);
+    arrow.position.set(...(start as [number, number, number]));
+    arrow.setLength(length, length * 0.18, length * 0.08);
+    arrow.setColor(new THREE.Color(color));
+  }, [arrow, start.join(","), direction.join(","), length, color]);
+  useEffect(
+    () => () => {
+      // ArrowHelper shares its geometry across instances, but creates unique
+      // materials. Reuse the object through playback and release those materials.
+      (arrow.line.material as THREE.Material).dispose();
+      (arrow.cone.material as THREE.Material).dispose();
+    },
+    [arrow],
+  );
   return <primitive object={arrow} />;
 }
 function CFD({
@@ -348,22 +414,259 @@ function Framing({
   }, [center.join(","), size, radius, aspect, resetKey, overview, far]);
   return null;
 }
+function LaunchEnvironment({
+  conditions,
+  rocketSize,
+  radius,
+  extent,
+  wind,
+  rocketPoint,
+}: {
+  conditions: Conditions;
+  rocketSize: number;
+  radius: number;
+  extent: number;
+  wind: number[];
+  rocketPoint: number[];
+}) {
+  const direction = new THREE.Vector3(...railDirection(conditions));
+  const railRotation = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction,
+  );
+  const azimuth = (conditions.launch_azimuth * Math.PI) / 180;
+  const sideways = new THREE.Vector3(Math.cos(azimuth), 0, -Math.sin(azimuth));
+  const railOffset = sideways.multiplyScalar(Math.max(0.06, radius * 0.65));
+  const railCenter = direction
+    .clone()
+    .multiplyScalar(conditions.rail_length / 2)
+    .add(railOffset);
+  const groundSize = Math.max(150, extent * 3, conditions.rail_length * 15);
+  const windSpeed = Math.hypot(...wind);
+  return (
+    <group name="launch-environment">
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -0.045, 0]}
+        name="flat-ground-plane"
+      >
+        <planeGeometry args={[groundSize, groundSize]} />
+        <meshStandardMaterial color="#273d3b" roughness={1} />
+      </mesh>
+      <gridHelper
+        args={[groundSize, 60, "#536b67", "#344e49"]}
+        position={[0, -0.04, 0]}
+      />
+      <mesh position={[0, -0.015, 0]} name="launch-pad">
+        <boxGeometry
+          args={[
+            Math.max(1.1, rocketSize * 0.7),
+            0.035,
+            Math.max(1.1, rocketSize * 0.7),
+          ]}
+        />
+        <meshStandardMaterial
+          color="#8d959b"
+          metalness={0.45}
+          roughness={0.5}
+        />
+      </mesh>
+      <mesh position={railCenter} quaternion={railRotation} name="launch-rail">
+        <boxGeometry args={[0.025, conditions.rail_length, 0.025]} />
+        <meshStandardMaterial
+          color="#cbd8e0"
+          metalness={0.8}
+          roughness={0.25}
+        />
+      </mesh>
+      <Line
+        points={[
+          [0, 0.003, 0],
+          [0, 0.003, Math.max(2, rocketSize)],
+        ]}
+        color="#86bfb1"
+        lineWidth={2}
+      />
+      <Html position={[0, 0.03, Math.max(2, rocketSize)]} center>
+        <span className="scene-label">N</span>
+      </Html>
+      <Html
+        position={[
+          railOffset.x,
+          conditions.rail_length * direction.y + 0.15,
+          railOffset.z,
+        ]}
+        center
+      >
+        <span className="scene-label">Launch rail</span>
+      </Html>
+      {windSpeed > 1e-8 &&
+        [-1, 0, 1].map((lane) => (
+          <Arrow
+            key={lane}
+            start={[
+              rocketPoint[0] - rocketSize * 1.1,
+              rocketPoint[1] + rocketSize * (0.5 + lane * 0.24),
+              rocketPoint[2] + rocketSize * 0.8,
+            ]}
+            direction={wind}
+            length={rocketSize * 0.7}
+            color="#77cdd5"
+          />
+        ))}
+    </group>
+  );
+}
+
+function LaunchCamera({
+  target,
+  box,
+  rocketSize,
+  railLength,
+  extent,
+  mode,
+  resetKey,
+  manualUntil,
+  interacting,
+  receipt,
+  onAutomaticChange,
+}: {
+  target: THREE.Vector3;
+  box: THREE.Box3;
+  rocketSize: number;
+  railLength: number;
+  extent: number;
+  mode: "follow" | "overview" | "inspect";
+  resetKey: number;
+  manualUntil: React.MutableRefObject<number>;
+  interacting: React.MutableRefObject<boolean>;
+  receipt: React.RefObject<HTMLElement | null>;
+  onAutomaticChange: (value: boolean) => void;
+}) {
+  const { camera, size: viewport } = useThree();
+  const controls = useRef<any>(null);
+  const initialized = useRef(false);
+  const automaticState = useRef(true);
+  const lastReceipt = useRef(0);
+  useEffect(() => {
+    initialized.current = false;
+  }, [
+    resetKey,
+    mode,
+    box.min.x,
+    box.min.y,
+    box.min.z,
+    box.max.x,
+    box.max.y,
+    box.max.z,
+  ]);
+  useFrame((_, delta) => {
+    if (!controls.current) return;
+    const now = performance.now();
+    const manual = interacting.current || now < manualUntil.current;
+    const automatic = mode === "follow" && !manual;
+    if (automaticState.current !== automatic) {
+      automaticState.current = automatic;
+      onAutomaticChange(automatic);
+    }
+    const perspective = camera as THREE.PerspectiveCamera;
+    const overview = mode === "overview";
+    const focus =
+      overview && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : target;
+    const distance =
+      overview && !box.isEmpty()
+        ? fitSphereDistance(
+            Math.max(
+              box.getBoundingSphere(new THREE.Sphere()).radius,
+              rocketSize * 2,
+            ),
+            perspective.getEffectiveFOV(),
+            viewport.width / Math.max(1, viewport.height),
+          )
+        : followCameraDistance(rocketSize, target.y, railLength);
+    const direction = new THREE.Vector3(
+      0.9,
+      overview ? 0.65 : 0.32,
+      1.2,
+    ).normalize();
+    const desired = focus.clone().addScaledVector(direction, distance);
+    if (!initialized.current) {
+      camera.position.copy(desired);
+      controls.current.target.copy(focus);
+      initialized.current = true;
+    } else if (automatic) {
+      // A user-controlled view is left alone for the entire interaction and grace
+      // period. Automatic following resumes gently instead of snapping back.
+      const smoothing = 1 - Math.exp(-Math.min(delta, 0.1) * 4);
+      camera.position.lerp(desired, smoothing);
+      controls.current.target.lerp(focus, smoothing);
+    }
+    camera.near = Math.max(rocketSize / 2000, 0.001);
+    camera.far = Math.max(10000, extent * 6, target.length() * 4);
+    perspective.updateProjectionMatrix();
+    controls.current.update();
+    if (receipt.current && now - lastReceipt.current > 150) {
+      receipt.current.dataset.cameraPosition = camera.position
+        .toArray()
+        .map((v) => v.toFixed(5))
+        .join(",");
+      receipt.current.dataset.cameraTarget = controls.current.target
+        .toArray()
+        .map((v: number) => v.toFixed(5))
+        .join(",");
+      receipt.current.dataset.autoFollow = String(automatic);
+      receipt.current.dataset.manualUntil = String(manualUntil.current);
+      lastReceipt.current = now;
+    }
+  });
+  return (
+    <OrbitControls
+      ref={controls}
+      makeDefault
+      minDistance={Math.max(0.2, rocketSize * 0.3)}
+      maxDistance={Math.max(300, extent * 5)}
+      maxPolarAngle={Math.PI * 0.495}
+      enableDamping
+      dampingFactor={0.1}
+      onStart={() => {
+        interacting.current = true;
+        manualUntil.current = performance.now() + 5000;
+        automaticState.current = false;
+        onAutomaticChange(false);
+      }}
+      onEnd={() => {
+        interacting.current = false;
+        manualUntil.current = performance.now() + 5000;
+      }}
+    />
+  );
+}
 function Scene({
   p,
   resetKey,
   mode,
+  manualUntil,
+  interacting,
+  receipt,
+  onAutomaticChange,
 }: {
   p: Props;
   resetKey: number;
   mode: "follow" | "overview" | "inspect";
+  manualUntil: React.MutableRefObject<number>;
+  interacting: React.MutableRefObject<boolean>;
+  receipt: React.RefObject<HTMLElement | null>;
+  onAutomaticChange: (value: boolean) => void;
 }) {
   const parts = p.meshes?.components || [];
+  const previewParts =
+    p.workspace === "design" ? p.alignmentPreview?.components || [] : [];
   const box = useMemo(() => {
     const b = new THREE.Box3();
     const visibleParts = p.overlays.original
       ? [...parts, ...(p.originalMeshes?.components || [])]
       : parts;
-    visibleParts.forEach((part) =>
+    [...visibleParts, ...previewParts].forEach((part) =>
       part.vertices.forEach((v) =>
         b.expandByPoint(new THREE.Vector3(...(v as [number, number, number]))),
       ),
@@ -390,6 +693,8 @@ function Scene({
     p.meshes,
     p.originalMeshes,
     p.overlays.original,
+    p.alignmentPreview,
+    p.workspace,
     p.fea,
     p.overlays.deformation,
     p.deformationScale,
@@ -400,29 +705,35 @@ function Scene({
   const min = box.min.x;
   const cg = p.flightRow?.cg ?? p.aero?.cg_m;
   const cp = p.flightRow?.cp ?? p.aero?.cp_m;
-  const tracking =
-    p.workspace === "flight" && mode !== "inspect" && p.trajectory?.length > 1;
+  const conditions = p.launchConditions || defaultConditions;
+  const tracking = p.workspace === "flight" && mode !== "inspect";
   const overview = tracking && mode === "overview";
   const path = useMemo<[number, number, number][]>(
-    () =>
-      p.trajectory
-        .filter(
-          (_, i) =>
-            i % Math.max(1, Math.floor(p.trajectory.length / 1200)) === 0,
-        )
-        .map((r) => [r.east, r.altitude, r.north]),
-    [p.trajectory],
+    () => trajectoryPoints(p.trajectory || [], p.flightEvents || []),
+    [p.trajectory, p.flightEvents],
   );
   const flightBox = useMemo(() => {
     const b = new THREE.Box3();
     path.forEach((v) => b.expandByPoint(new THREE.Vector3(...v)));
+    b.expandByPoint(new THREE.Vector3(0, 0, 0));
+    b.expandByPoint(
+      new THREE.Vector3(0, Math.max(size, conditions.rail_length), 0),
+    );
     return b;
-  }, [path]);
+  }, [path, size, conditions.rail_length]);
   const extent = flightBox.isEmpty()
     ? size
     : Math.max(...flightBox.getSize(new THREE.Vector3()).toArray(), size);
+  const anchorX = Number.isFinite(cg) ? cg : center[0];
+  const pose = flightPose(
+    p.flightRow,
+    conditions,
+    p.flightEvents || [],
+    box.max.x,
+    anchorX,
+  );
   const rocketPoint: [number, number, number] = tracking
-    ? [p.flightRow.east, p.flightRow.altitude, p.flightRow.north]
+    ? pose.position.toArray()
     : [0, 0, 0];
   const frameCenter = overview
     ? flightBox.getCenter(new THREE.Vector3()).toArray()
@@ -430,7 +741,18 @@ function Scene({
       ? rocketPoint
       : center;
   const frameSize = overview ? extent : tracking ? size * 1.3 : size;
-  const rocketScale = overview ? Math.max(1, (extent / size) * 0.08) : 1;
+  const followDistance = followCameraDistance(
+    size,
+    rocketPoint[1],
+    conditions.rail_length,
+  );
+  const rocketScale =
+    overview && !pose.onRail
+      ? Math.max(1, (extent / size) * 0.025)
+      : tracking && !pose.onRail
+        ? Math.max(1, followDistance / (size * 28))
+        : 1;
+  const wind = ambientWind(p.flightRow, conditions);
   const estimated =
     p.workspace === "flight" && p.overlays.stress
       ? (p.flightRow?.structural_components || []).filter(
@@ -444,7 +766,7 @@ function Scene({
 
   return (
     <>
-      <color attach="background" args={["#141e29"]} />
+      <color attach="background" args={[tracking ? "#172934" : "#141e29"]} />
       <ambientLight intensity={1.3} />
       <directionalLight position={[-size, size, size]} intensity={2.2} />
       <directionalLight
@@ -452,36 +774,56 @@ function Scene({
         intensity={0.6}
         color="#64b0d5"
       />
-      <Framing
-        center={frameCenter}
-        size={frameSize}
-        radius={
-          overview
-            ? flightBox.getBoundingSphere(new THREE.Sphere()).radius
-            : box.getBoundingSphere(new THREE.Sphere()).radius *
-              (tracking ? 1.15 : 1)
-        }
-        resetKey={resetKey}
-        overview={overview}
-        far={extent * 4}
-      />
-      <OrbitControls
-        target={frameCenter as [number, number, number]}
-        makeDefault
-        minDistance={size * 0.04}
-        maxDistance={frameSize * 8}
-      />
-      <gridHelper
-        args={[frameSize * 8, 40, "#2b3f50", "#1c2c3b"]}
-        position={
-          tracking
-            ? [0, -0.01, 0]
-            : [center[0], -dimensions.y * 0.55 - size * 0.08, 0]
-        }
-      />
+      {tracking ? (
+        <>
+          <LaunchCamera
+            target={pose.position}
+            box={flightBox}
+            rocketSize={size}
+            railLength={conditions.rail_length}
+            extent={extent}
+            mode={mode}
+            resetKey={resetKey}
+            manualUntil={manualUntil}
+            interacting={interacting}
+            receipt={receipt}
+            onAutomaticChange={onAutomaticChange}
+          />
+          <LaunchEnvironment
+            conditions={conditions}
+            rocketSize={size}
+            radius={Math.max(dimensions.y, dimensions.z) / 2}
+            extent={extent}
+            wind={wind}
+            rocketPoint={rocketPoint}
+          />
+        </>
+      ) : (
+        <>
+          <Framing
+            center={frameCenter}
+            size={frameSize}
+            radius={box.getBoundingSphere(new THREE.Sphere()).radius}
+            resetKey={resetKey}
+            far={extent * 4}
+          />
+          <OrbitControls
+            target={frameCenter as [number, number, number]}
+            makeDefault
+            minDistance={size * 0.04}
+            maxDistance={frameSize * 8}
+          />
+          <gridHelper
+            args={[frameSize * 8, 40, "#2b3f50", "#1c2c3b"]}
+            position={[center[0], -dimensions.y * 0.55 - size * 0.08, 0]}
+          />
+        </>
+      )}
       {tracking && (
         <>
-          <Line points={path} color="#526a80" lineWidth={1.5} />
+          {path.length > 1 && (
+            <Line points={path} color="#7697a8" lineWidth={1.5} />
+          )}
           <mesh position={rocketPoint}>
             <sphereGeometry args={[size * 0.018, 16, 16]} />
             <meshBasicMaterial color="#ddb37e" transparent opacity={0.45} />
@@ -494,24 +836,27 @@ function Scene({
             ]}
           >
             <div className="scene-label">
-              {quantity(p.flightRow.altitude, "length", p.units, 0)} AGL ·{" "}
-              {fmt(p.flightRow.time, 1)} s
+              {p.flightRow ? (
+                <>
+                  {quantity(p.flightRow.altitude, "length", p.units, 0)} AGL ·{" "}
+                  {fmt(p.flightRow.time, 1)} s
+                </>
+              ) : (
+                "Ready on launch pad"
+              )}
+              {rocketScale > 1.01 && (
+                <small> · rocket display ×{fmt(rocketScale, 1)}</small>
+              )}
             </div>
           </Html>
         </>
       )}
       <group position={rocketPoint}>
         <group
-          rotation={tracking ? [0, 0, -Math.PI / 2] : [0, 0, 0]}
+          quaternion={tracking ? pose.quaternion : new THREE.Quaternion()}
           scale={rocketScale}
         >
-          <group
-            position={
-              tracking
-                ? (center.map((n) => -n) as [number, number, number])
-                : [0, 0, 0]
-            }
-          >
+          <group position={tracking ? [-anchorX, 0, 0] : [0, 0, 0]}>
             <Line
               points={[
                 [min - size * 0.12, 0, 0],
@@ -547,6 +892,9 @@ function Scene({
                   maxStress={maxStress}
                 />
               ))}
+            {previewParts.map((part) => (
+              <PlacementPreview key={`placement-${part.id}`} part={part} />
+            ))}
             {p.overlays.original &&
               p.originalMeshes?.components.map((part, i) => (
                 <Solid
@@ -631,7 +979,11 @@ function Scene({
                   <Arrow
                     start={[cg ?? center[0], 0, dimensions.z * 0.7]}
                     direction={
-                      p.flightRow ? flightDragDirection(p.flightRow) : [1, 0, 0]
+                      p.flightRow
+                        ? tracking
+                          ? flightLocalDrag(p.flightRow, pose.quaternion)
+                          : flightDragDirection(p.flightRow)
+                        : [1, 0, 0]
                     }
                     length={size * 0.22}
                     color="#e9a777"
@@ -742,6 +1094,47 @@ class ViewerBoundary extends ReactComponent<
 export default function Viewport(p: Props) {
   const [reset, setReset] = useState(0),
     [mode, setMode] = useState<"follow" | "overview" | "inspect">("follow");
+  const [automatic, setAutomatic] = useState(true);
+  const manualUntil = useRef(0);
+  const interacting = useRef(false);
+  const receipt = useRef<HTMLElement | null>(null);
+  const conditions = p.launchConditions || defaultConditions;
+  const alignmentPreviewVisible =
+    p.workspace === "design" && Boolean(p.alignmentPreview?.components.length);
+  const flightScene = p.workspace === "flight" && mode !== "inspect";
+  const railExit = p.flightEvents?.find((event) => event.name === "rail_exit");
+  const groundEvent = p.flightEvents?.find(
+    (event) => event.name === "recovery",
+  );
+  const launchState =
+    !p.flightRow || (p.flightRow.time || 0) === 0
+      ? "pad"
+      : groundEvent && p.flightRow.time >= groundEvent.time
+        ? "landed"
+        : railExit && p.flightRow.time >= railExit.time
+          ? "flight"
+          : !railExit &&
+              Math.hypot(
+                p.flightRow.east || 0,
+                p.flightRow.north || 0,
+                p.flightRow.altitude || 0,
+              ) >= conditions.rail_length
+            ? "flight"
+            : "on-rail";
+  const wind = ambientWind(p.flightRow, conditions);
+  const windAzimuth =
+    Math.hypot(wind[0], wind[2]) > 1e-8
+      ? ((Math.atan2(wind[0], wind[2]) * 180) / Math.PI + 360) % 360
+      : conditions.wind_direction;
+  const resume = () => {
+    manualUntil.current = 0;
+    interacting.current = false;
+    setAutomatic(true);
+    setMode("follow");
+  };
+  useEffect(() => {
+    if (p.launchReady || p.playing) resume();
+  }, [p.launchReady, p.playing]);
   const peak = p.flightRow?.structural_components?.find(
     (c: any) =>
       c.component_id === p.selectedId &&
@@ -775,10 +1168,25 @@ export default function Viewport(p: Props) {
   const legendKind =
     flightStress || (p.overlays.stress && p.fea) ? "stress" : "pressure";
   return (
-    <section className="viewport">
+    <section
+      className="viewport"
+      ref={receipt}
+      data-scene={flightScene ? "launch" : "engineering"}
+      data-ground-plane={String(flightScene)}
+      data-launch-state={launchState}
+      data-rail-length={conditions.rail_length}
+      data-camera-mode={mode}
+      data-auto-follow={String(flightScene && mode === "follow" && automatic)}
+      data-manual-until={manualUntil.current}
+      data-alignment-preview={String(alignmentPreviewVisible)}
+    >
       <div className="viewport-top">
         <span className="live-dot" /> GPU 3D VIEWPORT{" "}
-        <span className="viewport-space">LOCAL AXIS · X NOSE → TAIL</span>
+        <span className="viewport-space">
+          {flightScene
+            ? "LAUNCH SITE · EAST / NORTH / UP"
+            : "LOCAL AXIS · X NOSE → TAIL"}
+        </span>
       </div>
       <ViewerBoundary>
         <Canvas
@@ -790,20 +1198,40 @@ export default function Viewport(p: Props) {
             powerPreference: "high-performance",
           }}
         >
-          <Scene p={p} resetKey={reset} mode={mode} />
+          <Scene
+            p={p}
+            resetKey={reset}
+            mode={mode}
+            manualUntil={manualUntil}
+            interacting={interacting}
+            receipt={receipt}
+            onAutomaticChange={setAutomatic}
+          />
         </Canvas>
       </ViewerBoundary>
+      {alignmentPreviewVisible && (
+        <div className="cad-placement-preview-note" role="status">
+          CAD placement preview overlay
+          <small>Amber preview only · attach to change assembly</small>
+        </div>
+      )}
       <div className="viewport-tools">
-        {p.workspace === "flight" && p.trajectory?.length > 1 && (
+        {p.workspace === "flight" && (
           <>
             {(["follow", "overview", "inspect"] as const).map((m) => (
               <button
                 className={`track-view ${mode === m ? "active" : ""}`}
                 key={m}
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  manualUntil.current = 0;
+                  interacting.current = false;
+                  setAutomatic(m === "follow");
+                  setMode(m);
+                  setReset((x) => x + 1);
+                }}
                 title={
                   m === "follow"
-                    ? "Follow rocket at actual flight position"
+                    ? "Automatically follow the rocket; orbit or zoom pauses following for 5 seconds"
                     : m === "overview"
                       ? "Fit full actual trajectory (rocket exaggerated)"
                       : "Inspect rocket in local coordinates"
@@ -821,18 +1249,62 @@ export default function Viewport(p: Props) {
         <button
           aria-label="Fit model"
           title="Fit model"
-          onClick={() => setReset((x) => x + 1)}
+          onClick={() => {
+            manualUntil.current = 0;
+            setReset((x) => x + 1);
+          }}
         >
           <Maximize2 size={16} />
         </button>
         <button
           aria-label="Reset view"
           title="Reset view"
-          onClick={() => setReset((x) => x + 1)}
+          onClick={() => {
+            manualUntil.current = 0;
+            setReset((x) => x + 1);
+          }}
         >
           <RotateCcw size={16} />
         </button>
       </div>
+      {flightScene && (
+        <>
+          <div
+            className={`flight-camera-status ${mode === "follow" && !automatic ? "manual" : ""}`}
+            aria-live="polite"
+          >
+            {mode === "follow" ? <Focus size={13} /> : <Camera size={13} />}
+            <span>
+              {mode === "overview"
+                ? "Full flight overview"
+                : automatic
+                  ? "Automatic follow"
+                  : "Manual camera · follows again after 5 s idle"}
+            </span>
+            {mode === "follow" && !automatic && (
+              <button className="resume-camera" onClick={resume}>
+                Resume follow
+              </button>
+            )}
+          </div>
+          <div className="launch-pad-status">
+            <Wind size={13} />
+            <span>
+              Wind {quantity(Math.hypot(...wind), "speed", p.units, 1)} · toward{" "}
+              {fmt(windAzimuth, 0)}°
+            </span>
+            <span>
+              {launchState === "pad"
+                ? "On rail · ready to launch"
+                : launchState === "on-rail"
+                  ? "Constrained to rail"
+                  : launchState === "landed"
+                    ? "Ground contact"
+                    : p.flightRow?.phase || "Flight"}
+            </span>
+          </div>
+        </>
+      )}
       <div className="viewport-bottom">
         <span>
           <MousePointer2 size={12} /> Click a component to inspect
@@ -840,12 +1312,16 @@ export default function Viewport(p: Props) {
         <span>
           <Move3D size={12} />{" "}
           {p.workspace === "flight" && mode !== "inspect"
-            ? mode === "overview"
-              ? "Actual trajectory · model enlarged · attitude illustrative"
-              : "Actual position · following camera · attitude illustrative"
+            ? "Drag to orbit · right-drag to pan · scroll to zoom"
             : "Drag to orbit · scroll to zoom"}
         </span>
       </div>
+      {flightScene && (
+        <div className="flight-scene-note">
+          Actual trajectory · rail / velocity orientation is illustrative · wind
+          arrows show direction
+        </div>
+      )}
       {((p.overlays.stress && p.fea) ||
         (p.overlays.pressure && p.cfd) ||
         flightStress) && (

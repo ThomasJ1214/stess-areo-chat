@@ -28,6 +28,10 @@ jobs:
           node-version: '22'
       - name: Install locked desktop, engineering and bundled CUDA libraries
         run: uv sync --locked --extra desktop --extra dev --extra gpu
+      - name: Check live official motor lookup (non-blocking)
+        continue-on-error: true
+        timeout-minutes: 2
+        run: uv run --no-sync python scripts/motor_catalog_smoke.py --timeout 60 --output build/live-motor-smoke.json
       - name: Tests before packaging
         run: uv run --no-sync pytest --junitxml=build/pytest-results.xml
       - name: Report test failures
@@ -86,6 +90,7 @@ jobs:
           name: RocketWorkbench-windows-build-diagnostics
           path: |
             build/pytest-results.xml
+            build/live-motor-smoke.json
             ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
             ${{ runner.temp }}/RocketWorkbench-install.log
             ${{ runner.temp }}/rocket-workbench-smoke-error-*.log
@@ -102,5 +107,6 @@ jobs:
             build/frozen-smoke.json
             build/installed-engine-smoke.json
             build/installed-desktop-smoke.log
+            build/live-motor-smoke.json
           if-no-files-found: error
           retention-days: 30

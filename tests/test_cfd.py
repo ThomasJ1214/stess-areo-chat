@@ -293,12 +293,16 @@ def test_real_geometry_solve_produces_positive_pressure_and_real_loads(monkeypat
     json.dumps(result, allow_nan=False)
 
 
-def test_nontrivial_oblique_box_run_converges_and_pressure_cp_is_condition_specific(monkeypatch):
+@pytest.mark.parametrize("until_converged", [False, True])
+def test_nontrivial_oblique_box_run_converges_and_pressure_cp_is_condition_specific(monkeypatch, until_converged):
     import rocket_workbench.geometry as geometry
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
     result = cfd.solve(Project(), Conditions(mach=0.3, angle_of_attack=5, wind_speed=0), options={
-        "grid_resolution": 12, "max_steps": 1000, "max_wall_seconds": 60,
-        "flow_through_times": 8, "convergence_tolerance": 1e-3, "cfl": 0.7,
+        "grid_resolution": 12, "max_steps": 1 if until_converged else 1000,
+        "max_wall_seconds": 0 if until_converged else 60,
+        "flow_through_times": 0.05 if until_converged else 8,
+        "run_until_converged": until_converged,
+        "convergence_tolerance": 1e-3, "cfl": 0.7,
         "backend": "cpu", "sample_limit": 50, "surface_limit": 50,
     })
     summary = result["summary"]
@@ -314,6 +318,12 @@ def test_nontrivial_oblique_box_run_converges_and_pressure_cp_is_condition_speci
     assert abs(summary["cp_m"]) < 0.02  # expected near box center; grid/domain error is permitted
     assert "not Barrowman" in summary["cp_kind"]
     assert summary["min_pressure_pa"] > 0
+    assert summary["minimum_convergence_time_reached"]
+    assert summary["domain_crossings_completed"] >= 0.5
+    if until_converged:
+        assert summary["steps"] > summary["max_steps"]
+        assert summary["physical_time_s"] > summary["target_physical_time_s"]
+        assert summary["progress_basis"] == "convergence_unknown"
 
 
 def test_farfield_rms_does_not_hide_unsettled_pressure_loads(monkeypatch):
@@ -356,3 +366,85 @@ def test_explicit_gpu_request_does_not_silently_fall_back(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", None)
     with pytest.raises(RuntimeError, match="GPU CFD requires"):
         cfd._backend("gpu")
+
+
+def test_zero_wall_timeout_ignores_elapsed_deadline_but_keeps_step_budget(monkeypatch):
+    from types import SimpleNamespace
+    import rocket_workbench.geometry as geometry
+    monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
+    clock = iter(range(1, 1000))
+    monkeypatch.setattr(cfd, "time", SimpleNamespace(perf_counter=lambda: next(clock) * 100000.0))
+    result = cfd.solve(Project(), Conditions(mach=0.3, wind_speed=0), options={
+        "grid_resolution": 12, "max_steps": 2, "max_wall_seconds": 0,
+        "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
+    })
+    assert result["summary"]["status"] == "step_budget"
+    assert result["summary"]["steps"] == 2
+    assert result["summary"]["elapsed_seconds"] > 86400
+    assert not result["summary"]["pressure_force_steady"]
+
+
+def test_nonzero_wall_timeout_returns_honest_partial_state(monkeypatch):
+    from types import SimpleNamespace
+    import rocket_workbench.geometry as geometry
+    monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
+    clock = iter(range(1000))
+    monkeypatch.setattr(cfd, "time", SimpleNamespace(perf_counter=lambda: float(next(clock))))
+    result = cfd.solve(Project(), Conditions(mach=0.3, wind_speed=0), options={
+        "grid_resolution": 12, "max_steps": 2, "max_wall_seconds": 1,
+        "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
+    })
+    summary = result["summary"]
+    assert summary["status"] == "wall_clock_budget" and summary["steps"] == 0
+    assert summary["domain_crossings_completed"] == 0
+    assert not summary["minimum_convergence_time_reached"]
+    assert summary["measured_steps_per_second"] is None
+    assert "not a steady drag prediction" in summary["pressure_output_kind"]
+    json.dumps(result, allow_nan=False)
+
+
+def test_convergence_only_run_is_cancellable_and_ignores_short_work_ceiling(monkeypatch):
+    import rocket_workbench.geometry as geometry
+    monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
+    messages = []
+    calls = 0
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls == 4
+    result = cfd.solve(Project(), Conditions(mach=0.3, wind_speed=0), options={
+        "grid_resolution": 12, "max_steps": 1, "max_wall_seconds": 0,
+        "max_physical_time": 1e-8, "run_until_converged": True,
+        "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
+    }, cancelled=cancelled, progress=lambda fraction, message: messages.append(message))
+    summary = result["summary"]
+    assert summary["status"] == "cancelled" and summary["steps"] == 3
+    assert summary["physical_time_s"] > summary["target_physical_time_s"]
+    assert summary["progress_basis"] == "convergence_unknown"
+    assert any("Completion time unknown" in message for message in messages)
+    assert summary["measured_steps_per_second"] > 0
+    assert summary["estimated_seconds_to_minimum_flow_time"] > 0
+    assert summary["estimated_seconds_to_target_flow_time"] == 0
+
+
+def test_original_fin_resolution_is_axis_aware_and_cad_thickness_is_not_invented():
+    fin = Component(id="fins", name="Thin fin", kind="fin", thickness=0.002, fin_count=1)
+    project = Project(components=[fin])
+    first = cfd._fin_resolution(project, None, np.array([0.01, 0.001, 0.004]), False)[0]
+    assert first["cells_across_thickness_min"] == pytest.approx(0.5)
+    fin.metadata["rotation"] = 90
+    rotated = cfd._fin_resolution(project, None, np.array([0.01, 0.001, 0.004]), False)[0]
+    assert rotated["cells_across_thickness_min"] == pytest.approx(2.0)
+    fin.geometry_mode = "replacement"
+    replaced = cfd._fin_resolution(project, None, np.array([0.01, 0.001, 0.004]), False)[0]
+    assert replaced["thickness_m"] is None and replaced["cells_across_thickness_min"] is None
+    original = cfd._fin_resolution(project, None, np.array([0.01, 0.001, 0.004]), True)[0]
+    assert original["thickness_m"] == 0.002
+
+
+def test_unlimited_run_history_is_bounded_and_retains_first_and_last():
+    history = []
+    for step in range(1, 20001):
+        cfd._record_history(history, {"step": step})
+    assert len(history) <= 4000
+    assert history[0]["step"] == 1 and history[-1]["step"] == 20000

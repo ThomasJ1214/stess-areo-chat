@@ -30,6 +30,7 @@ version_resource = VSVersionInfo(
     ])]), VarFileInfo([VarStruct("Translation", [1033, 1200])])],
 )
 datas = [(str(root / "web" / "dist"), "web/dist"),
+         (str(root / "assets"), "assets"),
          (str(root / "examples"), "examples"),
          (str(root / "docs"), "docs"),
          (str(root / "LICENSE"), "."),
@@ -122,6 +123,7 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
           name="RocketWorkbench", debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False,
           version=version_resource,
+          icon=str(root / "assets" / "rocket-workbench.ico"),
           console=False, disable_windowed_traceback=False)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
                name="RocketWorkbench")

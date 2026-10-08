@@ -96,6 +96,14 @@ Headless/Linux hosts need a usable display/graphics path; a browser-only check
 does not validate Qt startup. The smoke mode's 30-second UI deadline is a check,
 not a simulation time limit.
 
+Optional native source-link verification is reproducible with
+`uv run --no-sync python scripts/desktop_link_smoke.py --output build/native-external-link-smoke.json`.
+With the `desktop` extra and a usable display, it sends real Qt mouse clicks to
+HTTPS, local and rejected source links, checks the actual new-window signal, and
+confirms the application page stays open. The final system-browser call is
+intercepted; no browser launches or external network requests occur. This is
+separate from the desktop startup/WebGL check.
+
 The desktop keeps its loopback listener bound while the API starts, so launching
 two application instances cannot select the same released port. Startup logs
 include the application/Python version and session path, without the session
@@ -119,7 +127,8 @@ uv run --no-sync python scripts/browser_smoke.py
 Keep `--extra desktop`/`--extra gpu` on the sync command if you also use those
 extras; uv synchronizes exactly the requested dependency set. The browser extra
 is not an end-user installer requirement. Browser installation downloads a
-development test binary; the application itself stays local/offline. Linux may
+development test binary. The application remains local except for explicitly
+requested motor-catalog searches/downloads. Linux may
 need Playwright system libraries (`playwright install-deps chromium`).
 
 The script starts and stops an isolated loopback API automatically, uses actual
@@ -214,6 +223,76 @@ diagnostics on failure. These checks are independent of simulation budgets.
 Check [third-party notices](../THIRD_PARTY_NOTICES.md) before distributing binaries
 outside the requested private use. Build artifacts are unsigned unless a signing
 process is added. Never store signing keys or private credentials in Git.
+
+### Application icons
+
+`assets/rocket-workbench.svg` is the editable vector source for the app mark.
+Regenerate its Windows ICO and frontend copy after an intentional icon edit:
+
+```powershell
+uv run --no-sync python scripts/generate_icon.py
+```
+
+This uses Qt's SVG renderer from the existing `desktop` extra and requires no
+image-editor dependency. Commit the SVG, generated `assets/rocket-workbench.ico`
+and `web/public/icon.svg` together. The ICO contains 16, 24, 32, 48, 64, 128 and
+256 pixel images. Qt uses it for the native window, PyInstaller embeds it in the
+Windows executable, and Inno Setup uses it for the installer. The browser and
+in-app mark use the matching SVG. Confirm the built Windows application and
+installer icons separately from source-level image decoding.
+
+### Online motor data and offline guidance
+
+Motor lookup uses the official ThrustCurve.org API only on an explicit user
+action. Its client belongs outside engineering solvers; network failure must
+leave local ENG/RSE import and existing embedded curves usable. Preserve raw-data
+digest, provider source/license and fetch timestamp when importing a reviewed
+curve, and do not assign it to a flight configuration automatically. Tests should
+use deterministic service fixtures for parsing, bounded response handling,
+provenance and failure behavior; separately record any actual live-service check.
+Never label a mocked request as a successful live database test.
+
+Run the optional actual provider check separately from deterministic tests:
+
+```powershell
+uv run --no-sync python scripts/motor_catalog_smoke.py --output build/live-motor-smoke.json
+```
+
+It searches for a real `J350W` by default, fetches a real curve, checks the
+download's digest and parsed thrust data, and writes a success/failure receipt.
+Use `--query` and optionally `--manufacturer` to select another actual record.
+The check is bounded by a 60-second overall deadline and does not alter a project
+or assign a motor. A provider outage, network restriction or changed catalog can
+fail this separate online check while offline parsing/engineering tests pass.
+Record its receipt and platform rather than claiming an unrun Windows/hardware
+check. A live download is service-integration evidence, not motor certification.
+
+Guided tutorials, engineering definitions and the user guide are shipped with
+the frontend. Keep them synchronized with visible control names. Flight animation
+plays the computed point-mass solution; camera/rail/map changes must not introduce
+engineering equations or invented samples into the frontend. Map coordinates
+and event points of interest are local north/east offsets, not GPS coordinates.
+
+CAD placement proposals live in `alignment.py` and are exposed separately from
+attachment. Regressions should verify preserved source vertices and neighboring
+components, physical scale, placed bounds and rigid-transform/mass invariants.
+Default auto-placement must not resize imported hardware. Explicit fit is one
+uniform scale; warn that all dimensions and computed mass change. Bounds alignment
+does not establish a mechanical joint or a CAD Boolean union.
+
+FEA's read-only preflight shares admission and sizing checks with the solver.
+Changing its recommendation must not bypass original-part thickness guards,
+material-volume checks or actual element limits. CAD thickness remains unknown.
+Preserve actionable alternatives when whole thin structures exceed the budget;
+do not imply that region cutting or shell FEA is available.
+
+CFD run controls may remove stopping ceilings, but cannot promise a convergence
+deadline. With `run_until_converged:true` and `max_wall_seconds:0`, do not show a
+completion percentage or ETA. Show measured progress quantities and retain
+cancellation. Preserve partial-field status, executed backend, low-Mach and
+discretization warnings in cards, exports and reports. Numerical CUDA diagnostics
+probe a small actual allocation/kernel path and cache the result until restart;
+they must stay separate from WebGL rendering capability and full-job GPU validation.
 
 ## Add a solver or file format
 

@@ -12,6 +12,54 @@ import time
 from pathlib import Path
 
 
+def _public_https_external_url(value: str, session_token: str | None = None) -> bool:
+    """External source links must never send a desktop session URL to a browser."""
+    import ipaddress
+    from urllib.parse import parse_qsl, unquote, urlsplit
+
+    if not value or any(character.isspace() or ord(character) < 32 for character in value):
+        return False
+    try:
+        url = urlsplit(value)
+        host = (url.hostname or "").lower().rstrip(".")
+        if url.scheme.lower() != "https" or not host or url.username or url.password:
+            return False
+        # Reading port also rejects malformed/non-numeric port declarations.
+        if url.port is not None and not 1 <= url.port <= 65535:
+            return False
+    except ValueError:
+        return False
+    if session_token and session_token.lower() in unquote(value).lower():
+        return False
+    if any("token" in key.lower() for section in (url.query, url.fragment)
+           for key, _ in parse_qsl(section, keep_blank_values=True)):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # Reject local names and alternate numeric IPv4 notation browsers may
+        # normalize to loopback (for example 127.1 or 0x7f000001).
+        return ("." in host and not host.endswith((".localhost", ".local", ".internal"))
+                and not host.startswith("0x")
+                and not all(character.isdecimal() or character == "." for character in host))
+    return address.is_global and not address.is_multicast
+
+
+def _connect_external_links(page, session_token: str | None = None):
+    """Open explicitly clicked HTTPS source links outside the authenticated view."""
+    from PySide6.QtGui import QDesktopServices
+
+    def open_external(request):
+        if not request.isUserInitiated():
+            return
+        url = request.requestedUrl()
+        if url.isValid() and _public_https_external_url(url.toString(), session_token):
+            QDesktopServices.openUrl(url)
+
+    page.newWindowRequested.connect(open_external)
+    return open_external
+
+
 def _start_local_service(app, timeout_seconds: float = 20):
     """Keep the selected loopback port reserved until Uvicorn owns the listener."""
     import logging
@@ -126,6 +174,7 @@ def main(argv=None) -> int:
         return 0
     try:
         from PySide6.QtCore import QTimer, QUrl
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
         from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage, QWebEngineSettings
         from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -134,6 +183,9 @@ def main(argv=None) -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Rocket Workbench")
     application.setOrganizationName("Rocket Workbench")
+    # PyInstaller's data root preserves the source checkout's assets layout.
+    resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    application.setWindowIcon(QIcon(str(resource_root / "assets" / "rocket-workbench.ico")))
     smoke_directory = None
     if options.desktop_smoke_test and options.data_dir is None:
         import tempfile
@@ -165,6 +217,7 @@ def main(argv=None) -> int:
             smoke_directory.cleanup()
         return 1
     window = QMainWindow()
+    window.setWindowIcon(application.windowIcon())
     window.setWindowTitle("Rocket Workbench — aerodynamic, flight and structural analysis")
     window.resize(1440, 960)
     view = QWebEngineView(window)
@@ -172,6 +225,7 @@ def main(argv=None) -> int:
     # memory, so packaging and restricted development hosts need no browser cache.
     profile = QWebEngineProfile(application)
     view.setPage(QWebEnginePage(profile, view))
+    _connect_external_links(view.page(), token)
     view.settings().setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
     view.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
     # Native save dialogs make browser downloads work in the embedded desktop.

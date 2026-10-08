@@ -28,6 +28,16 @@ class JobManager:
         if kind not in {"flight", "cfd", "fea", "sweep", "monte_carlo", "comparison"}:
             raise ValueError("Unknown simulation kind")
         options = copy.deepcopy(options or {})
+        progress_basis = "completion_fraction"
+        if kind == "cfd":
+            # CFD numerical convergence has no predictable completion fraction.
+            # A finite stopping budget can report budget usage; zero wall time
+            # plus convergence-only mode has no finite stopping budget at all.
+            try:
+                no_wall_timeout = float(options.get("max_wall_seconds", 1200)) == 0
+            except (TypeError, ValueError):
+                no_wall_timeout = False  # Solver validation reports invalid inputs.
+            progress_basis = "convergence_unknown" if options.get("run_until_converged") is True and no_wall_timeout else "budget_usage"
         cfd_source = None
         # Keep a portable input project for the run, separate from large solved
         # fields and never included in every progress-poll response.
@@ -89,6 +99,7 @@ class JobManager:
                 del self.jobs[completed]
             identity = uuid4().hex
             self.jobs[identity] = {"id": identity, "kind": kind, "geometry_signature": signature, "status": "queued", "progress": 0.0,
+                "progress_basis": progress_basis,
                 "message": "Waiting for simulation worker", "created": time.monotonic(), "started": None,
                 "finished": None, "result": None, "error": None, "cancel": threading.Event(),
                 "project_snapshot": snapshot, "project_sha256": project_hash,
@@ -105,7 +116,7 @@ class JobManager:
                 raise KeyError(identity)
             elapsed = (job["finished"] or time.monotonic()) - job["started"] if job["started"] else 0.0
             progress = job["progress"]
-            eta = elapsed * (1 / progress - 1) if job["status"] == "running" and progress > 0.01 else None
+            eta = elapsed * (1 / progress - 1) if job["status"] == "running" and progress > 0.01 and job["progress_basis"] != "convergence_unknown" else None
             return {k: v for k, v in job.items() if k not in {"cancel", "created", "started", "finished", "project_snapshot"}} | {
                 "elapsed_seconds": max(0, elapsed), "eta_seconds": eta}
 
@@ -173,8 +184,13 @@ class JobManager:
             if job["cfd_source"] is not None:
                 result["inputs"]["cfd_source"] = copy.deepcopy(job["cfd_source"])
             with self.lock:
-                job.update(status="cancelled" if cancelled() else "completed", result=None if cancelled() else result,
-                    progress=1.0 if not cancelled() else self.jobs[identity]["progress"], message="Cancelled" if cancelled() else "Simulation completed",
+                was_cancelled = cancelled()
+                # CFD explicitly returns its actual transient fields on cancel.
+                # Retain those outputs and provenance for inspection/export,
+                # without upgrading the job status or pressure-transfer eligibility.
+                retained = result if not was_cancelled or kind == "cfd" else None
+                job.update(status="cancelled" if was_cancelled else "completed", result=retained,
+                    progress=1.0 if not was_cancelled else self.jobs[identity]["progress"], message="Cancelled; partial CFD fields retained" if was_cancelled and kind == "cfd" else "Cancelled" if was_cancelled else "Simulation completed",
                     finished=time.monotonic())
         except Exception as exc:
             with self.lock:

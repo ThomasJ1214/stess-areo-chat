@@ -14,6 +14,7 @@ export const defaultCfdOptions = {
   backend: "auto",
   max_wall_seconds: 1200,
   flow_through_times: 8,
+  run_until_converged: false,
 };
 export const defaultFeaOptions = {
   component_id: "",
@@ -27,6 +28,7 @@ export const defaultFeaOptions = {
   clamp_type: "plane",
   acceleration_m_s2: [0, 0, 0],
   traction_pa: [1000, 0, 0],
+  auto_mesh: true,
 };
 export const defaultStudyOptions = {
   parameter: "wind_speed",
@@ -222,8 +224,13 @@ export function usePersistentSettings(
     setCfdOptions: (value: WorkspaceSettings["cfd_options"]) =>
       update("cfd_options", value),
     feaOptions: settings.fea_options,
-    setFeaOptions: (value: WorkspaceSettings["fea_options"]) =>
-      update("fea_options", value),
+    setFeaOptions: (
+      value:
+        | WorkspaceSettings["fea_options"]
+        | ((
+            previous: WorkspaceSettings["fea_options"],
+          ) => WorkspaceSettings["fea_options"]),
+    ) => update("fea_options", value),
     studyOptions: settings.study_options,
     setStudyOptions: (value: WorkspaceSettings["study_options"]) =>
       update("study_options", value),

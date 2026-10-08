@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <title>Rocket Workbench</title>
+  <desc>A pale teal rocket with copper fins and flame on a deep blue rounded square.</desc>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#101C2C"/>
+  <rect x="9.5" y="9.5" width="237" height="237" rx="52.5" stroke="#34495D" stroke-width="3"/>
+  <path d="M45 178C35 125 50 75 84 46M211 78C220 125 207 179 174 208" stroke="#477A80" stroke-width="5" stroke-linecap="round"/>
+  <path d="M74 172L104 126L112 160L90 176L74 172ZM182 172L152 126L144 160L166 176L182 172Z" fill="#E5A16E"/>
+  <path d="M128 33C108 54 100 79 102 112L105 157C118 168 138 168 151 157L154 112C156 79 148 54 128 33Z" fill="#D3F4ED"/>
+  <path d="M128 33C117 45 109 60 106 76H150C147 60 139 45 128 33Z" fill="#54C8C1"/>
+  <path d="M141 53C149 70 152 89 151 112L148 155C143 158 138 160 133 161L133 45L141 53Z" fill="#A4DAD5"/>
+  <circle cx="128" cy="104" r="17" fill="#101C2C"/>
+  <circle cx="128" cy="104" r="11" fill="#54C8C1"/>
+  <path d="M116 171H140L145 180H111L116 171Z" fill="#89ACB6"/>
+  <path d="M128 188C114 198 108 213 112 226C119 217 123 215 128 218C133 215 137 217 144 226C148 213 142 198 128 188Z" fill="#E5A16E"/>
+  <path d="M128 194C122 202 121 210 128 215C135 210 134 202 128 194Z" fill="#FFE4B8"/>
+</svg>

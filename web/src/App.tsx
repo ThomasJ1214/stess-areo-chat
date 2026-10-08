@@ -35,11 +35,24 @@ import {
   Save,
   Trash2,
   BookOpen,
+  PanelLeft,
+  PanelRight,
+  Maximize2,
+  Minimize2,
+  MapPinned,
+  Globe,
+  GraduationCap,
 } from "lucide-react";
 
 import Viewport from "./Viewport";
 import FlightCharts from "./FlightCharts";
 import UserGuide from "./UserGuide";
+import Tutorials from "./Tutorial";
+import HelpTip from "./HelpTip";
+import MotorSearch from "./MotorSearch";
+import FlightMap from "./FlightMap";
+import WindowDialog from "./WindowDialog";
+import { PanelDivider, useWorkspaceLayout } from "./WorkspaceLayout";
 import {
   NumberField,
   SIField,
@@ -119,6 +132,31 @@ const workspaces: {
   },
 ];
 export default function App() {
+  const { layout, setLayout, resetLayout } = useWorkspaceLayout();
+  const [tutorialTopic, setTutorialTopic] = useState<"app" | Workspace | null>(
+    null,
+  );
+  const [motorSearchProject, setMotorSearchProject] = useState<string | null>(
+    null,
+  );
+  const [mapVisible, setMapVisible] = useState(true);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [gpuDiagnosticsOpen, setGpuDiagnosticsOpen] = useState(false);
+  const [automaticAlignment, setAutomaticAlignment] = useState(true);
+  const [alignmentOptions, setAlignmentOptions] = useState({
+    axis: "auto",
+    reverse: false,
+    fit_length: false,
+    anchor: "start",
+  });
+  const [alignmentProposal, setAlignmentProposal] = useState<any>(null);
+  const [alignmentPending, setAlignmentPending] = useState(false);
+  const [alignmentError, setAlignmentError] = useState("");
+  const [alignmentGeneration, setAlignmentGeneration] = useState(0);
+  const [feaPreflight, setFeaPreflight] = useState<any>(null);
+  const [feaPreflightPending, setFeaPreflightPending] = useState(false);
+  const [feaPreflightError, setFeaPreflightError] = useState("");
+  const launchPlayback = useRef(false);
   const [previousProject, setPreviousProject] = useState<Project | null>(null);
   const [project, setProject] = useState<Project | null>(null),
     [health, setHealth] = useState<any>(null),
@@ -305,9 +343,143 @@ export default function App() {
     setAssetId(selected?.asset_id || project?.assets[0]?.id || "");
   }, [selected, project?.materials, project?.assets]);
   useEffect(() => {
-    if (selectedId && feaOptions.component_id !== selectedId)
-      setFeaOptions({ ...feaOptions, component_id: selectedId });
-  }, [selectedId]);
+    if (!selectedId) return;
+    setFeaOptions((current) => {
+      if (current.component_id !== selectedId)
+        return {
+          ...current,
+          component_id: selectedId,
+          clamp_type:
+            selected?.geometry_mode !== "replacement" &&
+            [
+              "fin",
+              "finset",
+              "trapezoidfinset",
+              "freeformfinset",
+              "ellipticalfinset",
+            ].includes(selected?.kind || "")
+              ? "radial_root"
+              : "plane",
+        };
+      if (
+        selected?.geometry_mode === "replacement" &&
+        current.clamp_type === "radial_root"
+      )
+        return { ...current, clamp_type: "plane" };
+      return current;
+    });
+  }, [selectedId, selected?.geometry_mode]);
+  useEffect(() => {
+    setAutomaticAlignment(!selected?.asset_id || selected.asset_id !== assetId);
+    setAlignmentOptions({
+      axis: "auto",
+      reverse: false,
+      fit_length: false,
+      anchor: "start",
+    });
+  }, [selectedId, selected?.asset_id, assetId]);
+  useEffect(() => {
+    setAlignmentProposal(null);
+    setAlignmentError("");
+    if (
+      workspace !== "design" ||
+      designTab !== "geometry" ||
+      !selected ||
+      !assetId ||
+      !automaticAlignment
+    ) {
+      setAlignmentPending(false);
+      return;
+    }
+    let disposed = false;
+    setAlignmentPending(true);
+    const timer = setTimeout(async () => {
+      try {
+        const proposal = await post<any>("/geometry/alignment", {
+          component_id: selected.id,
+          asset_id: assetId,
+          ...alignmentOptions,
+          include_mesh: true,
+        });
+        if (disposed) return;
+        setAlignmentProposal(proposal);
+        setDraft((current) =>
+          current?.id === selected.id
+            ? { ...current, transform: proposal.transform }
+            : current,
+        );
+      } catch (err) {
+        if (!disposed)
+          setAlignmentError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!disposed) setAlignmentPending(false);
+      }
+    }, 200);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [
+    workspace,
+    designTab,
+    selected,
+    assetId,
+    automaticAlignment,
+    alignmentOptions,
+    alignmentGeneration,
+  ]);
+  useEffect(() => {
+    setFeaPreflight(null);
+    setFeaPreflightError("");
+    if (workspace !== "structure" || !selected) {
+      setFeaPreflightPending(false);
+      return;
+    }
+    let disposed = false;
+    setFeaPreflightPending(true);
+    const timer = setTimeout(async () => {
+      try {
+        const check = await post<any>("/fea/preflight", {
+          component_id: selected.id,
+          options: {
+            mesh_size: feaOptions.mesh_size,
+            max_elements: feaOptions.max_elements,
+          },
+        });
+        if (disposed) return;
+        setFeaPreflight(check);
+        if (
+          feaOptions.auto_mesh &&
+          check.recommended_within_budget &&
+          check.recommended_mesh_size_m > 0 &&
+          Math.abs(check.recommended_mesh_size_m - feaOptions.mesh_size) >
+            check.recommended_mesh_size_m * 1e-8
+        )
+          setFeaOptions((current) => ({
+            ...current,
+            mesh_size: check.recommended_mesh_size_m,
+          }));
+      } catch (err) {
+        if (!disposed)
+          setFeaPreflightError(
+            err instanceof Error ? err.message : String(err),
+          );
+      } finally {
+        if (!disposed) setFeaPreflightPending(false);
+      }
+    }, 200);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [
+    workspace,
+    selected,
+    project?.materials,
+    feaOptions.mesh_size,
+    feaOptions.max_elements,
+    feaOptions.auto_mesh,
+  ]);
   useEffect(() => {
     if (!activeJob || !job) return;
     let disposed = false;
@@ -317,13 +489,21 @@ export default function App() {
         const next = await request<Job>(`/jobs/${job.id}`);
         if (disposed) return;
         setJob(next);
-        if (next.status === "completed" && next.result) {
-          setResults((r) => ({ ...r, [jobKind]: next.result }));
+        if (
+          (next.status === "completed" ||
+            (jobKind === "cfd" && next.status === "cancelled")) &&
+          next.result
+        ) {
+          setResults((r) => ({
+            ...r,
+            [jobKind]: { ...next.result, job_status: next.status },
+          }));
           setResultJobs((r) => ({ ...r, [jobKind]: next.id }));
           if (jobKind === "flight") {
             setOverlays((o) => ({ ...o, stress: true, forces: true }));
             setPlayTime(0);
-            setPlaying(false);
+            setPlaying(launchPlayback.current);
+            launchPlayback.current = false;
           }
           if (jobKind === "fea")
             setOverlays((o) => ({ ...o, stress: true, deformation: false }));
@@ -335,6 +515,8 @@ export default function App() {
             if (key) setStudyMetric(key);
           }
         }
+        if (["failed", "cancelled"].includes(next.status))
+          launchPlayback.current = false;
         if (next.status === "failed")
           setError(next.error || "Simulation failed.");
         if (["queued", "running"].includes(next.status))
@@ -438,7 +620,11 @@ export default function App() {
       }
     });
   }
-  function startJob(kind: string, options: Record<string, unknown> = {}) {
+  function startJob(
+    kind: string,
+    options: Record<string, unknown> = {},
+    autoPlayback = false,
+  ) {
     if (activeJob) return;
     operation(async () => {
       assertValidNumberFields();
@@ -449,9 +635,25 @@ export default function App() {
         configuration_id: project?.active_configuration_id,
         options: kind === "fea" ? feaRequestOptions(options) : options,
       });
+      if (kind === "flight") {
+        launchPlayback.current = autoPlayback;
+        if (autoPlayback) {
+          setPlaying(false);
+          setPlayTime(0);
+          setResults((current) => {
+            const changed = { ...current };
+            delete changed.flight;
+            return changed;
+          });
+        }
+      }
       setJobKind(kind);
       setJob(next);
     });
+  }
+  function launch() {
+    if (!canRun) return;
+    startJob("flight", {}, true);
   }
   function runAnalysis() {
     operation(async () => {
@@ -686,13 +888,17 @@ export default function App() {
       />
       <header className="topbar">
         <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
-          <span className="brand-mark">
-            <Rocket size={22} />
-          </span>
+          <img
+            className="brand-icon"
+            src="/icon.svg"
+            alt=""
+            width="34"
+            height="34"
+          />
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.1</span>
+          <span className="version">0.2.0</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -700,6 +906,9 @@ export default function App() {
           <span>{project?.name || "Connecting to local engine…"}</span>
         </div>
         <div className="header-actions">
+          <button className="quiet-btn" onClick={() => setTutorialTopic("app")}>
+            <GraduationCap size={16} /> Getting started
+          </button>
           <button
             className="quiet-btn"
             onClick={() => setGuideOpen(true)}
@@ -800,6 +1009,14 @@ export default function App() {
                 >
                   Motor curve .eng / .rse
                 </button>
+                <button
+                  onClick={() => {
+                    if (project) setMotorSearchProject(project.id);
+                    setFileMenu(false);
+                  }}
+                >
+                  <Globe size={15} /> Find motor online
+                </button>
               </div>
             )}
           </div>
@@ -822,13 +1039,92 @@ export default function App() {
         <div className="local-status">
           <span className={`live-dot ${health ? "" : "offline"}`} />
           {health ? "LOCAL ENGINE" : "CONNECTING"}
-          <span className="compute-status">
+          <button
+            className="compute-status"
+            aria-label="GPU diagnostics"
+            onClick={() => setGpuDiagnosticsOpen(true)}
+          >
             {health?.capabilities?.gpu_compute
               ? "CUDA available"
               : "CPU solver · GPU viewport"}
-          </span>
+          </button>
         </div>
       </nav>
+      <div className="workspace-window-bar" aria-label="Workspace windows">
+        <div className="window-actions">
+          <button
+            aria-label={
+              layout.assembly && !layout.focus
+                ? "Hide assembly"
+                : "Show assembly"
+            }
+            aria-pressed={layout.assembly && !layout.focus}
+            onClick={() =>
+              setLayout((current) => ({
+                ...current,
+                focus: false,
+                assembly: current.focus || !current.assembly,
+              }))
+            }
+          >
+            <PanelLeft size={16} />
+            <span>Assembly</span>
+          </button>
+          <button
+            aria-label={
+              layout.setup && !layout.focus ? "Hide setup" : "Show setup"
+            }
+            aria-pressed={layout.setup && !layout.focus}
+            onClick={() =>
+              setLayout((current) => ({
+                ...current,
+                focus: false,
+                setup: current.focus || !current.setup,
+              }))
+            }
+          >
+            <PanelRight size={16} />
+            <span>{workspace === "design" ? "Inspector" : "Setup"}</span>
+          </button>
+          <button
+            aria-label={layout.focus ? "Exit focus view" : "Focus 3D view"}
+            aria-pressed={layout.focus}
+            onClick={() =>
+              setLayout((current) => ({ ...current, focus: !current.focus }))
+            }
+          >
+            {layout.focus ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            <span>Focus view</span>
+          </button>
+          <button onClick={resetLayout}>
+            <RefreshCw size={14} /> Reset layout
+          </button>
+          {workspace === "flight" && (
+            <button
+              aria-pressed={mapVisible}
+              onClick={() => {
+                const stage =
+                  document.querySelector<HTMLElement>(".viewport-stage");
+                if (stage && stage.clientHeight < 280) setMapExpanded(true);
+                else setMapVisible((value) => !value);
+              }}
+            >
+              <MapPinned size={16} /> Flight map
+            </button>
+          )}
+        </div>
+        <button
+          className="page-tutorial"
+          aria-label="Tutorial"
+          onClick={() => {
+            setPlaying(false);
+            setTutorialTopic(workspace);
+          }}
+        >
+          <GraduationCap size={16} /> Tutorial{" "}
+          <span>{workspaces.find((w) => w.id === workspace)?.label}</span>
+        </button>
+      </div>
       {error && (
         <div className="error-banner" role="alert">
           <AlertTriangle size={16} />
@@ -850,8 +1146,23 @@ export default function App() {
           </button>
         </div>
       )}
-      <div className="main-layout">
-        <aside className="project-sidebar">
+      <div
+        className="main-layout"
+        data-assembly-open={layout.assembly && !layout.focus}
+        data-setup-open={layout.setup && !layout.focus}
+        data-focus={layout.focus}
+        style={
+          {
+            "--assembly-width": `${layout.assemblyWidth}px`,
+            "--setup-width": `${layout.setupWidth}px`,
+          } as React.CSSProperties
+        }
+      >
+        <aside
+          className="project-sidebar"
+          aria-label="Rocket assembly"
+          hidden={!layout.assembly || layout.focus}
+        >
           <div className="section-heading">
             <span>ROCKET ASSEMBLY</span>
             <span className="count">{project?.components.length || 0}</span>
@@ -973,7 +1284,23 @@ export default function App() {
             </div>
           </div>
         </aside>
-        <main className="workspace-main">
+        <PanelDivider
+          label="Resize assembly panel"
+          value={layout.assemblyWidth}
+          min={190}
+          max={380}
+          onChange={(assemblyWidth) =>
+            setLayout((current) => ({ ...current, assemblyWidth }))
+          }
+        />
+        <main
+          className="workspace-main"
+          style={{
+            gridTemplateRows: layout.focus
+              ? "auto minmax(0, 1fr)"
+              : `auto minmax(150px, ${layout.sceneRatio}fr) 8px minmax(130px, 1fr)`,
+          }}
+        >
           <div className="workspace-title">
             <div>
               <div className="eyebrow">
@@ -996,21 +1323,55 @@ export default function App() {
                       ? "Beam and fin estimates + isotropic linear static tetrahedral FEA"
                       : "Transparent calculations. Useful insights. Explicit limitations."}
               </p>
+              <HelpTip
+                term={
+                  workspace === "cfd"
+                    ? "CFD"
+                    : workspace === "structure"
+                      ? "FEA"
+                      : workspace === "studies"
+                        ? "Parameter sweep"
+                        : workspace === "flight"
+                          ? "AGL"
+                          : "CG"
+                }
+              />
             </div>
-            <span className="scope-chip">
-              <span className="live-dot" />{" "}
-              {workspace === "cfd"
-                ? "EXPERIMENTAL SOLVER"
-                : workspace === "structure"
-                  ? "LINEAR ELASTIC"
-                  : "DESIGN & ANALYSIS"}
-            </span>
+            {workspace === "flight" ? (
+              <div className="launch-actions">
+                <button
+                  className="launch-button"
+                  aria-label="Launch"
+                  disabled={!canRun}
+                  onClick={launch}
+                >
+                  <Rocket size={23} /> Launch
+                </button>
+                <small>
+                  {activeJob && jobKind === "flight"
+                    ? "Calculating flight · playback starts when ready"
+                    : flight
+                      ? "Launch again to recalculate · drag to adjust camera"
+                      : "On launch rail · check motor and recovery"}
+                </small>
+              </div>
+            ) : (
+              <span className="scope-chip">
+                <span className="live-dot" />{" "}
+                {workspace === "cfd"
+                  ? "EXPERIMENTAL SOLVER"
+                  : workspace === "structure"
+                    ? "LINEAR ELASTIC"
+                    : "DESIGN & ANALYSIS"}
+              </span>
+            )}
           </div>
-          <div className="viewport-wrapper">
+          <div className="viewport-wrapper viewport-stage">
             <Viewport
               meshes={meshes}
               originalMeshes={originalMeshes}
               selectedId={selectedId}
+              alignmentPreview={alignmentProposal?.preview_mesh || null}
               onSelect={setSelectedId}
               overlays={overlays}
               aero={aero}
@@ -1021,7 +1382,43 @@ export default function App() {
               workspace={workspace}
               trajectory={flight?.trajectory || []}
               units={units}
+              launchConditions={flight?.inputs?.conditions || conditions}
+              playing={playing}
+              launchReady={!flight}
+              flightEvents={flight?.events || []}
             />
+            {workspace === "flight" && mapVisible && !mapExpanded && (
+              <div className="flight-map-overlay">
+                <header className="flight-map-window-top">
+                  <MapPinned size={14} />
+                  <strong>FLIGHT MAP</strong>
+                  <button
+                    aria-label="Expand flight map"
+                    onClick={() => setMapExpanded(true)}
+                  >
+                    <Maximize2 size={14} />
+                  </button>
+                  <button
+                    aria-label="Hide flight map"
+                    onClick={() => setMapVisible(false)}
+                  >
+                    <X size={14} />
+                  </button>
+                </header>
+                <FlightMap
+                  projectId={project?.id}
+                  trajectory={flight?.trajectory || []}
+                  events={flight?.events || []}
+                  flightRow={row}
+                  conditions={flight?.inputs?.conditions || conditions}
+                  units={units}
+                  onSeek={(time) => {
+                    setPlayTime(time);
+                    setPlaying(false);
+                  }}
+                />
+              </div>
+            )}
             <div className="view-toolbar">
               <div className="toolbar-group">
                 <span>OVERLAYS</span>
@@ -1092,976 +1489,290 @@ export default function App() {
               )}
             </div>
           </div>
-          {activeJob && (
-            <div className="job-progress">
-              <div className="job-top">
-                <div>
-                  <span className="spinner" />
-                  <strong>{jobKind.replace("_", " ").toUpperCase()}</strong>
-                  <span>{job?.message}</span>
-                </div>
-                <button
-                  onClick={() =>
-                    operation(async () =>
-                      setJob(await post(`/jobs/${job?.id}/cancel`)),
-                    )
-                  }
-                >
-                  <Square size={12} /> Cancel
-                </button>
-              </div>
-              <div
-                className="progress-track"
-                role="progressbar"
-                aria-label={`${jobKind.replaceAll("_", " ")} progress`}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round((job?.progress || 0) * 100)}
-              >
-                <div
-                  style={{
-                    width: `${Math.max(0, Math.min(1, job?.progress || 0)) * 100}%`,
-                  }}
-                />
-              </div>
-              <div className="job-meta">
-                <span>{fmt((job?.progress || 0) * 100, 0)}% complete</span>
-                <span>
-                  Elapsed {fmt(job?.elapsed_seconds, 0)}s · ETA{" "}
-                  {job?.eta_seconds === null
-                    ? "calculating…"
-                    : `${fmt(job?.eta_seconds, 0)}s`}
-                </span>
-              </div>
-            </div>
-          )}
-          {workspace === "design" && (
-            <>
-              <div className="design-summary">
-                <div className="section-heading">
-                  <span>DESIGN OVERVIEW</span>
-                  <button onClick={runAnalysis} disabled={!canRun}>
-                    <RefreshCw size={12} /> Calculate
+          <PanelDivider
+            label="Resize 3D view"
+            orientation="horizontal"
+            value={layout.sceneRatio}
+            min={0.6}
+            max={3}
+            onChange={(sceneRatio) =>
+              setLayout((current) => ({ ...current, sceneRatio }))
+            }
+          />
+          <section
+            className="workspace-results"
+            aria-label="Results and flight playback"
+            hidden={layout.focus}
+          >
+            {activeJob && (
+              <div className="job-progress">
+                <div className="job-top">
+                  <div>
+                    <span className="spinner" />
+                    <strong>{jobKind.replace("_", " ").toUpperCase()}</strong>
+                    <span>{job?.message}</span>
+                  </div>
+                  <button
+                    onClick={() =>
+                      operation(async () => {
+                        await post(`/jobs/${job?.id}/cancel`);
+                      })
+                    }
+                  >
+                    <Square size={12} /> Cancel
                   </button>
                 </div>
-                <div className="metrics-row">
-                  <Metric
-                    label="Loaded mass"
-                    value={
-                      aero
-                        ? displayValue(aero.mass_kg, "mass", units)
-                        : undefined
-                    }
-                    unit={unitLabel("mass", units)}
-                  />
-                  <Metric
-                    label="Center of gravity"
-                    value={
-                      aero
-                        ? displayValue(aero.cg_m, "length", units)
-                        : undefined
-                    }
-                    unit={unitLabel("length", units)}
-                    color="#e3b777"
-                  />
-                  <Metric
-                    label="Center of pressure"
-                    value={
-                      typeof aero?.cp_m === "number"
-                        ? displayValue(aero.cp_m, "length", units)
-                        : undefined
-                    }
-                    unit={unitLabel("length", units)}
-                    color="#71c8c1"
-                  />
-                  <Metric
-                    label="Static margin"
-                    value={aero?.stability_calibers}
-                    unit="cal"
-                  />
-                  <Metric
-                    label="Components"
-                    value={project?.components.length}
-                    unit="parts"
+                <div
+                  role="progressbar"
+                  aria-label={`${jobKind.replaceAll("_", " ")} progress`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={
+                    job?.progress_basis === "convergence_unknown"
+                      ? undefined
+                      : Math.round((job?.progress || 0) * 100)
+                  }
+                  className={`progress-track ${job?.progress_basis === "convergence_unknown" ? "indeterminate" : ""}`}
+                >
+                  <div
+                    style={{
+                      width: `${Math.max(0, Math.min(1, job?.progress || 0)) * 100}%`,
+                    }}
                   />
                 </div>
-              </div>
-              <div className="design-callout">
-                <span className="callout-icon">
-                  <Link2 size={18} />
-                </span>
-                <div>
-                  <strong>Flight design meets real geometry.</strong>
-                  <p>
-                    Select a component, import your STEP or STL file, then align
-                    and attach it in Geometry. Keep the original shape available
-                    for comparison.
-                  </p>
+                <div className="job-meta">
+                  <span>
+                    {job?.progress_basis === "convergence_unknown"
+                      ? "Convergence pending · completion time unknown"
+                      : `${fmt((job?.progress || 0) * 100, 0)}% ${job?.progress_basis === "budget_usage" ? "budget used" : "complete"}`}
+                  </span>
+                  <span>
+                    Elapsed {fmt(job?.elapsed_seconds, 0)}s ·{" "}
+                    {job?.progress_basis === "budget_usage"
+                      ? "Budget ETA"
+                      : "ETA"}{" "}
+                    {job?.eta_seconds === null
+                      ? job?.progress_basis === "convergence_unknown"
+                        ? "unknown"
+                        : "calculating…"
+                      : `${fmt(job?.eta_seconds, 0)}s`}
+                  </span>
                 </div>
-                <button onClick={() => setDesignTab("geometry")}>
-                  Geometry tools <ArrowRight size={14} />
-                </button>
               </div>
-              {(project?.import_warnings?.length || 0) > 0 && (
-                <div className="warning-list">
-                  <AlertTriangle size={15} />
-                  <div>
-                    <strong>Import notes</strong>
-                    {project?.import_warnings.map((w, i) => (
-                      <p key={i}>{w}</p>
-                    ))}
+            )}
+            {workspace === "design" && (
+              <>
+                <div className="design-summary">
+                  <div className="section-heading">
+                    <span>DESIGN OVERVIEW</span>
+                    <button onClick={runAnalysis} disabled={!canRun}>
+                      <RefreshCw size={12} /> Calculate
+                    </button>
                   </div>
-                </div>
-              )}
-              <Fidelity data={aero} />
-            </>
-          )}
-          {workspace === "aero" && (
-            <div className="analysis-results">
-              <div className="section-heading">
-                <span>AERODYNAMIC RESULTS</span>
-                <span className="result-tag">
-                  {aero ? "EMPIRICAL ESTIMATE" : "READY TO ANALYZE"}
-                </span>
-              </div>
-              {aero ? (
-                <>
-                  {aero.cp_valid === false && (
-                    <div className="warning-list">
-                      <AlertTriangle size={15} />
-                      <div>
-                        <strong>
-                          Center of pressure and stability are outside this
-                          model's validity.
-                        </strong>
-                        <p>
-                          Barrowman stability is provisional outside small-angle
-                          subsonic flow and does not resolve external CAD. A
-                          validated geometry-specific aerodynamic polar can
-                          supply coefficients. Review all warnings before
-                          interpreting results.
-                        </p>
-                      </div>
-                    </div>
-                  )}
                   <div className="metrics-row">
-                    <Metric label="Drag coefficient" value={aero.cd} />
                     <Metric
-                      label="Drag force"
-                      value={displayValue(aero.drag_n, "force", units)}
-                      unit={unitLabel("force", units)}
+                      label="Loaded mass"
+                      value={
+                        aero
+                          ? displayValue(aero.mass_kg, "mass", units)
+                          : undefined
+                      }
+                      unit={unitLabel("mass", units)}
                     />
                     <Metric
-                      label="Normal force"
-                      value={displayValue(aero.normal_force_n, "force", units)}
-                      unit={unitLabel("force", units)}
+                      label="Center of gravity"
+                      value={
+                        aero
+                          ? displayValue(aero.cg_m, "length", units)
+                          : undefined
+                      }
+                      unit={unitLabel("length", units)}
+                      color="#e3b777"
                     />
                     <Metric
-                      label="Resultant airspeed"
-                      value={displayValue(aero.speed_m_s, "speed", units)}
-                      unit={unitLabel("speed", units)}
-                    />
-                    <Metric
-                      label="Dynamic pressure"
-                      value={displayValue(
-                        aero.dynamic_pressure_pa,
-                        "pressure",
-                        units,
-                      )}
-                      unit={unitLabel("pressure", units)}
+                      label="Center of pressure"
+                      value={
+                        typeof aero?.cp_m === "number"
+                          ? displayValue(aero.cp_m, "length", units)
+                          : undefined
+                      }
+                      unit={unitLabel("length", units)}
+                      color="#71c8c1"
                     />
                     <Metric
                       label="Static margin"
-                      value={aero.stability_calibers}
+                      value={aero?.stability_calibers}
                       unit="cal"
-                      color={
-                        aero.stability_calibers < 1 ? "#ed927e" : "#75cabe"
-                      }
+                    />
+                    <Metric
+                      label="Components"
+                      value={project?.components.length}
+                      unit="parts"
                     />
                   </div>
-                  <Fidelity data={aero} />
-                  <div className="phase-row">
-                    <span>
-                      Effective incidence:{" "}
-                      {fmt(aero.effective_angle_of_attack_deg)}° AoA ·{" "}
-                      {fmt(aero.effective_sideslip_deg)}° sideslip · Force
-                      arrows use schematic lengths.
-                    </span>
-                  </div>
-                  {aero.component_breakdown_valid === false && (
-                    <div className="warning-list">
-                      <AlertTriangle size={15} />
-                      <div>
-                        <strong>
-                          Component drag breakdown is unavailable for the
-                          imported whole-rocket polar.
-                        </strong>
-                        <p>
-                          The table shows reference-model contributions; they do
-                          not sum to the supplied-polar total.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Component</th>
-                          <th>Mass</th>
-                          <th>Drag / coefficient</th>
-                          <th>Normal load</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {aero.components?.map((c: any, i: number) => (
-                          <tr
-                            key={i}
-                            onClick={() =>
-                              setSelectedId(c.component_id || c.id)
-                            }
-                          >
-                            <td>
-                              {c.name ||
-                                project?.components.find(
-                                  (p) => p.id === c.component_id,
-                                )?.name ||
-                                c.kind}
-                            </td>
-                            <td>
-                              {quantity(c.mass_kg ?? c.mass, "mass", units)}
-                            </td>
-                            <td>
-                              {typeof c.drag_n === "number"
-                                ? quantity(c.drag_n, "force", units)
-                                : fmt(
-                                    c.cd ??
-                                      c.cd_contribution ??
-                                      c.drag_coefficient,
-                                    4,
-                                  )}
-                            </td>
-                            <td>
-                              {quantity(c.normal_force_n, "force", units)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              ) : (
-                <Empty icon={Wind} title="Make the invisible measurable.">
-                  Set your test conditions and run an aerodynamic analysis to
-                  see drag, stability, center of pressure, and component
-                  loading.
-                </Empty>
-              )}
-            </div>
-          )}
-          {workspace === "flight" && (
-            <div className="flight-results">
-              {flight ? (
-                <>
-                  <div className="playback">
-                    <button
-                      className="play-button"
-                      aria-label={
-                        playing
-                          ? "Pause flight playback"
-                          : "Play flight playback"
-                      }
-                      onClick={() => {
-                        if (playTime >= flight.trajectory.at(-1)?.time)
-                          setPlayTime(0);
-                        setPlaying((p) => !p);
-                      }}
-                    >
-                      {playing ? <Pause size={17} /> : <Play size={17} />}
-                    </button>
-                    <div className="timeline">
-                      <div className="timeline-label">
-                        <span>FLIGHT PLAYBACK</span>
-                        <strong>
-                          {fmt(playTime, 2)} <small>s</small>
-                          <span>
-                            / {fmt(flight.trajectory.at(-1)?.time, 1)} s
-                          </span>
-                        </strong>
-                      </div>
-                      <input
-                        type="range"
-                        aria-label="Flight timeline"
-                        min={0}
-                        max={flight.trajectory.at(-1)?.time || 1}
-                        step={0.01}
-                        value={playTime}
-                        onChange={(e) => {
-                          setPlayTime(Number(e.target.value));
-                          setPlaying(false);
-                        }}
-                      />
-                      <div className="event-markers">
-                        {flight.events?.map((e: any, i: number) => (
-                          <button
-                            key={i}
-                            title={`${e.name} at ${fmt(e.time)} s`}
-                            onClick={() => {
-                              setPlayTime(e.time);
-                              setPlaying(false);
-                            }}
-                          >
-                            <span
-                              style={{
-                                background: i % 2 ? "#72c9c1" : "#ddae73",
-                              }}
-                            />
-                            {e.name.replaceAll("_", " ")}{" "}
-                            <small>{fmt(e.time, 1)}s</small>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <select
-                      aria-label="Playback speed"
-                      value={playSpeed}
-                      onChange={(e) => setPlaySpeed(Number(e.target.value))}
-                    >
-                      {[0.25, 1, 2, 5, 10].map((s) => (
-                        <option value={s} key={s}>
-                          {s}×
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="metrics-row">
-                    <Metric
-                      label="Altitude"
-                      value={
-                        row
-                          ? displayValue(row.altitude, "length", units)
-                          : undefined
-                      }
-                      unit={unitLabel("length", units)}
-                    />
-                    <Metric
-                      label="Velocity"
-                      value={
-                        row
-                          ? displayValue(row.velocity, "speed", units)
-                          : undefined
-                      }
-                      unit={unitLabel("speed", units)}
-                    />
-                    <Metric
-                      label="Acceleration"
-                      value={
-                        row
-                          ? displayValue(
-                              row.acceleration,
-                              "acceleration",
-                              units,
-                            )
-                          : undefined
-                      }
-                      unit={unitLabel("acceleration", units)}
-                    />
-                    <Metric label="Mach" value={row?.mach} />
-                    <Metric
-                      label="Dynamic pressure"
-                      value={
-                        row
-                          ? displayValue(
-                              row.dynamic_pressure,
-                              "pressure",
-                              units,
-                            )
-                          : undefined
-                      }
-                      unit={unitLabel("pressure", units)}
-                    />
-                    <Metric
-                      label="Estimated flight stress"
-                      value={
-                        row?.stress != null
-                          ? displayValue(row.stress, "stress", units)
-                          : undefined
-                      }
-                      unit={unitLabel("stress", units)}
-                    />
-                  </div>
-                  <div className="phase-row">
-                    <span className="phase-badge">{row?.phase}</span>
-                    <span>
-                      Stability {fmt(row?.stability)} cal · Thrust{" "}
-                      {quantity(row?.thrust, "force", units)} · Drag{" "}
-                      {quantity(row?.drag, "force", units)} · Mass{" "}
-                      {quantity(row?.mass, "mass", units)}
-                    </span>
-                  </div>
-                  <FlightCharts
-                    trajectory={flight.trajectory}
-                    units={units}
-                    time={playTime}
-                  />
-                  <Fidelity data={flight} currentConditions={conditions} />
-                  <div className="export-row">
-                    <button onClick={() => exportResult("flight", "csv")}>
-                      <Download size={14} /> Flight data CSV
-                    </button>
-                    <button onClick={() => exportResult("flight", "html")}>
-                      <Download size={14} /> Engineering report
-                    </button>
-                    <button onClick={() => exportRunProject("flight")}>
-                      <FileBox size={14} /> Run input project
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <Empty
-                  icon={Orbit}
-                  title="The complete flight, at your fingertips."
-                >
-                  Assign a motor curve and recovery configuration, set your
-                  launch conditions, then simulate. Scrub the timeline to
-                  inspect rail exit, burnout, maximum Q, apogee, and deployment.
-                </Empty>
-              )}
-            </div>
-          )}
-          {workspace === "structure" && (
-            <div className="analysis-results">
-              <div className="section-heading">
-                <span>STRUCTURAL RESULTS</span>
-                <button onClick={runAnalysis} disabled={!canRun}>
-                  <RefreshCw size={12} /> Beam / fin estimates
-                </button>
-              </div>
-              {structural ? (
-                <>
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Component</th>
-                          <th>Stress</th>
-                          <th>Deflection</th>
-                          <th>Safety factor</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {structural.components?.map((c: any, i: number) => (
-                          <tr
-                            key={i}
-                            onClick={() => setSelectedId(c.component_id)}
-                          >
-                            <td>{c.name}</td>
-                            <td>
-                              {c.supported === false
-                                ? "Unavailable"
-                                : quantity(c.stress_pa, "stress", units)}
-                            </td>
-                            <td>
-                              {c.supported === false
-                                ? "Unavailable"
-                                : quantity(c.deflection_m, "length", units, 5)}
-                            </td>
-                            <td
-                              className={
-                                typeof c.safety_factor === "number" &&
-                                c.safety_factor < 1
-                                  ? "danger-text"
-                                  : ""
-                              }
-                            >
-                              {fmt(c.safety_factor)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <Fidelity data={structural} />
-                </>
-              ) : (
-                <Empty icon={Layers} title="Understand the load path.">
-                  Run beam and fin estimates for fast screening, or select a
-                  mesh component and run tetrahedral finite element analysis
-                  with an explicit clamp and load.
-                </Empty>
-              )}
-              {fea && (
-                <>
-                  <div className="section-heading">
-                    <span>FINITE ELEMENT SOLUTION</span>
-                    <span className="result-tag">ACTUAL SOLVER FIELD</span>
-                  </div>
-                  <div className="metrics-row">
-                    <Metric
-                      label="Peak von Mises"
-                      value={displayValue(
-                        fea.summary?.max_von_mises_pa ??
-                          (fea.von_mises_pa || [0]).reduce(
-                            (a: number, b: number) => Math.max(a, b),
-                            0,
-                          ),
-                        "stress",
-                        units,
-                      )}
-                      unit={unitLabel("stress", units)}
-                    />
-                    <Metric
-                      label="Maximum displacement"
-                      value={displayValue(
-                        fea.summary?.max_displacement_m,
-                        "length",
-                        units,
-                      )}
-                      unit={unitLabel("length", units)}
-                    />
-                    <Metric label="Nodes" value={fea.vertices?.length} />
-                    <Metric label="Tetrahedra" value={fea.tetrahedra?.length} />
-                    <Metric
-                      label="Safety factor"
-                      value={fea.summary?.safety_factor}
-                    />
-                    <Metric
-                      label="Strain energy"
-                      value={displayValue(
-                        fea.summary?.strain_energy_j,
-                        "energy",
-                        units,
-                      )}
-                      unit={unitLabel("energy", units)}
-                    />
-                    <Metric
-                      label="Equilibrium residual"
-                      value={fea.summary?.relative_equilibrium_residual}
-                    />
-                  </div>
-                  <Fidelity
-                    data={fea}
-                    currentConditions={conditions}
-                    currentOptions={feaRequestOptions(feaOptions)}
-                  />
-                  {fea.summary?.cfd_pressure_transfer && (
-                    <div className="warning-list">
-                      <Info size={15} />
-                      <div>
-                        <strong>One-way CFD pressure transfer</strong>
-                        <p>
-                          Mapped surface:{" "}
-                          {fmt(
-                            fea.summary.cfd_pressure_transfer
-                              .mapped_surface_area_fraction * 100,
-                            1,
-                          )}
-                          % · Mean transfer distance:{" "}
-                          {quantity(
-                            fea.summary.cfd_pressure_transfer
-                              .mean_transfer_distance_m,
-                            "length",
-                            units,
-                            5,
-                          )}{" "}
-                          · Maximum:{" "}
-                          {quantity(
-                            fea.summary.cfd_pressure_transfer
-                              .max_transfer_distance_m,
-                            "length",
-                            units,
-                            5,
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="export-row">
-                    <button onClick={() => exportResult("fea", "json")}>
-                      <Download size={14} /> Full solver data
-                    </button>
-                    <button onClick={() => exportResult("fea", "html")}>
-                      <Download size={14} /> FEA report
-                    </button>
-                    <button onClick={() => exportRunProject("fea")}>
-                      <FileBox size={14} /> Run input project
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          {workspace === "cfd" && (
-            <div className="analysis-results">
-              <div className="section-heading">
-                <span>FLOW SOLUTION</span>
-                <span className="result-tag">EXPERIMENTAL · INVISCID</span>
-              </div>
-              {cfd ? (
-                <>
-                  <div className="metrics-row">
-                    <Metric
-                      label="Pressure drag"
-                      value={displayValue(
-                        cfd.summary?.pressure_drag_n,
-                        "force",
-                        units,
-                      )}
-                      unit={unitLabel("force", units)}
-                    />
-                    <Metric
-                      label="Grid cells"
-                      value={cfd.summary?.cell_count}
-                    />
-                    <Metric label="Time steps" value={cfd.summary?.steps} />
-                    <Metric
-                      label="Flow time"
-                      value={cfd.summary?.physical_time_s}
-                      unit="s"
-                    />
-                    <Metric
-                      label="Convergence"
-                      value={cfd.summary?.converged ? "Reached" : "Not reached"}
-                      color={cfd.summary?.converged ? "#71c8be" : "#e0b176"}
-                    />
-                    <Metric
-                      label="Stop reason"
-                      value={String(
-                        cfd.summary?.status || "unknown",
-                      ).replaceAll("_", " ")}
-                      color="#e0b176"
-                    />
-                  </div>
-                  <Fidelity
-                    data={cfd}
-                    currentConditions={conditions}
-                    currentOptions={cfdOptions}
-                  />
-                  {cfd.summary?.aerodynamic_geometry_policy && (
-                    <div className="warning-list">
-                      <Info size={15} />
-                      <div>
-                        <strong>Exterior flow geometry</strong>
-                        <p>{cfd.summary.aerodynamic_geometry_policy}</p>
-                        <p>
-                          Exterior fluid cells:{" "}
-                          {fmt(cfd.summary.exterior_fluid_cells, 0)}
-                          {" · "}Enclosed nonflow cells:{" "}
-                          {fmt(cfd.summary.enclosed_nonflow_cells, 0)}
-                          {" · "}Source material mesh{" "}
-                          {cfd.summary.source_material_mesh_modified === false
-                            ? "preserved"
-                            : "see run inputs"}
-                          . Nonflow cells describe the flow mask, not material
-                          volume.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="chart-card">
-                    <h4>Convergence residuals · iteration history</h4>
-                    <Chart
-                      data={cfd.history || []}
-                      x="step"
-                      series={[
-                        {
-                          key: "residual",
-                          label: "Conservation",
-                          color: "#76c6c2",
-                        },
-                        {
-                          key: "wall_pressure_residual",
-                          label: "Wall pressure",
-                          color: "#e0b176",
-                        },
-                        {
-                          key: "force_residual",
-                          label: "Force",
-                          color: "#92aee4",
-                        },
-                        {
-                          key: "moment_residual",
-                          label: "Moment",
-                          color: "#c498da",
-                        },
-                      ]}
-                    />
-                  </div>
-                  <div className="export-row">
-                    <button onClick={() => exportResult("cfd", "json")}>
-                      <Download size={14} /> Flow solution JSON
-                    </button>
-                    <button onClick={() => exportResult("cfd", "html")}>
-                      <Download size={14} /> CFD report
-                    </button>
-                    <button onClick={() => exportRunProject("cfd")}>
-                      <FileBox size={14} /> Run input project
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <Empty
-                  icon={Activity}
-                  title="Explore flow around actual geometry."
-                >
-                  The Cartesian Euler solver computes inviscid compressible flow
-                  on a voxel grid. Display arrows and pressure samples from
-                  computed fields. This solver does not predict skin friction,
-                  turbulence, or validated transonic drag.
-                </Empty>
-              )}
-            </div>
-          )}
-          {workspace === "studies" && (
-            <div className="studies-results">
-              <div className="section-heading">
-                <span>DESIGN EXPLORATION</span>
-                <div className="segmented small">
-                  {["sweep", "monte_carlo", "comparison"].map((m) => (
-                    <button
-                      key={m}
-                      className={studyMode === m ? "active" : ""}
-                      onClick={() => setStudyMode(m)}
-                    >
-                      {m === "sweep"
-                        ? "Parameter sweep"
-                        : m === "monte_carlo"
-                          ? "Monte Carlo"
-                          : "Compare"}
-                    </button>
-                  ))}
                 </div>
-              </div>
-              {studyMode === "comparison" ? (
-                comparison ? (
-                  <>
-                    <Fidelity data={comparison} />
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Quantity</th>
-                            <th>Original geometry</th>
-                            <th>Current geometry</th>
-                            <th>Change</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[
-                            { key: "mass_kg", label: "Mass", kind: "mass" },
-                            {
-                              key: "cg_m",
-                              label: "Center of gravity",
-                              kind: "length",
-                            },
-                            {
-                              key: "cp_m",
-                              label: "Center of pressure",
-                              kind: "length",
-                            },
-                            {
-                              key: "stability_calibers",
-                              label: "Stability · cal",
-                            },
-                            { key: "cd", label: "Drag coefficient" },
-                            {
-                              key: "drag_n",
-                              label: "Drag force",
-                              kind: "force",
-                            },
-                          ].map((k) => (
-                            <tr key={k.key}>
-                              <td>{k.label}</td>
-                              <td>
-                                {k.kind
-                                  ? quantity(
-                                      comparison.original?.aero?.[k.key],
-                                      k.kind as Quantity,
-                                      units,
-                                    )
-                                  : fmt(comparison.original?.aero?.[k.key])}
-                              </td>
-                              <td>
-                                {k.kind
-                                  ? quantity(
-                                      comparison.replacement?.aero?.[k.key],
-                                      k.kind as Quantity,
-                                      units,
-                                    )
-                                  : fmt(comparison.replacement?.aero?.[k.key])}
-                              </td>
-                              <td className="accent-text">
-                                {k.kind
-                                  ? quantity(
-                                      comparison.deltas?.[k.key],
-                                      k.kind as Quantity,
-                                      units,
-                                    )
-                                  : fmt(comparison.deltas?.[k.key])}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                <div className="design-callout">
+                  <span className="callout-icon">
+                    <Link2 size={18} />
+                  </span>
+                  <div>
+                    <strong>Flight design meets real geometry.</strong>
+                    <p>
+                      Select a component, import your STEP or STL file, then
+                      align and attach it in Geometry. Keep the original shape
+                      available for comparison.
+                    </p>
+                  </div>
+                  <button onClick={() => setDesignTab("geometry")}>
+                    Geometry tools <ArrowRight size={14} />
+                  </button>
+                </div>
+                {(project?.import_warnings?.length || 0) > 0 && (
+                  <div className="warning-list">
+                    <AlertTriangle size={15} />
+                    <div>
+                      <strong>Import notes</strong>
+                      {project?.import_warnings.map((w, i) => (
+                        <p key={i}>{w}</p>
+                      ))}
                     </div>
-                    {comparison.original?.cfd && (
-                      <>
-                        <div className="metrics-row">
-                          <Metric
-                            label="Original CFD pressure drag"
-                            value={displayValue(
-                              comparison.original.cfd.summary.pressure_drag_n,
-                              "force",
-                              units,
-                            )}
-                            unit={unitLabel("force", units)}
-                          />
-                          <Metric
-                            label="Current CFD pressure drag"
-                            value={displayValue(
-                              comparison.replacement.cfd.summary
-                                .pressure_drag_n,
-                              "force",
-                              units,
-                            )}
-                            unit={unitLabel("force", units)}
-                          />
-                        </div>
-                        <div className="engineering-note">
-                          <AlertTriangle size={15} />
+                  </div>
+                )}
+                <Fidelity data={aero} />
+              </>
+            )}
+            {workspace === "aero" && (
+              <div className="analysis-results">
+                <div className="section-heading">
+                  <span>AERODYNAMIC RESULTS</span>
+                  <span className="result-tag">
+                    {aero ? "EMPIRICAL ESTIMATE" : "READY TO ANALYZE"}
+                  </span>
+                </div>
+                {aero ? (
+                  <>
+                    {aero.cp_valid === false && (
+                      <div className="warning-list">
+                        <AlertTriangle size={15} />
+                        <div>
+                          <strong>
+                            Center of pressure and stability are outside this
+                            model's validity.
+                          </strong>
                           <p>
-                            Original CFD:{" "}
-                            {comparison.original.cfd.summary.converged
-                              ? "numerically converged"
-                              : "not converged"}{" "}
-                            ({comparison.original.cfd.summary.status}). Current
-                            CFD:{" "}
-                            {comparison.replacement.cfd.summary.converged
-                              ? "numerically converged"
-                              : "not converged"}{" "}
-                            ({comparison.replacement.cfd.summary.status}).
-                            Pressure forces are experimental and unvalidated;
-                            they exclude skin friction.
+                            Barrowman stability is provisional outside
+                            small-angle subsonic flow and does not resolve
+                            external CAD. A validated geometry-specific
+                            aerodynamic polar can supply coefficients. Review
+                            all warnings before interpreting results.
                           </p>
                         </div>
-                      </>
+                      </div>
                     )}
-                    {(comparison.original?.flight ||
-                      comparison.replacement?.flight) && (
-                      <>
-                        <div className="section-heading">
-                          <span>GEOMETRY FLIGHT PERFORMANCE</span>
-                        </div>
-                        <div className="table-wrap">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>Quantity</th>
-                                <th>Original geometry</th>
-                                <th>Current geometry</th>
-                                <th>Change</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {[
-                                {
-                                  key: "apogee_m",
-                                  label: "Apogee AGL",
-                                  kind: "length",
-                                },
-                                {
-                                  key: "max_velocity_m_s",
-                                  label: "Maximum velocity",
-                                  kind: "speed",
-                                },
-                                {
-                                  key: "max_dynamic_pressure_pa",
-                                  label: "Maximum Q",
-                                  kind: "pressure",
-                                },
-                                {
-                                  key: "max_stress_pa",
-                                  label: "Estimated maximum stress",
-                                  kind: "stress",
-                                },
-                                {
-                                  key: "rail_exit_velocity_m_s",
-                                  label: "Rail exit velocity",
-                                  kind: "speed",
-                                },
-                              ].map((k) => (
-                                <tr key={k.key}>
-                                  <td>{k.label}</td>
-                                  <td>
-                                    {quantity(
-                                      comparison.original?.flight?.summary?.[
-                                        k.key
-                                      ],
-                                      k.kind as Quantity,
-                                      units,
-                                    )}
-                                  </td>
-                                  <td>
-                                    {quantity(
-                                      comparison.replacement?.flight?.summary?.[
-                                        k.key
-                                      ],
-                                      k.kind as Quantity,
-                                      units,
-                                    )}
-                                  </td>
-                                  <td>
-                                    {quantity(
-                                      comparison.flight_deltas?.[k.key],
-                                      k.kind as Quantity,
-                                      units,
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                        <p className="microcopy">
-                          Point-mass trajectories use each geometry's declared
-                          coefficient source. CAD mass changes apply; arbitrary
-                          surface drag changes require a geometry-bound supplied
-                          polar. Flight stress remains a quasi-static estimate.
-                        </p>
-                      </>
-                    )}
-                    <div className="section-heading">
-                      <span>FLIGHT CONFIGURATION COMPARISON</span>
+                    <div className="metrics-row">
+                      <Metric label="Drag coefficient" value={aero.cd} />
+                      <Metric
+                        label="Drag force"
+                        value={displayValue(aero.drag_n, "force", units)}
+                        unit={unitLabel("force", units)}
+                      />
+                      <Metric
+                        label="Normal force"
+                        value={displayValue(
+                          aero.normal_force_n,
+                          "force",
+                          units,
+                        )}
+                        unit={unitLabel("force", units)}
+                      />
+                      <Metric
+                        label="Resultant airspeed"
+                        value={displayValue(aero.speed_m_s, "speed", units)}
+                        unit={unitLabel("speed", units)}
+                      />
+                      <Metric
+                        label="Dynamic pressure"
+                        value={displayValue(
+                          aero.dynamic_pressure_pa,
+                          "pressure",
+                          units,
+                        )}
+                        unit={unitLabel("pressure", units)}
+                      />
+                      <Metric
+                        label="Static margin"
+                        value={aero.stability_calibers}
+                        unit="cal"
+                        color={
+                          aero.stability_calibers < 1 ? "#ed927e" : "#75cabe"
+                        }
+                      />
                     </div>
+                    <Fidelity data={aero} />
+                    <div className="phase-row">
+                      <span>
+                        Effective incidence:{" "}
+                        {fmt(aero.effective_angle_of_attack_deg)}° AoA ·{" "}
+                        {fmt(aero.effective_sideslip_deg)}° sideslip · Force
+                        arrows use schematic lengths.
+                      </span>
+                    </div>
+                    {aero.component_breakdown_valid === false && (
+                      <div className="warning-list">
+                        <AlertTriangle size={15} />
+                        <div>
+                          <strong>
+                            Component drag breakdown is unavailable for the
+                            imported whole-rocket polar.
+                          </strong>
+                          <p>
+                            The table shows reference-model contributions; they
+                            do not sum to the supplied-polar total.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <div className="table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>Configuration</th>
-                            <th>Loaded mass</th>
-                            <th>Static margin</th>
-                            <th>Drag</th>
+                            <th>Component</th>
+                            <th>Mass</th>
+                            <th>Drag / coefficient</th>
+                            <th>Normal load</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {comparison.configurations?.map((c: any) => (
-                            <tr key={c.configuration_id}>
-                              <td>{c.name}</td>
-                              {c.aero ? (
-                                <>
-                                  <td>
-                                    {quantity(c.aero.mass_kg, "mass", units)}
-                                  </td>
-                                  <td>{fmt(c.aero.stability_calibers)} cal</td>
-                                  <td>
-                                    {quantity(c.aero.drag_n, "force", units)}
-                                  </td>
-                                </>
-                              ) : (
-                                <td colSpan={3}>
-                                  {c.error || "Configuration unavailable"}
-                                </td>
-                              )}
+                          {aero.components?.map((c: any, i: number) => (
+                            <tr
+                              key={i}
+                              onClick={() =>
+                                setSelectedId(c.component_id || c.id)
+                              }
+                            >
+                              <td>
+                                {c.name ||
+                                  project?.components.find(
+                                    (p) => p.id === c.component_id,
+                                  )?.name ||
+                                  c.kind}
+                              </td>
+                              <td>
+                                {quantity(c.mass_kg ?? c.mass, "mass", units)}
+                              </td>
+                              <td>
+                                {typeof c.drag_n === "number"
+                                  ? quantity(c.drag_n, "force", units)
+                                  : fmt(
+                                      c.cd ??
+                                        c.cd_contribution ??
+                                        c.drag_coefficient,
+                                      4,
+                                    )}
+                              </td>
+                              <td>
+                                {quantity(c.normal_force_n, "force", units)}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -2069,117 +1780,928 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <Empty
-                    icon={GitCompareArrows}
-                    title="See the impact of real geometry."
-                  >
-                    Compare original OpenRocket geometry with attached CAD
-                    replacements. Empirical calculations retain explicit
-                    geometry validity limits; use the optional CFD comparison to
-                    resolve shape differences.
+                  <Empty icon={Wind} title="Make the invisible measurable.">
+                    Set your test conditions and run an aerodynamic analysis to
+                    see drag, stability, center of pressure, and component
+                    loading.
                   </Empty>
-                )
-              ) : study ? (
-                <>
-                  <Fidelity
-                    data={study}
-                    currentConditions={conditions}
-                    currentOptions={studyOptions}
-                  />
-                  <label className="inline-select">
-                    Plot metric
-                    <select
-                      value={studyMetric}
-                      onChange={(e) => setStudyMetric(e.target.value)}
-                    >
-                      {Object.keys(study.statistics || {}).map((k) => (
-                        <option key={k} value={k}>
-                          {k.replaceAll("_", " ")}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="chart-card">
-                    <h4>
-                      {study.parameter.replaceAll("_", " ")} vs{" "}
-                      {studyMetric.replaceAll("_", " ")} · SI values
-                    </h4>
-                    <Chart
-                      data={[...study.rows].sort((a, b) => a.value - b.value)}
-                      x="value"
-                      series={[
-                        {
-                          key: studyMetric,
-                          label: studyMetric,
-                          color: "#7acac0",
-                        },
-                      ]}
-                      height={190}
-                    />
-                  </div>
-                  <div className="metrics-row">
-                    <Metric
-                      label="Completed samples"
-                      value={study.rows.length}
-                    />
-                    <Metric
-                      label="Mean"
-                      value={study.statistics?.[studyMetric]?.mean}
-                    />
-                    <Metric
-                      label="Standard deviation"
-                      value={study.statistics?.[studyMetric]?.std}
-                    />
-                    <Metric
-                      label="5th percentile"
-                      value={study.statistics?.[studyMetric]?.p05}
-                    />
-                    <Metric
-                      label="95th percentile"
-                      value={study.statistics?.[studyMetric]?.p95}
-                    />
-                  </div>
-                  {study.failures?.length > 0 && (
-                    <div className="warning-list">
-                      <AlertTriangle size={15} />
-                      <div>
-                        <strong>
-                          {study.failures.length} excluded samples
-                        </strong>
-                        {study.failures.map((f: any, i: number) => (
-                          <p key={i}>
-                            Sample {f.index}: {f.error}
-                          </p>
-                        ))}
+                )}
+              </div>
+            )}
+            {workspace === "flight" && (
+              <div className="flight-results">
+                {flight ? (
+                  <>
+                    <div className="playback">
+                      <button
+                        className="play-button"
+                        aria-label={
+                          playing
+                            ? "Pause flight playback"
+                            : "Play flight playback"
+                        }
+                        onClick={() => {
+                          if (playTime >= flight.trajectory.at(-1)?.time)
+                            setPlayTime(0);
+                          setPlaying((p) => !p);
+                        }}
+                      >
+                        {playing ? <Pause size={17} /> : <Play size={17} />}
+                      </button>
+                      <div className="timeline">
+                        <div className="timeline-label">
+                          <span>FLIGHT PLAYBACK</span>
+                          <strong>
+                            {fmt(playTime, 2)} <small>s</small>
+                            <span>
+                              / {fmt(flight.trajectory.at(-1)?.time, 1)} s
+                            </span>
+                          </strong>
+                        </div>
+                        <input
+                          type="range"
+                          aria-label="Flight timeline"
+                          min={0}
+                          max={flight.trajectory.at(-1)?.time || 1}
+                          step={0.01}
+                          value={playTime}
+                          onChange={(e) => {
+                            setPlayTime(Number(e.target.value));
+                            setPlaying(false);
+                          }}
+                        />
+                        <div className="event-markers">
+                          {flight.events?.map((e: any, i: number) => (
+                            <button
+                              key={i}
+                              title={`${e.name} at ${fmt(e.time)} s`}
+                              onClick={() => {
+                                setPlayTime(e.time);
+                                setPlaying(false);
+                              }}
+                            >
+                              <span
+                                style={{
+                                  background: i % 2 ? "#72c9c1" : "#ddae73",
+                                }}
+                              />
+                              {e.name.replaceAll("_", " ")}{" "}
+                              <small>{fmt(e.time, 1)}s</small>
+                            </button>
+                          ))}
+                        </div>
                       </div>
+                      <select
+                        aria-label="Playback speed"
+                        value={playSpeed}
+                        onChange={(e) => setPlaySpeed(Number(e.target.value))}
+                      >
+                        {[0.25, 1, 2, 5, 10].map((s) => (
+                          <option value={s} key={s}>
+                            {s}×
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                  )}
-                  <div className="export-row">
-                    <button onClick={() => exportResult(studyMode, "csv")}>
-                      <Download size={14} /> Study CSV
-                    </button>
-                    <button onClick={() => exportResult(studyMode, "html")}>
-                      <Download size={14} /> Study report
-                    </button>
-                    <button onClick={() => exportRunProject(studyMode)}>
-                      <FileBox size={14} /> Run input project
-                    </button>
+                    <div className="metrics-row">
+                      <Metric
+                        label="Altitude"
+                        value={
+                          row
+                            ? displayValue(row.altitude, "length", units)
+                            : undefined
+                        }
+                        unit={unitLabel("length", units)}
+                      />
+                      <Metric
+                        label="Velocity"
+                        value={
+                          row
+                            ? displayValue(row.velocity, "speed", units)
+                            : undefined
+                        }
+                        unit={unitLabel("speed", units)}
+                      />
+                      <Metric
+                        label="Acceleration"
+                        value={
+                          row
+                            ? displayValue(
+                                row.acceleration,
+                                "acceleration",
+                                units,
+                              )
+                            : undefined
+                        }
+                        unit={unitLabel("acceleration", units)}
+                      />
+                      <Metric label="Mach" value={row?.mach} />
+                      <Metric
+                        label="Dynamic pressure"
+                        value={
+                          row
+                            ? displayValue(
+                                row.dynamic_pressure,
+                                "pressure",
+                                units,
+                              )
+                            : undefined
+                        }
+                        unit={unitLabel("pressure", units)}
+                      />
+                      <Metric
+                        label="Estimated flight stress"
+                        value={
+                          row?.stress != null
+                            ? displayValue(row.stress, "stress", units)
+                            : undefined
+                        }
+                        unit={unitLabel("stress", units)}
+                      />
+                    </div>
+                    <div className="phase-row">
+                      <span className="phase-badge">{row?.phase}</span>
+                      <span>
+                        Stability {fmt(row?.stability)} cal · Thrust{" "}
+                        {quantity(row?.thrust, "force", units)} · Drag{" "}
+                        {quantity(row?.drag, "force", units)} · Mass{" "}
+                        {quantity(row?.mass, "mass", units)}
+                      </span>
+                    </div>
+                    <FlightCharts
+                      trajectory={flight.trajectory}
+                      units={units}
+                      time={playTime}
+                    />
+                    <Fidelity data={flight} currentConditions={conditions} />
+                    <div className="export-row">
+                      <button onClick={() => exportResult("flight", "csv")}>
+                        <Download size={14} /> Flight data CSV
+                      </button>
+                      <button onClick={() => exportResult("flight", "html")}>
+                        <Download size={14} /> Engineering report
+                      </button>
+                      <button onClick={() => exportRunProject("flight")}>
+                        <FileBox size={14} /> Run input project
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <Empty
+                    icon={Orbit}
+                    title="The complete flight, at your fingertips."
+                  >
+                    Assign a motor curve and recovery configuration, set your
+                    launch conditions, then simulate. Scrub the timeline to
+                    inspect rail exit, burnout, maximum Q, apogee, and
+                    deployment.
+                  </Empty>
+                )}
+              </div>
+            )}
+            {workspace === "structure" && (
+              <div className="analysis-results">
+                <div className="section-heading">
+                  <span>STRUCTURAL RESULTS</span>
+                  <button onClick={runAnalysis} disabled={!canRun}>
+                    <RefreshCw size={12} /> Beam / fin estimates
+                  </button>
+                </div>
+                {structural ? (
+                  <>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Component</th>
+                            <th>Stress</th>
+                            <th>Deflection</th>
+                            <th>Safety factor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {structural.components?.map((c: any, i: number) => (
+                            <tr
+                              key={i}
+                              onClick={() => setSelectedId(c.component_id)}
+                            >
+                              <td>{c.name}</td>
+                              <td>
+                                {c.supported === false
+                                  ? "Unavailable"
+                                  : quantity(c.stress_pa, "stress", units)}
+                              </td>
+                              <td>
+                                {c.supported === false
+                                  ? "Unavailable"
+                                  : quantity(
+                                      c.deflection_m,
+                                      "length",
+                                      units,
+                                      5,
+                                    )}
+                              </td>
+                              <td
+                                className={
+                                  typeof c.safety_factor === "number" &&
+                                  c.safety_factor < 1
+                                    ? "danger-text"
+                                    : ""
+                                }
+                              >
+                                {fmt(c.safety_factor)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <Fidelity data={structural} />
+                  </>
+                ) : (
+                  <Empty icon={Layers} title="Understand the load path.">
+                    Run beam and fin estimates for fast screening, or select a
+                    mesh component and run tetrahedral finite element analysis
+                    with an explicit clamp and load.
+                  </Empty>
+                )}
+                {fea && (
+                  <>
+                    <div className="section-heading">
+                      <span>FINITE ELEMENT SOLUTION</span>
+                      <span className="result-tag">ACTUAL SOLVER FIELD</span>
+                    </div>
+                    <div className="metrics-row">
+                      <Metric
+                        label="Peak von Mises"
+                        value={displayValue(
+                          fea.summary?.max_von_mises_pa ??
+                            (fea.von_mises_pa || [0]).reduce(
+                              (a: number, b: number) => Math.max(a, b),
+                              0,
+                            ),
+                          "stress",
+                          units,
+                        )}
+                        unit={unitLabel("stress", units)}
+                      />
+                      <Metric
+                        label="Maximum displacement"
+                        value={displayValue(
+                          fea.summary?.max_displacement_m,
+                          "length",
+                          units,
+                        )}
+                        unit={unitLabel("length", units)}
+                      />
+                      <Metric label="Nodes" value={fea.vertices?.length} />
+                      <Metric
+                        label="Tetrahedra"
+                        value={fea.tetrahedra?.length}
+                      />
+                      <Metric
+                        label="Safety factor"
+                        value={fea.summary?.safety_factor}
+                      />
+                      <Metric
+                        label="Strain energy"
+                        value={displayValue(
+                          fea.summary?.strain_energy_j,
+                          "energy",
+                          units,
+                        )}
+                        unit={unitLabel("energy", units)}
+                      />
+                      <Metric
+                        label="Equilibrium residual"
+                        value={fea.summary?.relative_equilibrium_residual}
+                      />
+                    </div>
+                    <Fidelity
+                      data={fea}
+                      currentConditions={conditions}
+                      currentOptions={feaRequestOptions(feaOptions)}
+                    />
+                    {fea.summary?.cfd_pressure_transfer && (
+                      <div className="warning-list">
+                        <Info size={15} />
+                        <div>
+                          <strong>One-way CFD pressure transfer</strong>
+                          <p>
+                            Mapped surface:{" "}
+                            {fmt(
+                              fea.summary.cfd_pressure_transfer
+                                .mapped_surface_area_fraction * 100,
+                              1,
+                            )}
+                            % · Mean transfer distance:{" "}
+                            {quantity(
+                              fea.summary.cfd_pressure_transfer
+                                .mean_transfer_distance_m,
+                              "length",
+                              units,
+                              5,
+                            )}{" "}
+                            · Maximum:{" "}
+                            {quantity(
+                              fea.summary.cfd_pressure_transfer
+                                .max_transfer_distance_m,
+                              "length",
+                              units,
+                              5,
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="export-row">
+                      <button onClick={() => exportResult("fea", "json")}>
+                        <Download size={14} /> Full solver data
+                      </button>
+                      <button onClick={() => exportResult("fea", "html")}>
+                        <Download size={14} /> FEA report
+                      </button>
+                      <button onClick={() => exportRunProject("fea")}>
+                        <FileBox size={14} /> Run input project
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {workspace === "cfd" && (
+              <div className="analysis-results">
+                <div className="section-heading">
+                  <span>FLOW SOLUTION</span>
+                  <span className="result-tag">EXPERIMENTAL · INVISCID</span>
+                </div>
+                {cfd ? (
+                  <>
+                    <div className="metrics-row">
+                      <Metric
+                        label={
+                          cfd.summary?.converged
+                            ? "Inviscid pressure drag"
+                            : "Partial pressure force"
+                        }
+                        value={displayValue(
+                          cfd.summary?.pressure_drag_n,
+                          "force",
+                          units,
+                        )}
+                        unit={unitLabel("force", units)}
+                      />
+                      <Metric
+                        label="Grid cells"
+                        value={cfd.summary?.cell_count}
+                      />
+                      <Metric label="Time steps" value={cfd.summary?.steps} />
+                      <Metric
+                        label="Flow time"
+                        value={cfd.summary?.physical_time_s}
+                        unit="s"
+                      />
+                      <Metric
+                        label="Convergence"
+                        value={
+                          cfd.summary?.converged ? "Reached" : "Not reached"
+                        }
+                        color={cfd.summary?.converged ? "#71c8be" : "#e0b176"}
+                      />
+                      <Metric
+                        label="Stop reason"
+                        value={String(
+                          cfd.summary?.status || "unknown",
+                        ).replaceAll("_", " ")}
+                        color="#e0b176"
+                      />
+                    </div>
+                    {!cfd.summary?.converged && (
+                      <div className="engineering-note">
+                        <AlertTriangle size={16} />
+                        <p>
+                          This is a partial flow field. Its pressure force is
+                          not a converged steady-flow prediction. Review the
+                          stop reason and residual history before continuing.
+                        </p>
+                      </div>
+                    )}
+                    <div
+                      className="solver-readiness"
+                      aria-label="CFD run diagnostics"
+                    >
+                      <h4>Run diagnostics</h4>
+                      <p>
+                        Actual calculation: <strong>{cfd.backend}</strong> ·{" "}
+                        {fmt(cfd.summary?.measured_steps_per_second, 1)} steps/s
+                      </p>
+                      <p>
+                        Domain crossings:{" "}
+                        {fmt(cfd.summary?.domain_crossings_completed, 3)} ·
+                        minimum convergence flow time{" "}
+                        {fmt(cfd.summary?.minimum_convergence_time_s, 5)} s{" "}
+                        {cfd.summary?.minimum_convergence_time_reached
+                          ? "reached"
+                          : "not reached"}
+                        .
+                      </p>
+                      {cfd.summary?.estimated_seconds_to_minimum_flow_time !=
+                        null && (
+                        <p>
+                          Measured-speed estimate to minimum flow time:{" "}
+                          {fmt(
+                            cfd.summary.estimated_seconds_to_minimum_flow_time,
+                            0,
+                          )}{" "}
+                          computer seconds. Residual convergence can take
+                          longer; this is not an accuracy guarantee.
+                        </p>
+                      )}
+                      {cfd.summary?.median_solid_cross_section_cells && (
+                        <p>
+                          Median body cross-section:{" "}
+                          {cfd.summary.median_solid_cross_section_cells
+                            .map((n: number) => fmt(n, 1))
+                            .join(" × ")}{" "}
+                          cells. Thin fins may need more resolution.
+                        </p>
+                      )}
+                    </div>
+                    <Fidelity
+                      data={cfd}
+                      currentConditions={conditions}
+                      currentOptions={cfdOptions}
+                    />
+                    {cfd.summary?.aerodynamic_geometry_policy && (
+                      <div className="warning-list">
+                        <Info size={15} />
+                        <div>
+                          <strong>Exterior flow geometry</strong>
+                          <p>{cfd.summary.aerodynamic_geometry_policy}</p>
+                          <p>
+                            Exterior fluid cells:{" "}
+                            {fmt(cfd.summary.exterior_fluid_cells, 0)}
+                            {" · "}Enclosed nonflow cells:{" "}
+                            {fmt(cfd.summary.enclosed_nonflow_cells, 0)}
+                            {" · "}Source material mesh{" "}
+                            {cfd.summary.source_material_mesh_modified === false
+                              ? "preserved"
+                              : "see run inputs"}
+                            . Nonflow cells describe the flow mask, not material
+                            volume.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="chart-card">
+                      <h4>Convergence residuals · iteration history</h4>
+                      <Chart
+                        data={cfd.history || []}
+                        x="step"
+                        series={[
+                          {
+                            key: "residual",
+                            label: "Conservation",
+                            color: "#76c6c2",
+                          },
+                          {
+                            key: "wall_pressure_residual",
+                            label: "Wall pressure",
+                            color: "#e0b176",
+                          },
+                          {
+                            key: "force_residual",
+                            label: "Force",
+                            color: "#92aee4",
+                          },
+                          {
+                            key: "moment_residual",
+                            label: "Moment",
+                            color: "#c498da",
+                          },
+                        ]}
+                      />
+                    </div>
+                    <div className="export-row">
+                      <button onClick={() => exportResult("cfd", "json")}>
+                        <Download size={14} /> Flow solution JSON
+                      </button>
+                      <button onClick={() => exportResult("cfd", "html")}>
+                        <Download size={14} /> CFD report
+                      </button>
+                      <button onClick={() => exportRunProject("cfd")}>
+                        <FileBox size={14} /> Run input project
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <Empty
+                    icon={Activity}
+                    title="Explore flow around actual geometry."
+                  >
+                    The Cartesian Euler solver computes inviscid compressible
+                    flow on a voxel grid. Display arrows and pressure samples
+                    from computed fields. This solver does not predict skin
+                    friction, turbulence, or validated transonic drag.
+                  </Empty>
+                )}
+              </div>
+            )}
+            {workspace === "studies" && (
+              <div className="studies-results">
+                <div className="section-heading">
+                  <span>DESIGN EXPLORATION</span>
+                  <div className="segmented small">
+                    {["sweep", "monte_carlo", "comparison"].map((m) => (
+                      <button
+                        key={m}
+                        className={studyMode === m ? "active" : ""}
+                        onClick={() => setStudyMode(m)}
+                      >
+                        {m === "sweep"
+                          ? "Parameter sweep"
+                          : m === "monte_carlo"
+                            ? "Monte Carlo"
+                            : "Compare"}
+                      </button>
+                    ))}
                   </div>
-                </>
-              ) : (
-                <Empty
-                  icon={FlaskConical}
-                  title="Build confidence across the envelope."
-                >
-                  Sweep speed, Mach, wind, altitude, or angle of attack. Run a
-                  reproducible Monte Carlo study to quantify input sensitivity
-                  using the same documented solver assumptions.
-                </Empty>
-              )}
-            </div>
-          )}
+                </div>
+                {studyMode === "comparison" ? (
+                  comparison ? (
+                    <>
+                      <Fidelity data={comparison} />
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Quantity</th>
+                              <th>Original geometry</th>
+                              <th>Current geometry</th>
+                              <th>Change</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[
+                              { key: "mass_kg", label: "Mass", kind: "mass" },
+                              {
+                                key: "cg_m",
+                                label: "Center of gravity",
+                                kind: "length",
+                              },
+                              {
+                                key: "cp_m",
+                                label: "Center of pressure",
+                                kind: "length",
+                              },
+                              {
+                                key: "stability_calibers",
+                                label: "Stability · cal",
+                              },
+                              { key: "cd", label: "Drag coefficient" },
+                              {
+                                key: "drag_n",
+                                label: "Drag force",
+                                kind: "force",
+                              },
+                            ].map((k) => (
+                              <tr key={k.key}>
+                                <td>{k.label}</td>
+                                <td>
+                                  {k.kind
+                                    ? quantity(
+                                        comparison.original?.aero?.[k.key],
+                                        k.kind as Quantity,
+                                        units,
+                                      )
+                                    : fmt(comparison.original?.aero?.[k.key])}
+                                </td>
+                                <td>
+                                  {k.kind
+                                    ? quantity(
+                                        comparison.replacement?.aero?.[k.key],
+                                        k.kind as Quantity,
+                                        units,
+                                      )
+                                    : fmt(
+                                        comparison.replacement?.aero?.[k.key],
+                                      )}
+                                </td>
+                                <td className="accent-text">
+                                  {k.kind
+                                    ? quantity(
+                                        comparison.deltas?.[k.key],
+                                        k.kind as Quantity,
+                                        units,
+                                      )
+                                    : fmt(comparison.deltas?.[k.key])}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {comparison.original?.cfd && (
+                        <>
+                          <div className="metrics-row">
+                            <Metric
+                              label={
+                                comparison.original.cfd.summary.converged
+                                  ? "Original CFD pressure drag"
+                                  : "Original partial pressure force"
+                              }
+                              value={displayValue(
+                                comparison.original.cfd.summary.pressure_drag_n,
+                                "force",
+                                units,
+                              )}
+                              unit={unitLabel("force", units)}
+                            />
+                            <Metric
+                              label={
+                                comparison.replacement.cfd.summary.converged
+                                  ? "Current CFD pressure drag"
+                                  : "Current partial pressure force"
+                              }
+                              value={displayValue(
+                                comparison.replacement.cfd.summary
+                                  .pressure_drag_n,
+                                "force",
+                                units,
+                              )}
+                              unit={unitLabel("force", units)}
+                            />
+                          </div>
+                          <div className="engineering-note">
+                            <AlertTriangle size={15} />
+                            <p>
+                              Original CFD:{" "}
+                              {comparison.original.cfd.summary.converged
+                                ? "numerically converged"
+                                : "not converged"}{" "}
+                              ({comparison.original.cfd.summary.status}).
+                              Current CFD:{" "}
+                              {comparison.replacement.cfd.summary.converged
+                                ? "numerically converged"
+                                : "not converged"}{" "}
+                              ({comparison.replacement.cfd.summary.status}).
+                              Pressure forces are experimental and unvalidated;
+                              they exclude skin friction.
+                            </p>
+                          </div>
+                        </>
+                      )}
+                      {(comparison.original?.flight ||
+                        comparison.replacement?.flight) && (
+                        <>
+                          <div className="section-heading">
+                            <span>GEOMETRY FLIGHT PERFORMANCE</span>
+                          </div>
+                          <div className="table-wrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Quantity</th>
+                                  <th>Original geometry</th>
+                                  <th>Current geometry</th>
+                                  <th>Change</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[
+                                  {
+                                    key: "apogee_m",
+                                    label: "Apogee AGL",
+                                    kind: "length",
+                                  },
+                                  {
+                                    key: "max_velocity_m_s",
+                                    label: "Maximum velocity",
+                                    kind: "speed",
+                                  },
+                                  {
+                                    key: "max_dynamic_pressure_pa",
+                                    label: "Maximum Q",
+                                    kind: "pressure",
+                                  },
+                                  {
+                                    key: "max_stress_pa",
+                                    label: "Estimated maximum stress",
+                                    kind: "stress",
+                                  },
+                                  {
+                                    key: "rail_exit_velocity_m_s",
+                                    label: "Rail exit velocity",
+                                    kind: "speed",
+                                  },
+                                ].map((k) => (
+                                  <tr key={k.key}>
+                                    <td>{k.label}</td>
+                                    <td>
+                                      {quantity(
+                                        comparison.original?.flight?.summary?.[
+                                          k.key
+                                        ],
+                                        k.kind as Quantity,
+                                        units,
+                                      )}
+                                    </td>
+                                    <td>
+                                      {quantity(
+                                        comparison.replacement?.flight
+                                          ?.summary?.[k.key],
+                                        k.kind as Quantity,
+                                        units,
+                                      )}
+                                    </td>
+                                    <td>
+                                      {quantity(
+                                        comparison.flight_deltas?.[k.key],
+                                        k.kind as Quantity,
+                                        units,
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <p className="microcopy">
+                            Point-mass trajectories use each geometry's declared
+                            coefficient source. CAD mass changes apply;
+                            arbitrary surface drag changes require a
+                            geometry-bound supplied polar. Flight stress remains
+                            a quasi-static estimate.
+                          </p>
+                        </>
+                      )}
+                      <div className="section-heading">
+                        <span>FLIGHT CONFIGURATION COMPARISON</span>
+                      </div>
+                      <div className="table-wrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Configuration</th>
+                              <th>Loaded mass</th>
+                              <th>Static margin</th>
+                              <th>Drag</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {comparison.configurations?.map((c: any) => (
+                              <tr key={c.configuration_id}>
+                                <td>{c.name}</td>
+                                {c.aero ? (
+                                  <>
+                                    <td>
+                                      {quantity(c.aero.mass_kg, "mass", units)}
+                                    </td>
+                                    <td>
+                                      {fmt(c.aero.stability_calibers)} cal
+                                    </td>
+                                    <td>
+                                      {quantity(c.aero.drag_n, "force", units)}
+                                    </td>
+                                  </>
+                                ) : (
+                                  <td colSpan={3}>
+                                    {c.error || "Configuration unavailable"}
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ) : (
+                    <Empty
+                      icon={GitCompareArrows}
+                      title="See the impact of real geometry."
+                    >
+                      Compare original OpenRocket geometry with attached CAD
+                      replacements. Empirical calculations retain explicit
+                      geometry validity limits; use the optional CFD comparison
+                      to resolve shape differences.
+                    </Empty>
+                  )
+                ) : study ? (
+                  <>
+                    <Fidelity
+                      data={study}
+                      currentConditions={conditions}
+                      currentOptions={studyOptions}
+                    />
+                    <label className="inline-select">
+                      Plot metric
+                      <select
+                        value={studyMetric}
+                        onChange={(e) => setStudyMetric(e.target.value)}
+                      >
+                        {Object.keys(study.statistics || {}).map((k) => (
+                          <option key={k} value={k}>
+                            {k.replaceAll("_", " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="chart-card">
+                      <h4>
+                        {study.parameter.replaceAll("_", " ")} vs{" "}
+                        {studyMetric.replaceAll("_", " ")} · SI values
+                      </h4>
+                      <Chart
+                        data={[...study.rows].sort((a, b) => a.value - b.value)}
+                        x="value"
+                        series={[
+                          {
+                            key: studyMetric,
+                            label: studyMetric,
+                            color: "#7acac0",
+                          },
+                        ]}
+                        height={190}
+                      />
+                    </div>
+                    <div className="metrics-row">
+                      <Metric
+                        label="Completed samples"
+                        value={study.rows.length}
+                      />
+                      <Metric
+                        label="Mean"
+                        value={study.statistics?.[studyMetric]?.mean}
+                      />
+                      <Metric
+                        label="Standard deviation"
+                        value={study.statistics?.[studyMetric]?.std}
+                      />
+                      <Metric
+                        label="5th percentile"
+                        value={study.statistics?.[studyMetric]?.p05}
+                      />
+                      <Metric
+                        label="95th percentile"
+                        value={study.statistics?.[studyMetric]?.p95}
+                      />
+                    </div>
+                    {study.failures?.length > 0 && (
+                      <div className="warning-list">
+                        <AlertTriangle size={15} />
+                        <div>
+                          <strong>
+                            {study.failures.length} excluded samples
+                          </strong>
+                          {study.failures.map((f: any, i: number) => (
+                            <p key={i}>
+                              Sample {f.index}: {f.error}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="export-row">
+                      <button onClick={() => exportResult(studyMode, "csv")}>
+                        <Download size={14} /> Study CSV
+                      </button>
+                      <button onClick={() => exportResult(studyMode, "html")}>
+                        <Download size={14} /> Study report
+                      </button>
+                      <button onClick={() => exportRunProject(studyMode)}>
+                        <FileBox size={14} /> Run input project
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <Empty
+                    icon={FlaskConical}
+                    title="Build confidence across the envelope."
+                  >
+                    Sweep speed, Mach, wind, altitude, or angle of attack. Run a
+                    reproducible Monte Carlo study to quantify input sensitivity
+                    using the same documented solver assumptions.
+                  </Empty>
+                )}
+              </div>
+            )}
+          </section>
         </main>
-        <aside className="inspector">
+        <PanelDivider
+          label="Resize setup panel"
+          value={layout.setupWidth}
+          min={280}
+          max={480}
+          reverse
+          onChange={(setupWidth) =>
+            setLayout((current) => ({ ...current, setupWidth }))
+          }
+        />
+        <aside
+          className="inspector"
+          aria-label="Design and simulation setup"
+          hidden={!layout.setup || layout.focus}
+        >
           <fieldset
             key={`${settings.restoreGeneration}:${workspace}:${workspace === "design" ? selectedId : ""}`}
             className="inspector-lock"
@@ -2510,7 +3032,9 @@ export default function App() {
                     <p className="panel-intro">
                       Attach real CAD to{" "}
                       <strong>{draft?.name || "a selected component"}</strong>.
-                      Translation is relative to the component's axial position.
+                      Automatic alignment centers it on the part's axis and
+                      places its front at the selected part's front. Only this
+                      part is replaced.
                     </p>
                     <div className="field-pair">
                       <FieldSelect
@@ -2605,6 +3129,138 @@ export default function App() {
                           selector controls STL and other mesh formats.
                         </p>
                         <div className="subheading">ALIGNMENT</div>
+                        <Toggle
+                          label="Automatic alignment"
+                          value={automaticAlignment}
+                          onChange={() =>
+                            setAutomaticAlignment(!automaticAlignment)
+                          }
+                        />
+                        {automaticAlignment && (
+                          <>
+                            <div className="field-pair">
+                              <FieldSelect
+                                label="Source axis"
+                                value={alignmentOptions.axis}
+                                onChange={(axis) =>
+                                  setAlignmentOptions({
+                                    ...alignmentOptions,
+                                    axis,
+                                  })
+                                }
+                              >
+                                <option value="auto">
+                                  Automatic · principal axis
+                                </option>
+                                <option value="x">CAD X</option>
+                                <option value="y">CAD Y</option>
+                                <option value="z">CAD Z</option>
+                              </FieldSelect>
+                              <FieldSelect
+                                label="Placement anchor"
+                                value={alignmentOptions.anchor}
+                                onChange={(anchor) =>
+                                  setAlignmentOptions({
+                                    ...alignmentOptions,
+                                    anchor,
+                                  })
+                                }
+                              >
+                                <option value="start">
+                                  Front of selected part
+                                </option>
+                                <option value="center">
+                                  Center of selected part
+                                </option>
+                              </FieldSelect>
+                            </div>
+                            <Toggle
+                              label="Reverse direction"
+                              value={alignmentOptions.reverse}
+                              onChange={() =>
+                                setAlignmentOptions({
+                                  ...alignmentOptions,
+                                  reverse: !alignmentOptions.reverse,
+                                })
+                              }
+                            />
+                            <Toggle
+                              label="Fit selected length"
+                              value={alignmentOptions.fit_length}
+                              onChange={() =>
+                                setAlignmentOptions({
+                                  ...alignmentOptions,
+                                  fit_length: !alignmentOptions.fit_length,
+                                })
+                              }
+                            />
+                            <p className="microcopy">
+                              Physical CAD dimensions are preserved by default.
+                              Fit selected length uniformly scales all
+                              dimensions and changes material volume and mass.
+                            </p>
+                            <button
+                              className="secondary wide"
+                              disabled={!assetId || alignmentPending || busy}
+                              onClick={() =>
+                                setAlignmentGeneration((n) => n + 1)
+                              }
+                            >
+                              <RefreshCw size={14} /> Preview automatic
+                              alignment
+                            </button>
+                            {alignmentPending && (
+                              <p role="status">Calculating CAD placement…</p>
+                            )}
+                            {alignmentError && (
+                              <p className="danger-text" role="alert">
+                                {alignmentError}
+                              </p>
+                            )}
+                            {alignmentProposal && (
+                              <div
+                                className="solver-readiness"
+                                aria-label="CAD alignment preview"
+                              >
+                                <h4>Placement preview</h4>
+                                <p>
+                                  Amber geometry previews the selected
+                                  replacement. Axis:{" "}
+                                  {alignmentProposal.source_axis
+                                    ?.map((n: number) => fmt(n, 2))
+                                    .join(", ")}{" "}
+                                  · scale {fmt(alignmentProposal.scale, 4)}.
+                                </p>
+                                {alignmentProposal.interfaces?.map(
+                                  (item: any, i: number) => (
+                                    <p key={i}>
+                                      {item.neighbor_name}: {item.status}
+                                      {item.axial_separation_m != null
+                                        ? ` · ${quantity(Math.abs(item.axial_separation_m), "length", units)}`
+                                        : ""}
+                                    </p>
+                                  ),
+                                )}
+                                {alignmentProposal.warnings?.map(
+                                  (warning: string, i: number) => (
+                                    <p
+                                      key={`warning-${i}`}
+                                      className="warning-text"
+                                    >
+                                      {warning}
+                                    </p>
+                                  ),
+                                )}
+                                <p>
+                                  The rest of the assembly and source CAD remain
+                                  unchanged. Aligned touching parts form the
+                                  exterior flow assembly; structural joints and
+                                  Boolean unions are not inferred.
+                                </p>
+                              </div>
+                            )}
+                          </>
+                        )}
                         <div className="triple-fields">
                           {["X", "Y", "Z"].map((axis, i) => (
                             <SIField
@@ -2615,6 +3271,7 @@ export default function App() {
                               value={draft.transform.translation[i]}
                               onChange={(n) => {
                                 if (n === null) return;
+                                setAutomaticAlignment(false);
                                 const t = [...draft.transform.translation];
                                 t[i] = n;
                                 setDraft({
@@ -2637,6 +3294,7 @@ export default function App() {
                               unit="°"
                               onChange={(n) => {
                                 if (n === null) return;
+                                setAutomaticAlignment(false);
                                 const r = [...draft.transform.rotation];
                                 r[i] = n;
                                 setDraft({
@@ -2653,13 +3311,14 @@ export default function App() {
                         <NumberField
                           label="Uniform scale"
                           value={draft.transform.scale}
-                          onChange={(n) =>
-                            n !== null &&
+                          onChange={(n) => {
+                            if (n === null) return;
+                            setAutomaticAlignment(false);
                             setDraft({
                               ...draft,
                               transform: { ...draft.transform, scale: n },
-                            })
-                          }
+                            });
+                          }}
                           min={0.000001}
                         />
                         <FieldSelect
@@ -2681,7 +3340,12 @@ export default function App() {
                         </FieldSelect>
                         <button
                           className="primary wide"
-                          disabled={!assetId || busy}
+                          disabled={
+                            !assetId ||
+                            busy ||
+                            (automaticAlignment &&
+                              (alignmentPending || !alignmentProposal))
+                          }
                           onClick={() =>
                             operation(async () => {
                               assertValidNumberFields();
@@ -2691,10 +3355,14 @@ export default function App() {
                                   component_id: draft.id,
                                   asset_id: assetId,
                                   transform: draft.transform,
+                                  auto_align: automaticAlignment,
+                                  alignment_options: alignmentOptions,
                                   geometry_mode: "replacement",
                                 }),
                               );
                               clearResults();
+                              setAlignmentProposal(null);
+                              setAutomaticAlignment(false);
                               setNotice(
                                 "Detailed geometry attached. Inspect alignment and rerun analyses.",
                               );
@@ -2780,6 +3448,15 @@ export default function App() {
                       disabled={busy}
                     >
                       <Upload size={14} /> Import .eng / .rse motor
+                    </button>
+                    <button
+                      className="secondary wide"
+                      disabled={busy || activeJob || !project}
+                      onClick={() =>
+                        project && setMotorSearchProject(project.id)
+                      }
+                    >
+                      <Globe size={15} /> Find motor online
                     </button>
                     {configurationDraft?.motor_id && (
                       <>
@@ -3065,6 +3742,16 @@ export default function App() {
                           {selected?.name || "select a component"}
                         </strong>
                       </p>
+                      <Toggle
+                        label="Automatic mesh sizing"
+                        value={feaOptions.auto_mesh}
+                        onChange={() =>
+                          setFeaOptions({
+                            ...feaOptions,
+                            auto_mesh: !feaOptions.auto_mesh,
+                          })
+                        }
+                      />
                       <div className="field-pair">
                         <SIField
                           label="Target mesh size"
@@ -3073,7 +3760,11 @@ export default function App() {
                           value={feaOptions.mesh_size}
                           onChange={(n) =>
                             n !== null &&
-                            setFeaOptions({ ...feaOptions, mesh_size: n })
+                            setFeaOptions({
+                              ...feaOptions,
+                              mesh_size: n,
+                              auto_mesh: false,
+                            })
                           }
                         />
                         <NumberField
@@ -3084,7 +3775,120 @@ export default function App() {
                             setFeaOptions({ ...feaOptions, max_elements: n })
                           }
                           step={1000}
+                          min={500}
+                          max={300000}
                         />
+                      </div>
+                      <div
+                        className="solver-readiness"
+                        aria-label="Mesh readiness"
+                      >
+                        <h4>
+                          Mesh readiness{" "}
+                          <HelpTip
+                            term="Mesh readiness"
+                            definition="Checks the actual selected solid, material, known wall thickness, mesh size, and element-budget screen before volume meshing. Passing this check does not validate support conditions, loads, mesh convergence, or CAD wall thickness."
+                          />
+                        </h4>
+                        {feaPreflightPending && (
+                          <p role="status">
+                            Checking actual component geometry…
+                          </p>
+                        )}
+                        {feaPreflightError && (
+                          <p role="alert" className="danger-text">
+                            {feaPreflightError}
+                          </p>
+                        )}
+                        {feaPreflight && (
+                          <>
+                            <p>
+                              {feaPreflight.can_run
+                                ? "Ready for volume meshing; review loads and supports."
+                                : "Resolve the setup below before solid FEA."}
+                            </p>
+                            {feaPreflight.recommended_mesh_size_m != null && (
+                              <p>
+                                Suggested mesh:{" "}
+                                <strong>
+                                  {quantity(
+                                    feaPreflight.recommended_mesh_size_m,
+                                    "length",
+                                    units,
+                                  )}
+                                </strong>{" "}
+                                · estimated{" "}
+                                {fmt(
+                                  feaPreflight.recommended_estimated_elements,
+                                  0,
+                                )}{" "}
+                                elements. Actual count can be higher.
+                              </p>
+                            )}
+                            {feaPreflight.cad_thickness_unknown && (
+                              <p className="warning-text">
+                                CAD wall thickness is unknown. Measure thin
+                                features and demonstrate mesh convergence;
+                                automatic sizing cannot guarantee bending
+                                resolution.
+                              </p>
+                            )}
+                            {feaPreflight.errors?.map(
+                              (message: string, i: number) => (
+                                <p key={i} className="danger-text">
+                                  {message}
+                                </p>
+                              ),
+                            )}
+                            <button
+                              className="secondary wide"
+                              disabled={
+                                !feaPreflight.recommended_within_maximum_budget ||
+                                busy ||
+                                activeJob
+                              }
+                              onClick={() =>
+                                setFeaOptions({
+                                  ...feaOptions,
+                                  auto_mesh: true,
+                                  mesh_size:
+                                    feaPreflight.recommended_mesh_size_m,
+                                  max_elements:
+                                    feaPreflight.recommended_max_elements,
+                                })
+                              }
+                            >
+                              <Check size={14} /> Use recommended mesh
+                            </button>
+                            {feaPreflight.recommended_max_elements != null && (
+                              <p className="microcopy">
+                                This applies the suggested size and an element
+                                limit of{" "}
+                                {fmt(feaPreflight.recommended_max_elements, 0)}.
+                                It may increase the current budget.
+                              </p>
+                            )}
+                            {feaPreflight.geometry_valid &&
+                              feaPreflight.recommended_mesh_size_m != null &&
+                              !feaPreflight.recommended_within_maximum_budget && (
+                                <p>
+                                  A thickness-resolving whole-part solid mesh
+                                  exceeds the supported budget. Prepare a
+                                  smaller physical CAD part externally or use
+                                  supported engineering estimates.
+                                </p>
+                              )}
+                            <button
+                              className="secondary wide"
+                              disabled={
+                                !feaPreflight.beam_estimate_available || !canRun
+                              }
+                              onClick={runAnalysis}
+                            >
+                              <Gauge size={14} /> Use beam/fin estimates
+                            </button>
+                          </>
+                        )}
                       </div>
                       <FieldSelect
                         label="Clamp type"
@@ -3094,7 +3898,19 @@ export default function App() {
                         }
                       >
                         <option value="plane">Coordinate plane</option>
-                        <option value="radial_root">
+                        <option
+                          value="radial_root"
+                          disabled={
+                            selected?.geometry_mode === "replacement" ||
+                            ![
+                              "fin",
+                              "finset",
+                              "trapezoidfinset",
+                              "freeformfinset",
+                              "ellipticalfinset",
+                            ].includes(selected?.kind || "")
+                          }
+                        >
                           Fin radial root · original fins
                         </option>
                       </FieldSelect>
@@ -3139,13 +3955,17 @@ export default function App() {
                         </option>
                         <option
                           value="cfd_pressure"
-                          disabled={!cfd?.summary?.converged}
+                          disabled={
+                            !cfd?.summary?.converged ||
+                            cfd?.job_status === "cancelled"
+                          }
                         >
                           Converged CFD surface pressure
                         </option>
                       </FieldSelect>
                       {feaOptions.load_mode === "cfd_pressure" &&
-                        !cfd?.summary?.converged && (
+                        (!cfd?.summary?.converged ||
+                          cfd?.job_status === "cancelled") && (
                           <p className="field-error">
                             Rerun and converge the source CFD job in this
                             session before transferring its pressure. A saved
@@ -3251,6 +4071,23 @@ export default function App() {
                       <div className="subheading">
                         <Activity size={13} /> CARTESIAN EULER SOLVER
                       </div>
+                      <Toggle
+                        label="Run until converged"
+                        value={cfdOptions.run_until_converged}
+                        onChange={() =>
+                          setCfdOptions({
+                            ...cfdOptions,
+                            run_until_converged:
+                              !cfdOptions.run_until_converged,
+                          })
+                        }
+                      />
+                      <p className="microcopy">
+                        Convergence mode ignores step and flow-time ceilings.
+                        Wall time still applies unless set to 0. Cancel retains
+                        actual partial CFD fields. Convergence does not
+                        establish accuracy.
+                      </p>
                       <div className="field-pair">
                         <NumberField
                           label="Lengthwise grid cells"
@@ -3263,6 +4100,7 @@ export default function App() {
                         />
                         <NumberField
                           label="Maximum steps"
+                          disabled={cfdOptions.run_until_converged}
                           value={cfdOptions.max_steps}
                           onChange={(n) =>
                             n !== null &&
@@ -3340,6 +4178,7 @@ export default function App() {
                       />
                       <NumberField
                         label="Flow-through times"
+                        disabled={cfdOptions.run_until_converged}
                         value={cfdOptions.flow_through_times}
                         onChange={(n) =>
                           n !== null &&
@@ -3358,6 +4197,9 @@ export default function App() {
                           setCfdOptions({ ...cfdOptions, max_wall_seconds: n })
                         }
                         unit="s"
+                        min={0}
+                        max={86400}
+                        hint="Computer time budget, separate from simulated flow time. 0 disables this limit. With Run until converged enabled and 0 here, the job continues until numerical convergence or cancellation; completion time is unknown."
                       />
                       <FieldSelect
                         label="Compute backend"
@@ -3370,6 +4212,12 @@ export default function App() {
                         <option value="cpu">CPU · NumPy</option>
                         <option value="gpu">GPU · NVIDIA CUDA</option>
                       </FieldSelect>
+                      <button
+                        className="secondary wide"
+                        onClick={() => setGpuDiagnosticsOpen(true)}
+                      >
+                        <Gauge size={14} /> GPU diagnostics
+                      </button>
                       <div className="engineering-note">
                         <AlertTriangle size={15} />
                         <p>
@@ -3623,13 +4471,36 @@ export default function App() {
                     </button>
                   )}
                   {workspace === "flight" && (
-                    <button
-                      className="primary wide run-button"
-                      onClick={() => startJob("flight")}
-                      disabled={!canRun}
-                    >
-                      <Play size={15} /> Simulate full flight
-                    </button>
+                    <div className="launch-setup-actions">
+                      <button
+                        className="secondary wide"
+                        onClick={() => {
+                          setWorkspace("design");
+                          setDesignTab("configuration");
+                          setLayout((current) => ({
+                            ...current,
+                            focus: false,
+                            setup: true,
+                          }));
+                        }}
+                      >
+                        <Settings2 size={15} /> Motor & recovery setup
+                      </button>
+                      <button
+                        className="secondary wide"
+                        disabled={!project || busy || activeJob}
+                        onClick={() =>
+                          project && setMotorSearchProject(project.id)
+                        }
+                      >
+                        <Globe size={15} /> Find motor online
+                      </button>
+                      <p className="microcopy">
+                        Use the red Launch button above the 3D view.
+                        Calculations finish before automatic flight playback
+                        begins.
+                      </p>
+                    </div>
                   )}
                   {workspace === "structure" && (
                     <button
@@ -3647,8 +4518,11 @@ export default function App() {
                       disabled={
                         !canRun ||
                         !selectedId ||
+                        feaPreflightPending ||
+                        !feaPreflight?.can_run ||
                         (feaOptions.load_mode === "cfd_pressure" &&
-                          !cfd?.summary?.converged)
+                          (!cfd?.summary?.converged ||
+                            cfd?.job_status === "cancelled"))
                       }
                     >
                       <Play size={15} /> Run finite element analysis
@@ -3714,6 +4588,101 @@ export default function App() {
           onClose={() => setGuideOpen(false)}
           onNavigate={setWorkspace}
         />
+      )}
+      {tutorialTopic && (
+        <Tutorials
+          key={tutorialTopic}
+          workspace={workspace}
+          initialTour={tutorialTopic}
+          onClose={() => setTutorialTopic(null)}
+          onWorkspace={setWorkspace}
+        />
+      )}
+      {motorSearchProject && (
+        <MotorSearch
+          projectId={motorSearchProject}
+          onClose={() => setMotorSearchProject(null)}
+          onImported={async (imported) => {
+            await acceptProject(imported);
+            clearResults();
+            setMotorSearchProject(null);
+            setWorkspace("design");
+            setDesignTab("configuration");
+            setLayout((current) => ({ ...current, focus: false, setup: true }));
+            setNotice(
+              "Motor curve imported. Select it and click Apply flight setup to assign it.",
+            );
+          }}
+        />
+      )}
+      {mapExpanded && (
+        <WindowDialog
+          title="Local flight map"
+          onClose={() => setMapExpanded(false)}
+        >
+          <FlightMap
+            projectId={project?.id}
+            trajectory={flight?.trajectory || []}
+            events={flight?.events || []}
+            flightRow={row}
+            conditions={flight?.inputs?.conditions || conditions}
+            units={units}
+            onSeek={(time) => {
+              setPlayTime(time);
+              setPlaying(false);
+            }}
+          />
+        </WindowDialog>
+      )}
+      {gpuDiagnosticsOpen && (
+        <WindowDialog
+          title="GPU diagnostics"
+          onClose={() => setGpuDiagnosticsOpen(false)}
+        >
+          <div className="gpu-diagnostics">
+            <p>
+              Numerical CUDA acceleration requires an NVIDIA GPU. This checks
+              allocation and a real compiled calculation; 3D rendering uses a
+              separate graphics path.
+            </p>
+            <h3>
+              {health?.capabilities?.gpu_compute
+                ? "CUDA calculation available"
+                : "CUDA calculation unavailable"}
+            </h3>
+            {health?.capabilities?.gpu_diagnostics?.devices?.map(
+              (device: any) => (
+                <p key={device.index}>
+                  <strong>{device.name}</strong> ·{" "}
+                  {fmt(device.memory_total_bytes / 1024 ** 3, 1)} GiB · compute
+                  capability {device.compute_capability}
+                </p>
+              ),
+            )}
+            {health?.capabilities?.gpu_diagnostics && (
+              <dl>
+                {Object.entries(health.capabilities.gpu_diagnostics)
+                  .filter(([key]) => !["available", "devices"].includes(key))
+                  .map(([key, value]) => (
+                    <div key={key}>
+                      <dt>{key.replaceAll("_", " ")}</dt>
+                      <dd>
+                        {typeof value === "object"
+                          ? JSON.stringify(value)
+                          : String(value ?? "Unknown")}
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+            )}
+            <p>
+              Automatic backend falls back to CPU and records the reason.
+              Explicit GPU selection reports a failure instead. Restart the
+              application after changing a driver so diagnostics are checked
+              again.
+            </p>
+          </div>
+        </WindowDialog>
       )}
     </div>
   );

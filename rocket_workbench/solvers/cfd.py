@@ -41,7 +41,12 @@ def primitives(state, gamma: float = GAMMA, xp=np):
 
 
 def euler_flux(state, axis: int, gamma: float = GAMMA, xp=np):
-    rho, velocity, pressure, _ = primitives(state, gamma, xp)
+    _, velocity, pressure, _ = primitives(state, gamma, xp)
+    return _primitive_flux(state, axis, velocity, pressure)
+
+
+def _primitive_flux(state, axis, velocity, pressure):
+    """Euler flux from already recovered primitives; avoids duplicate grid work."""
     normal_velocity = velocity[..., axis]
     flux = state * normal_velocity[..., None]
     flux[..., axis + 1] += pressure
@@ -51,10 +56,10 @@ def euler_flux(state, axis: int, gamma: float = GAMMA, xp=np):
 
 def rusanov_flux(left, right, axis: int, gamma: float = GAMMA, xp=np):
     """Local Lax-Friedrichs/Rusanov numerical flux, shared by adjacent cells."""
-    _, vl, _, cl = primitives(left, gamma, xp)
-    _, vr, _, cr = primitives(right, gamma, xp)
+    _, vl, pl, cl = primitives(left, gamma, xp)
+    _, vr, pr, cr = primitives(right, gamma, xp)
     speed = xp.maximum(xp.abs(vl[..., axis]) + cl, xp.abs(vr[..., axis]) + cr)
-    return 0.5 * (euler_flux(left, axis, gamma, xp) + euler_flux(right, axis, gamma, xp)) - 0.5 * speed[..., None] * (right - left)
+    return 0.5 * (_primitive_flux(left, axis, vl, pl) + _primitive_flux(right, axis, vr, pr)) - 0.5 * speed[..., None] * (right - left)
 
 
 def wall_riemann_pressure(density, pressure, velocity_toward_wall, gamma=GAMMA, xp=np):
@@ -148,17 +153,14 @@ def _backend(requested: str):
     if requested not in {"auto", "cpu", "gpu"}:
         raise ValueError("CFD backend must be auto, cpu or gpu.")
     if requested != "cpu":
-        try:
+        from ..backenddiagnostics import cuda_diagnostics
+        diagnostics = cuda_diagnostics()
+        if diagnostics["available"]:
             import cupy as cp
-            if cp.cuda.runtime.getDeviceCount() > 0:
-                cp.asarray([1.0]).sum().item()  # Verify device allocation/runtime too.
-                return cp, "cupy-cuda", []
-        except Exception as exc:
-            if requested == "gpu":
-                raise RuntimeError("GPU CFD requires a supported NVIDIA GPU, driver and bundled CuPy CUDA runtime. Select CPU or automatic backend.") from exc
+            return cp, "cupy-cuda", []
         if requested == "gpu":
-            raise RuntimeError("No NVIDIA CUDA GPU is available for CFD. Select CPU or automatic backend.")
-        return np, "numpy-cpu", ["CUDA execution unavailable; the actual CFD calculation used the CPU."]
+            raise RuntimeError(f"GPU CFD requires a supported NVIDIA GPU, driver and bundled CuPy CUDA runtime. CUDA check failed at {diagnostics['probe_stage']}: {diagnostics['reason']} Select CPU or automatic backend.")
+        return np, "numpy-cpu", [f"CUDA execution unavailable; the actual CFD calculation used the CPU. CUDA check failed at {diagnostics['probe_stage']}: {diagnostics['reason']}"]
     return np, "numpy-cpu", []
 
 
@@ -255,13 +257,60 @@ def _voxel_domain(mesh, options, *, diagnostics=None):
     for x_slice in solid:
         occupied = np.argwhere(x_slice)
         if len(occupied):
-            widths.append(float(np.min(np.ptp(occupied, axis=0) + 1)))
-    diameter_cells = float(np.median(widths))
+            widths.append(np.ptp(occupied, axis=0) + 1)
+    median_widths = np.median(widths, axis=0)
+    diameter_cells = float(np.min(median_widths))
+    if diagnostics is not None:
+        diagnostics.update(geometry_extent_m=extent.tolist(),
+                           geometry_extent_cells=(extent / spacing).tolist(),
+                           median_solid_cross_section_cells=median_widths.tolist(),
+                           cross_section_axes=["Y", "Z"])
     if diameter_cells < 8:
         warnings.append(f"The median solid cross-section spans only {diameter_cells:.1f} transverse cells. Refine substantially before interpreting pressure forces.")
     warnings.append("Fins or gaps thinner than one cell are stair-stepped or merged; mesh refinement and domain-size studies are required.")
     warnings.append("Aerodynamics uses only exterior-connected air: sealed interior space is blocked in a separate flow grid and generates no internal pressure faces. Source CAD cavities, component mass and FEA geometry are unchanged. Open bores and leaks remain flow passages; cap an opening only if the physical vehicle is sealed.")
     return solid, spacing, origin, warnings
+
+
+def _fin_resolution(project, configuration_id, spacing, original):
+    """Declared original-fin thickness versus Cartesian support along its normal.
+
+    This is a grid-resolution indicator, not a claim that voxels reproduce the
+    true thickness. Arbitrary replacement CAD has no reliable thickness field.
+    """
+    from ..geometry import FINS
+    from ..models import active_components
+    rows = []
+    for component in active_components(project, configuration_id):
+        if not component.external or component.kind not in FINS:
+            continue
+        row = dict(component_id=component.id, component_name=component.name)
+        if not original and component.geometry_mode == "replacement":
+            rows.append(row | {"thickness_m": None, "cells_across_thickness_min": None,
+                               "cells_across_thickness_max": None,
+                               "source": "CAD replacement; thickness is not inferred from original ORK dimensions"})
+            continue
+        thickness = 0.0 if component.metadata.get("zero_thickness") else component.thickness
+        cant = math.radians(float(component.metadata.get("cant", 0)))
+        rotation = float(component.metadata.get("angleoffset", component.metadata.get("rotation", 0)))
+        cells = []
+        for index in range(component.fin_count):
+            angle = math.radians(rotation + 360 * index / component.fin_count)
+            normal = np.array([math.sin(cant), -math.cos(cant) * math.sin(angle), math.cos(cant) * math.cos(angle)])
+            cells.append(thickness / float(np.dot(np.abs(normal), spacing)))
+        rows.append(row | {"thickness_m": float(thickness),
+                           "cells_across_thickness_min": min(cells),
+                           "cells_across_thickness_max": max(cells),
+                           "source": "Declared original ORK fin thickness / Cartesian cell support along fin normal"})
+    return rows
+
+
+def _record_history(history, row):
+    """Keep diagnostic history bounded even during an unlimited solve."""
+    history.append(row)
+    if len(history) > 4000:
+        # Preserve first and latest samples while thinning older samples.
+        history[:] = history[::2]
 
 
 def _wall_geometry(solid, spacing, origin):
@@ -325,7 +374,7 @@ def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_i
 
 def solve(project, conditions, configuration_id: str | None = None,
           options: dict | None = None, progress=None, cancelled=None) -> dict[str, Any]:
-    """Run a bounded real Euler solve on current/original combined project geometry.
+    """Run real Euler flow on current/original combined project geometry.
 
     Step, cell, physical-time and wall-clock budgets are explicit. Reaching a
     budget returns a partial numerical solution with its stopping reason; it
@@ -337,7 +386,10 @@ def solve(project, conditions, configuration_id: str | None = None,
     options = dict(options or {})
     max_steps = _number(options, "max_steps", 5000, 1, 10000, True)
     cfl = _number(options, "cfl", 0.35, 0.01, 0.8)
-    max_wall = _number(options, "max_wall_seconds", 1200, 1, 3600)
+    max_wall = _number(options, "max_wall_seconds", 1200, 0, 86400)
+    until_converged = options.get("run_until_converged", False)
+    if not isinstance(until_converged, bool):
+        raise ValueError("run_until_converged must be a boolean.")
     flow_times = _number(options, "flow_through_times", 2.0, 0.05, 20)
     tolerance = _number(options, "convergence_tolerance", 1e-5, 1e-10, 0.01)
     sample_limit = _number(options, "sample_limit", 4000, 1, 20000, True)
@@ -356,6 +408,11 @@ def solve(project, conditions, configuration_id: str | None = None,
     geometry_diagnostics = {}
     solid_cpu, spacing, origin, voxel_warnings = _voxel_domain(mesh, options, diagnostics=geometry_diagnostics)
     warnings.extend(voxel_warnings)
+    geometry_diagnostics["fin_resolution"] = _fin_resolution(project, configuration_id, spacing, original)
+    for fin in geometry_diagnostics["fin_resolution"]:
+        cells = fin["cells_across_thickness_min"]
+        if cells is not None and cells < 2:
+            warnings.append(f"{fin['component_name']}: declared fin thickness spans only {cells:.2f} Cartesian cells along its normal. The grid cannot resolve the thickness reliably; refine the transverse grid and inspect sensitivity.")
     air = atmosphere(conditions.altitude, conditions.temperature_delta)
     # The shared aerodynamic convention includes wind and treats optional Mach
     # as the axial speed input before adding the lateral wind vector.
@@ -406,7 +463,9 @@ def solve(project, conditions, configuration_id: str | None = None,
     # Reference scales normalize change in each conserved quantity separately.
     momentum_scale = rho_inf * max(speed, sound_inf)
     scales = xp.asarray([rho_inf, momentum_scale, momentum_scale, momentum_scale, float(farfield_cpu[4])])
-    flow_time = float(solid_cpu.shape[0] * spacing[0] / max(speed, sound_inf * 0.1))
+    crossing_speed = max(speed, sound_inf * 0.1)
+    flow_time = float(solid_cpu.shape[0] * spacing[0] / crossing_speed)
+    minimum_convergence_time = 0.5 * flow_time
     target_time = flow_times * flow_time
     if "max_physical_time" in options:
         target_time = _number(options, "max_physical_time", target_time, 1e-8, 10000)
@@ -417,14 +476,18 @@ def solve(project, conditions, configuration_id: str | None = None,
     stable_streak = 0
     rejected_steps = 0
     wall_pressure_residual = force_residual = moment_residual = None
-    for step in range(1, max_steps + 1):
+    integration_start = time.perf_counter()
+    while until_converged or steps < max_steps:
         if cancelled and cancelled():
             status = "cancelled"
             break
-        if time.perf_counter() - start >= max_wall:
+        if max_wall > 0 and time.perf_counter() - start >= max_wall:
             status = "wall_clock_budget"
             break
-        dt = min(stable_timestep(state, solid, spacing, cfl, xp=xp), target_time - physical_time)
+        step = steps + 1
+        dt = stable_timestep(state, solid, spacing, cfl, xp=xp)
+        if not until_converged:
+            dt = min(dt, target_time - physical_time)
         accepted = False
         for _ in range(9):
             candidate = finite_volume_step(state, solid, spacing, dt, farfield, xp=xp)
@@ -453,8 +516,8 @@ def solve(project, conditions, configuration_id: str | None = None,
         _, vel, pressure, sound = primitives(state, xp=xp)
         min_pressure = float(xp.min(xp.where(solid, xp.inf, pressure)))
         max_mach = float(xp.max(xp.where(solid, 0, xp.linalg.norm(vel, axis=-1) / sound)))
-        if step == 1 or step % 5 == 0 or step == max_steps or physical_time >= target_time:
-            history.append(dict(step=step, time_s=physical_time, dt_s=dt, residual=residual,
+        if step == 1 or step % 5 == 0 or (not until_converged and (step == max_steps or physical_time >= target_time)):
+            _record_history(history, dict(step=step, time_s=physical_time, dt_s=dt, residual=residual,
                                 wall_pressure_residual=wall_pressure_residual,
                                 force_residual=force_residual, moment_residual=moment_residual,
                                 normalized_state_change=state_change,
@@ -462,20 +525,29 @@ def solve(project, conditions, configuration_id: str | None = None,
         # Avoid labeling the initially undisturbed far field converged before a
         # disturbance has had time to traverse the body/domain.
         rates = (residual, wall_pressure_residual, force_residual, moment_residual)
-        stable_streak = stable_streak + 1 if max(rates) < tolerance and physical_time >= 0.5 * flow_time else 0
+        stable_streak = stable_streak + 1 if max(rates) < tolerance and physical_time >= minimum_convergence_time else 0
         elapsed = time.perf_counter() - start
-        completion = min(1.0, max(step / max_steps, physical_time / target_time, elapsed / max_wall))
+        integration_elapsed = max(time.perf_counter() - integration_start, 1e-12)
+        physical_rate = physical_time / integration_elapsed
+        time_to_minimum = max(0.0, minimum_convergence_time - physical_time) / physical_rate
+        limits = ([] if until_converged else [step / max_steps, physical_time / target_time])
+        if max_wall > 0:
+            limits.append(elapsed / max_wall)
+        completion = min(1.0, max(limits)) if limits else min(0.90, physical_time / minimum_convergence_time * 0.90)
         if progress and (step == 1 or step % 5 == 0):
-            eta = elapsed * (1 - completion) / max(completion, 1e-9)
-            progress(min(completion * 0.95, 0.95), f"Euler step {step}/{max_steps}; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; estimated {eta:.0f} s remaining")
-        if physical_time >= target_time * (1 - 1e-12):
-            status = "physical_time_budget"
-            break
+            timing = f"about {time_to_minimum:.0f} s to minimum flow time" if time_to_minimum > 0 else "minimum flow time reached"
+            deadline = "Completion time unknown; waiting for numerical convergence" if not limits else f"{completion:.0%} of configured work budget used; convergence time unknown"
+            step_label = str(step) if until_converged else f"{step}/{max_steps}"
+            progress(min(completion * 0.95, 0.95), f"Euler step {step_label}; {physical_time / flow_time:.3f} domain crossings; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; {timing}. {deadline}.")
         if stable_streak >= 20:
             status = "converged"
             break
+        if not until_converged and physical_time >= target_time * (1 - 1e-12):
+            status = "physical_time_budget"
+            break
+    integration_elapsed = max(0.0, time.perf_counter() - integration_start)
     if steps and history[-1]["step"] != steps:
-        history.append(dict(step=steps, time_s=physical_time, dt_s=dt, residual=residual,
+        _record_history(history, dict(step=steps, time_s=physical_time, dt_s=dt, residual=residual,
                             wall_pressure_residual=wall_pressure_residual,
                             force_residual=force_residual, moment_residual=moment_residual,
                             normalized_state_change=state_change,
@@ -520,6 +592,21 @@ def solve(project, conditions, configuration_id: str | None = None,
                    force_n=force.tolist(), moment_about_origin_nm=moment.tolist(),
                    pressure_drag_n=float(np.dot(force, velocity / speed)) if speed else 0.0,
                    pressure_force_steady=status == "converged", pressure_force_validated=False,
+                   pressure_output_kind="Converged numerical pressure resultant; unvalidated" if status == "converged" else "Partial transient numerical pressure resultant; not a steady drag prediction",
+                   run_until_converged=until_converged,
+                   stop_policy="Convergence or cancellation, plus wall-clock timeout when nonzero" if until_converged else "First of convergence, step, physical-time or nonzero wall-clock budget, or cancellation",
+                   progress_basis="convergence_unknown" if until_converged and max_wall == 0 else "budget_usage",
+                   domain_crossings_completed=physical_time / flow_time,
+                   minimum_convergence_time_s=minimum_convergence_time,
+                   minimum_convergence_time_reached=physical_time >= minimum_convergence_time,
+                   crossing_reference_speed_m_s=crossing_speed,
+                   flow_through_time_basis="Axial domain length / max(resultant freestream speed, 0.1 sound speed)",
+                   integration_elapsed_seconds=integration_elapsed,
+                   measured_steps_per_second=steps / integration_elapsed if steps and integration_elapsed > 0 else None,
+                   simulated_seconds_per_wall_second=physical_time / integration_elapsed if steps and integration_elapsed > 0 else None,
+                   estimated_seconds_to_minimum_flow_time=max(0.0, minimum_convergence_time - physical_time) * integration_elapsed / physical_time if physical_time > 0 else None,
+                   estimated_seconds_to_target_flow_time=max(0.0, target_time - physical_time) * integration_elapsed / physical_time if physical_time > 0 else None,
+                   timing_estimate_basis="Measured integration throughput; startup/voxelization and extraction excluded. Not an estimate of convergence time.",
                    wall_pressure_residual=wall_pressure_residual,
                    force_residual=force_residual, moment_residual=moment_residual,
                    convergence_tolerance=tolerance,
@@ -545,6 +632,9 @@ def solve(project, conditions, configuration_id: str | None = None,
                    configuration_id=configuration_id or project.active_configuration_id,
                    original_geometry=original, mesh_sha256=mesh_digest.hexdigest(),
                    max_steps=max_steps, max_wall_seconds=max_wall, cfl=cfl)
+    if options.get("backend", "auto") != "cpu":
+        from ..backenddiagnostics import cuda_diagnostics
+        summary["cuda_diagnostics"] = cuda_diagnostics()
     summary.update(geometry_diagnostics)
     if progress:
         progress(1.0, f"Euler solve finished: {status}; {steps} conservative steps")

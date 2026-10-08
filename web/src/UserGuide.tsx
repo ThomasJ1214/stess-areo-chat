@@ -46,10 +46,26 @@ export default function UserGuide({
           </button>
         </header>
         <p className="guide-intro">
-          Start with the Example rocket to learn the controls. Its motor and
-          materials are synthetic tutorial data. Replace them with verified data
-          before using results for your rocket.
+          Use <strong>Getting started</strong> for a guided tour of the whole
+          app, or <strong>Tutorial</strong> on any page for one instruction at a
+          time. Click a <strong>?</strong> beside an unfamiliar term for its
+          definition. Start with the Example rocket to learn the controls. Its
+          motor and materials are synthetic tutorial data. Replace them with
+          verified data before using results for your rocket.
         </p>
+        <section>
+          <h3>Arrange the windows</h3>
+          <p>
+            Drag the dividers to resize the assembly, 3D view, results, and
+            setup areas. Use <strong>Assembly</strong> and{" "}
+            <strong>Inspector / Setup</strong> in the window bar to show or hide
+            side panels.
+            <strong> Focus view</strong> gives the 3D view more space;
+            <strong> Reset layout</strong> restores the starting layout. On a
+            smaller window, scroll the setup or results area to reach its
+            controls.
+          </p>
+        </section>
         <section>
           <h3>1. Import and check your rocket</h3>
           <p>
@@ -63,8 +79,16 @@ export default function UserGuide({
             In <strong>Design → Flight setup</strong>, import a measured
             <strong> .eng or .rse motor curve</strong> and assign it to the
             configuration. Motor names in an OpenRocket file do not supply a
-            thrust curve. Check motor placement, ignition timing, chute size,
-            drag coefficient, and single or dual deployment, then apply the
+            thrust curve. For online curves, click{" "}
+            <strong>Find motor online</strong>, enter Motor designation and
+            optional Manufacturer, then click{" "}
+            <strong>Search catalog → Review curves → Preview curve</strong>.
+            Review the source, dimensions, masses, and plotted curve, click{" "}
+            <strong>Import reviewed motor</strong>, then assign it in Flight
+            setup and apply the configuration. Online search needs an internet
+            connection; an imported curve stays in the project for offline
+            simulation. Check motor placement, ignition timing, chute size, drag
+            coefficient, and single or dual deployment, then apply the
             configuration. Confirm recovery settings when the import could not
             establish them.
           </p>
@@ -78,10 +102,17 @@ export default function UserGuide({
             Select the OpenRocket component, open <strong>Geometry</strong>, and
             import STEP/STP or STL. STEP supplies its own units; select the
             correct <strong>Mesh file units</strong> before importing STL.
-            Choose the asset, enter translation, rotation and uniform scale,
-            then click <strong>Attach &amp; use detailed geometry</strong>.
-            Translation is relative to that component’s axial position; keep the
-            CAD origin and orientation in mind.
+            Choose the asset. New attachments use{" "}
+            <strong>Automatic alignment</strong>: inspect the amber placement
+            preview, choose <strong>Source axis</strong> or
+            <strong> Reverse direction</strong> if needed, and review neighbor
+            gaps. Physical dimensions are preserved unless you enable{" "}
+            <strong>Fit selected length</strong>, which uniformly scales the
+            part and changes its mass. Click
+            <strong> Attach &amp; use detailed geometry</strong> to replace the
+            selected part. For custom placement, edit offsets or rotations; this
+            disables automatic alignment. Saved placements remain unchanged when
+            you inspect an existing attachment.
           </p>
           <p>
             Turn on <strong>Original geometry</strong> to compare alignment.
@@ -99,10 +130,11 @@ export default function UserGuide({
             density, so inspect any mismatch with the flight mass model.
           </p>
           <p>
-            In <strong>Component</strong>, enable <strong>External surface</strong>
-            {" "}for parts exposed to air; disable it for enclosed electronics,
-            ballast and internal hardware. Click <strong>Apply component changes</strong>.
-            {" "}<strong>Enabled</strong> controls the entire part and its subtree.
+            In <strong>Component</strong>, enable{" "}
+            <strong>External surface</strong> for parts exposed to air; disable
+            it for enclosed electronics, ballast and internal hardware. Click{" "}
+            <strong>Apply component changes</strong>. <strong>Enabled</strong>{" "}
+            controls the entire part and its subtree.
           </p>
           <p>
             CFD solves only air connected to the exterior. Sealed cavities and
@@ -125,15 +157,23 @@ export default function UserGuide({
           </p>
           <p>
             Open <strong>Flight</strong>, check rail length, launch angles and
-            wind, then click <strong>Simulate full flight</strong>. Watch
-            progress and ETA; cancellation is available. After completion, play,
-            pause or scrub the timeline and select events such as rail exit, max
-            Q and apogee. <strong>Follow</strong> tracks actual position;
+            wind, then click the red <strong>Launch</strong> button. The rocket
+            starts on a launch rail over a flat ground plane. Watch progress and
+            ETA; cancellation is available. After completion, play, pause or
+            scrub the timeline and select events such as rail exit, max Q and
+            apogee. <strong>Follow</strong> tracks actual position;
             <strong> Overview</strong> fits the trajectory with an enlarged
             model;
-            <strong> Inspect</strong> shows local geometry. Rocket attitude is
-            illustrative because flight uses a point-mass model. Flight stress
-            colors show beam/fin estimates, not a changing FEA solution.
+            <strong> Inspect</strong> shows local geometry. Orbit, pan, or zoom
+            during playback to adjust the camera. In Follow mode, automatic
+            tracking resumes after five seconds without camera input; click
+            <strong> Resume follow</strong> to resume immediately. The top-down
+            map plots local east/north position, launch, flight events, and the
+            computed landing point. It is a distance map, not satellite imagery.
+            An incomplete trajectory has no predicted landing point. Rocket
+            attitude is illustrative because flight uses a point-mass model.
+            Flight stress colors show beam/fin estimates, not a changing FEA
+            solution.
           </p>
           <div className="guide-actions">
             <button className="secondary" onClick={() => go("aero")}>
@@ -159,6 +199,17 @@ export default function UserGuide({
             validated aerodynamic accuracy.
           </p>
           <p>
+            An unconverged result displays{" "}
+            <strong>Partial pressure force</strong>. To continue without step or
+            flow-time ceilings, enable <strong>Run until converged</strong>. Set{" "}
+            <strong>Wall time limit</strong> to 0 to remove the computer-time
+            ceiling too. Completion time is then unknown; Cancel preserves
+            actual partial fields for export.
+            <strong> GPU diagnostics</strong> explains real CUDA availability or
+            CPU fallback. At Mach below 0.3, this solver's pressure drag is
+            especially unreliable even if converged.
+          </p>
+          <p>
             In <strong>Structures</strong>, select the component, material, mesh
             size, support and applied loads. Fin radial root supports apply to
             original procedural fins. An unjustified clamp can produce
@@ -169,6 +220,18 @@ export default function UserGuide({
             material assumptions. Deformation scale changes display only. Linear
             isotropic solid FEA excludes composite layups, contact, buckling and
             recovery shock.
+          </p>
+          <p>
+            Check <strong>Mesh readiness</strong> first.{" "}
+            <strong>Automatic mesh sizing</strong>
+            applies a thickness-aware suggestion when the current budget can fit
+            it.
+            <strong> Use recommended mesh</strong> can raise the displayed
+            element budget. Thin whole parts may require too many elements; use{" "}
+            <strong>Use beam/fin estimates</strong>
+            or prepare a smaller CAD part externally. CAD thickness must still
+            be measured. A coarse solid mesh must not be used to bypass the
+            thin-part safeguard.
           </p>
           <div className="guide-actions">
             <button className="secondary" onClick={() => go("cfd")}>

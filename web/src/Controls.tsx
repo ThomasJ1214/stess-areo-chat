@@ -15,6 +15,7 @@ import { fmt, displayValue, fromDisplay, unitLabel } from "./units";
 import type { Quantity } from "./units";
 import type { Units } from "./types";
 import { numberInputIssue, parseNumberInput } from "./numericInput";
+import HelpTip, { getTermDefinition } from "./HelpTip";
 export function NumberField({
   label,
   value,
@@ -25,6 +26,7 @@ export function NumberField({
   step = "any",
   hint,
   normalize,
+  disabled = false,
 }: {
   label: string;
   value: number | null;
@@ -35,6 +37,7 @@ export function NumberField({
   step?: number | string;
   hint?: string;
   normalize?: (n: number) => number;
+  disabled?: boolean;
 }) {
   // Keep partial decimal/scientific/negative text editable; persist only finite numbers.
   const [text, setText] = useState(value === null ? "" : String(value));
@@ -63,20 +66,25 @@ export function NumberField({
     }
   };
   return (
-    <label className={`field ${issue ? "invalid-field" : ""}`}>
+    <div className={`field ${issue ? "invalid-field" : ""}`}>
       <span>
         {label}
-        {hint && (
-          <span title={hint}>
-            <Info size={12} />
-          </span>
-        )}
+        <HelpTip
+          term={label}
+          definition={
+            hint
+              ? [getTermDefinition(label), hint].filter(Boolean).join(" ")
+              : undefined
+          }
+        />
       </span>
       <div className="input-unit">
         <input
+          disabled={disabled}
           type="text"
           inputMode="decimal"
           role="spinbutton"
+          id={fieldId}
           aria-label={label}
           aria-valuenow={value ?? undefined}
           aria-valuemin={min}
@@ -125,7 +133,7 @@ export function NumberField({
           {issue}
         </small>
       )}
-    </label>
+    </div>
   );
 }
 export function SIField({
@@ -180,15 +188,18 @@ export function Toggle({
   disabled?: boolean;
 }) {
   return (
-    <button
-      className={`toggle ${value ? "enabled" : ""}`}
-      disabled={disabled}
-      onClick={onChange}
-      aria-pressed={value}
-    >
-      <span>{value && <Check size={10} />}</span>
-      {label}
-    </button>
+    <span className="toggle-with-help">
+      <button
+        className={`toggle ${value ? "enabled" : ""}`}
+        disabled={disabled}
+        onClick={onChange}
+        aria-pressed={value}
+      >
+        <span>{value && <Check size={10} />}</span>
+        {label}
+      </button>
+      <HelpTip term={label} />
+    </span>
   );
 }
 export function Metric({
@@ -204,7 +215,10 @@ export function Metric({
 }) {
   return (
     <div className="metric">
-      <span>{label}</span>
+      <span>
+        {label}
+        <HelpTip term={label} />
+      </span>
       <strong style={color ? { color } : undefined}>
         {typeof value === "number" ? fmt(value) : String(value ?? "—")}{" "}
         <small>{unit}</small>
@@ -405,8 +419,11 @@ export function FieldSelect({
   children: React.ReactNode;
 }) {
   return (
-    <label className="field">
-      <span>{label}</span>
+    <div className="field">
+      <span>
+        {label}
+        <HelpTip term={label} />
+      </span>
       <select
         aria-label={label}
         value={value}
@@ -414,6 +431,6 @@ export function FieldSelect({
       >
         {children}
       </select>
-    </label>
+    </div>
   );
 }

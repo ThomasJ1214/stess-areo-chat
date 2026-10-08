@@ -4,8 +4,8 @@ A Windows desktop workbench for high-power rocket design studies, intended for
 passive rockets up to 12 ft (3.66 m) and Mach 2, with single or dual deployment.
 Import OpenRocket projects or start from a CAD asset, inspect the rocket in 3D,
 replace selected parts with detailed geometry, and compare results. Work happens
-locally; the installed application does not need a server account or network
-connection.
+locally; engineering calculations and saved projects work offline. An optional
+user-requested motor search retrieves real curve data from ThrustCurve.org.
 
 The implementation distinguishes fast engineering estimates, a point-mass flight
 model, experimental inviscid CFD, and linear static solid FEA. Results and warnings
@@ -14,18 +14,18 @@ Mach setting does not establish validated supersonic accuracy.
 
 ## Install on Windows
 
-Version 0.1.1 passed its Windows build, silent installation, installed
-engineering-engine and native desktop/API/WebGL checks.
-Open the [verified version 0.1.1 installer build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37811145867#artifacts),
+Open the [Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml)
+and choose a successful version **0.2.0** run,
 sign in to GitHub, and download **RocketWorkbench-windows-x64-installer**
 (approximately 1.5 GB). Unzip it, open `release/` if present, and run
-`RocketWorkbench-0.1.1-windows-x64-setup.exe`. No Python, Node.js, separate CAD
+`RocketWorkbench-0.2.0-windows-x64-setup.exe`. No Python, Node.js, separate CAD
 program, Gmsh installation, or CUDA Toolkit installation is required for use.
 
 Artifacts are retained for 30 days. If the download has expired, run the
 [Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml)
-again. The artifact identifies source commit `d5a0131` in its manifest;
-later download-documentation updates do not change that binary's identity.
+again. The artifact's manifest identifies the exact source commit and dependency
+versions. Review [validation evidence](docs/VALIDATION.md); download-documentation
+updates do not change an existing binary's identity.
 
 See [step-by-step Windows installation](docs/WINDOWS_INSTALL.md). The normal build
 includes CUDA runtime libraries for supported NVIDIA GPU calculations. An NVIDIA
@@ -35,31 +35,46 @@ jobs need substantial RAM and/or VRAM.
 
 Start with the [step-by-step user guide](docs/USER_GUIDE.md) for OpenRocket setup,
 CAD replacement, exterior airflow, launch playback, CFD/FEA, studies and exports.
+The app also includes **Getting started**, a **Tutorial** for every page, an
+offline **User guide**, and **?** definitions beside unfamiliar engineering terms.
+Resize or hide the assembly/setup panels, focus the 3D view, or reset the layout
+to keep the controls and results you need visible.
 
 ## What is implemented
 
 | Workflow | Calculation and practical scope |
 | --- | --- |
 | OpenRocket import | `.ork` XML/ZIP/GZIP, hierarchy, component geometry, overrides, configurations, recovery settings, supported motor assignments; import warnings preserve unsupported features |
-| CAD replacement | STEP/STP through Open CASCADE; STL, OBJ and PLY; component-local translation, Euler rotation and scale; original/replacement comparison |
+| CAD replacement | STEP/STP through Open CASCADE; STL, OBJ and PLY; automatic selected-part placement preserving dimensions, preview/reverse/manual alignment and explicit uniform fit; original/replacement comparison |
 | CAD-only projects | Start from an imported mesh; inspect mass/geometry and run CFD/FEA; passive flight requires supplied geometry-specific aerodynamic coefficients |
-| 3D inspection | GPU-rendered scene, component selection, original/replacement geometry, CG/CP and aerodynamic force visualization |
+| 3D inspection | GPU-rendered scene, component selection, original/replacement geometry, CG/CP and aerodynamic force visualization; resizable/collapsible panels |
+| Motor lookup | Explicit ThrustCurve.org search, curve/source preview and review before import; local ENG/RSE remains available offline |
 | Fast aerodynamics | Standard atmosphere, mass/CG, small-angle Barrowman reference geometry, drag/loading estimates and transparent unvalidated Mach corrections; import signature-bound coefficient CSV |
-| Flight | Passive point-mass launch, changing motor mass, single/dual recovery, wind, deterministic perturbations, playback and event/graph inspection |
+| Flight | Passive point-mass launch, changing motor mass, single/dual recovery, wind and deterministic perturbations; red Launch button, rail/flat-ground scene, computed playback, adjustable following camera and north-up local flight/landing map with event points of interest |
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
-| Solid FEA | Gmsh tetrahedral mesh, linear isotropic elasticity, declared clamp and load boundary conditions, solved displacement/von Mises fields |
-| CFD | Experimental 3D compressible inviscid Euler finite-volume solver, solved pressure/velocity and convergence history |
+| Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
+| CFD | Experimental 3D compressible inviscid Euler finite-volume solver, actual pressure/velocity and convergence history; bounded or convergence-only runs with cancellation and explicit partial-result status |
 | Pressure-transfer FEA | One-way mapping from a completed, numerically converged and geometry-matched CFD job; mapped coverage/distances are reported |
 | Studies | Parameter/wind sweeps, seeded Monte Carlo, configuration and original/replacement comparisons |
 | Data | Self-contained project JSON with imported mesh assets; simulation JSON/CSV and HTML reports; metric and US customary display units |
 
 CAD replacements influence mass properties and geometry-based numerical solvers.
+Automatic attachment places only the selected replacement; it does not edit
+neighboring CAD, fuse material meshes or invent structural connections. CFD uses
+a separate assembled exterior-flow mask and preserves source cavities for mass
+and FEA. Open passages remain open when resolved by the grid.
 The default fast model retains OpenRocket reference geometry for CP and stability;
 it flags estimates that do not resolve arbitrary CAD changes. A supplied
 Mach/CD/CNa/CP table can drive current-geometry aerodynamics and flight within
 its Mach coverage. The table is bound to the selected configuration and exact
 geometry; source accuracy still requires independent validation. CFD excludes
-viscosity, skin friction and physical turbulence. Flight
+viscosity, skin friction and physical turbulence. Low-Mach pressure drag is
+particularly unreliable with this scheme, even after numerical convergence.
+A timed-out run returns a labeled partial field. Removing a timeout allows more
+work but does not guarantee convergence or physical accuracy. Solid FEA may need
+more elements than the budget permits for whole thin parts; use supported beam/fin
+estimates or a smaller physical CAD part. Shell FEA and region cutting are not
+included. Flight
 does not integrate attitude, weathercocking, active guidance or fin flutter. FEA
 does not model composite layups, yielding, contact, buckling or transient recovery
 shock. Imported unsupported configurations cannot become reliable simulations by

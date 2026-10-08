@@ -21,6 +21,10 @@ across file readers, solvers, API persistence and frontend types.
 * `geometry.import_geometry(data: bytes, filename: str, units: str = 'mm') -> GeometryAsset`
 * `geometry.component_mesh(project: Project, component: Component, original: bool = False) -> trimesh.Trimesh`
 * `geometry.project_mesh(project: Project, configuration_id: str | None = None, original: bool = False) -> trimesh.Trimesh`
+* `alignment.propose_alignment(project: Project, component: Component, asset: GeometryAsset, options: AlignmentOptions | None = None) -> dict`
+* `fea_setup.preflight(project: Project, component_id: str, options: dict | None = None) -> dict`
+* `backenddiagnostics.cuda_diagnostics() -> dict`
+* `motor_catalog.MotorCatalog` provides `search`, `curves`, `preview` and `reviewed_motor`; only requested lookup/preview performs network I/O
 * `aero.atmosphere(altitude: float, temperature_delta: float = 0) -> dict`
 * `aero.mass_properties(project: Project, configuration_id: str | None = None, time: float = 0) -> dict`
 * `aero.analyze(project: Project, conditions: Conditions, configuration_id: str | None = None) -> dict`
@@ -48,23 +52,29 @@ surface [{position:[x,y,z],pressure_pa}], history, summary, fidelity,warnings,ba
 
 ## HTTP interface (local session, single project)
 
-* GET /api/health -> {status,version,capabilities}
+* GET /api/health -> {status,version,capabilities}; capabilities includes gpu_compute, gpu_backend and cached gpu_diagnostics
 * GET /api/project -> Project; PUT /api/project (Project JSON) -> Project
 * PUT /api/project/settings -> {project_id,settings:AnalysisSettings}; atomically patches current settings, rejects a stale project ID
 * POST /api/project/demo -> Project
 * POST /api/import/ork (multipart file) -> Project
 * POST /api/import/geometry (multipart file, units) -> GeometryAsset, also stores it
 * POST /api/import/motor (multipart file) -> list[Motor], also stores them
+* POST /api/motors/search -> {query,manufacturer?,limit?}; bounded ThrustCurve.org search results
+* GET /api/motors/{motor_id}/curves -> available curve/source records
+* POST /api/motors/preview -> {motor_id,simfile_id}; parsed curve, source/provenance and review_token, without changing the project
+* POST /api/motors/import -> {project_id,review_token}; returns Project containing the reviewed motor, without assigning it to a configuration
 * POST /api/import/polar (UTF-8 CSV multipart file: mach,cd,cna,cp_m, optional source) -> Project with table bound to selected configuration/geometry
 * GET /api/project/download -> complete project JSON attachment
 * POST /api/project/load (multipart file) -> Project
-* POST /api/geometry/attach -> {component_id,asset_id,transform,geometry_mode}; returns Project
+* POST /api/geometry/alignment -> {component_id,asset_id,axis?,reverse?,fit_length?,anchor?}; read-only placement proposal and SI bounds/interface diagnostics
+* POST /api/geometry/attach -> {component_id,asset_id,transform?,geometry_mode?,auto_align?,alignment_options?}; returns Project
 * POST /api/geometry/standalone -> {asset_id}; returns a new CAD-only Project using actual mesh
 * GET /api/geometry/properties/{component_id} -> {original,replacement} geometric diagnostics
 * GET /api/mesh?original=false -> {components:[{id,name,vertices,faces}]}
 * POST /api/analyze -> {conditions,configuration_id?} -> {aero,structure}
+* POST /api/fea/preflight -> {component_id,options:{mesh_size?,max_elements?}}; actual-solid validity, placed bounds/material, sizing recommendations and resource errors without volume meshing
 * POST /api/jobs -> {kind:flight|cfd|fea|sweep|monte_carlo|comparison,conditions,configuration_id?,options:{}} -> {id,...}
-* GET /api/jobs/{id} -> {id,status,progress,message,elapsed_seconds,eta_seconds,result,error}
+* GET /api/jobs/{id} -> {id,status,progress,progress_basis,message,elapsed_seconds,eta_seconds,result,error}; lifecycle completion does not imply CFD convergence
 * GET /api/jobs/{id}/project -> immutable input-project JSON attachment with selected configuration, conditions and solver options
 * POST /api/jobs/{id}/cancel -> job
 * GET /api/jobs/{id}/export?format=csv|json|html -> attachment
@@ -75,6 +85,10 @@ Long comparisons use a `comparison` job with `options.use_flight` and/or
 status. A supplied polar matching only the replacement geometry is not applied
 to the original basis. CFD-to-FEA transfer requires the completed CFD job ID,
 numerical convergence and both project and actual mesh signature matches.
+Cancelled CFD jobs can retain actual partial fields and export them as JSON,
+CSV or HTML. Their lifecycle status remains `cancelled`; retained partial data
+does not make them an eligible FEA pressure source. Transfer still requires a
+completed, numerically converged CFD job with matching geometry.
 
 FEA options include explicit support axis/side/tolerance, tetrahedron/mesh budgets,
 body acceleration and pressure or prescribed traction loading. CFD options
@@ -82,6 +96,43 @@ include lengthwise/transverse grid dimensions, cell budget, CFL, flow-through
 time, residual tolerance, iteration and elapsed-time budgets. See method docs
 and solver argument validation for bounds; a job budget is not a claimed
 physical convergence criterion.
+
+CAD alignment options are `axis:"auto"|"x"|"y"|"z"` (default `auto`),
+`reverse:false`, `fit_length:false`, and `anchor:"start"|"center"` (default
+`start`). Alignment uses one selected reference part; repeated component placement
+is applied afterward by the geometry layer. The response includes the proposed
+component-local `transform`, actual `aligned_bounds_m`, source/target dimensions,
+axis/direction method, scale, warnings and adjacent axial separation diagnostics.
+Default rigid placement preserves source dimensions. Explicit fit applies one
+uniform scale; no source mesh edit, material union or structural joint is inferred.
+With `auto_align:true`, attachment derives this transform from `alignment_options`
+rather than using a supplied manual transform.
+
+For CFD, `run_until_converged:true` removes step and physical-flow-time stop
+ceilings. A nonzero `max_wall_seconds` still stops the solver; `0` disables that
+timeout. Cell-allocation limits, cancellation and numerical validity checks remain.
+Returned `summary.progress_basis` is `budget_usage` for bounded CFD runs or
+`convergence_unknown` for convergence-only runs with no timeout. The UI must not
+interpret work-budget usage as physical convergence or show a convergence ETA
+in the latter mode. `summary.status`, `converged`, force-result validity and
+warnings distinguish an actual partial field from a converged numerical field.
+Convergence remains numerical steadiness, not mesh/domain or physical validation.
+Job polling exposes the same progress-basis distinction; ordinary jobs use
+`completion_fraction` rather than CFD work-budget usage.
+
+Preflight `can_run` concerns current solid-validity/thickness/resource checks,
+not validated FEA loading/supports. Original thin parts retain mesh size no
+greater than thickness/2. Imported CAD thickness is unknown and a scale-based
+suggestion does not guarantee bending resolution. Counts are estimates; native
+meshing still enforces the actual element cap. The app provides neither shell
+FEA nor an in-app region-cutting tool.
+
+Motor service requests use a fixed HTTPS provider and bounded responses, not
+arbitrary user URLs. Only designation/manufacturer or selected provider IDs are
+sent; project geometry is not uploaded. Preview tokens are session-local and
+import rejects a changed project ID. A motor's saved provenance includes provider,
+provider IDs, declared source/license, fetch time and raw-curve SHA-256. Provider
+labels are attribution, not independent certification or applicability checks.
 
 CSV exports remain rectangular tables. Dedicated `_result_*` columns in the
 first data row retain the method, backend, warnings, validity, run inputs and

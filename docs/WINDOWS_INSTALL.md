@@ -18,9 +18,12 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-The [verified version 0.1.1 Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37811145867#artifacts)
-produced the approximately 1.5 GB installer download and passed its installed
-engine/native-desktop checks. See the [validation record](VALIDATION.md).
+Choose a successful **0.2.0** run from the
+[Windows installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml).
+The approximately 1.5 GB package includes guided tutorials, a resizable workspace,
+live motor search, launch playback, a local flight map, CAD automatic placement,
+and CFD/FEA setup guidance. See the [validation record](VALIDATION.md) for recorded
+checks; require a successful run before using its installer.
 
 1. Open the repository's **Actions** tab and choose **Windows offline installer**.
 2. Choose a successful run for the version you want. If there is no successful
@@ -32,11 +35,11 @@ engine/native-desktop checks. See the [validation record](VALIDATION.md).
    include the installer, a SHA-256 checksum and a dependency manifest. Open the
    `release` folder if the download contains that folder. The package
    includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
-   **User guide** button.
+   **User guide**, **Getting started**, and per-page **Tutorial** buttons.
 5. Optionally check the installer in PowerShell with
-   `Get-FileHash .\RocketWorkbench-0.1.1-windows-x64-setup.exe -Algorithm SHA256`
+   `Get-FileHash .\RocketWorkbench-0.2.0-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
-6. Double-click `RocketWorkbench-0.1.1-windows-x64-setup.exe`. Select a user-local
+6. Double-click `RocketWorkbench-0.2.0-windows-x64-setup.exe`. Select a user-local
    install location and optionally enable the desktop shortcut. No administrator
    privileges are required for the default location.
 7. Open **Rocket Workbench** from Start or the desktop shortcut.
@@ -53,28 +56,44 @@ expire after 30 days; request a new workflow run if the download has expired.
 ## First engineering workflow
 
 1. Explore the built-in demonstration project. Its motor curve is a synthetic
-   example, not an approved motor certification record.
+   example, not an approved motor certification record. Click **Getting started**
+   for the complete walkthrough, then **Tutorial** on each page you want to learn.
+   Click **?** beside unfamiliar engineering terms for a definition.
 2. Import your `.ork` file and review the import warnings. Choose the intended
    flight configuration and confirm dimensions, material density, mass, CG,
    motor curve and recovery settings. Import a real `.eng`/`.rse` thrust curve
-   if the OpenRocket file supplies only a motor name or digest.
+   if the OpenRocket file supplies only a motor name or digest. Alternatively,
+   use **Find motor online**, review a ThrustCurve.org curve, import it, and
+   deliberately assign it in **Design → Flight setup**.
 3. Use the design view to select a component. Import a STEP/STP or STL model and
-   choose mesh source units correctly; STEP supplies its embedded units. Attach
-   it to that component; adjust scale,
-   rotation and translation while inspecting the rocket. Verify its external
-   shape and mass treatment before simulating.
+   choose mesh source units correctly; STEP supplies its embedded units. Leave
+   **Automatic alignment** on, click **Preview automatic alignment**, review
+   **Source axis**, **Reverse direction** and **Placement anchor**, then **Attach
+   & use detailed geometry**. Default placement preserves actual dimensions;
+   **Fit selected length** is an explicit uniform resize. Compare with **Original
+   geometry** and inspect joints. Turn automatic alignment off for manual edits.
+   Verify the external shape and mass treatment before simulating.
 4. Save the project to a file. Project JSON contains triangulated imported assets
    so it remains portable; the original STEP boundary representation is not
    preserved. Keep original CAD files separately.
 5. Enter test conditions in the aerodynamic view and inspect results and solver
    warnings. CG/CP and aerodynamic vectors are estimates with their stated scope.
-6. Start a flight job. The progress indicator reports completion and a measured
-   ETA estimate; the ETA is provisional. After it finishes, pause or scrub the
-   timeline, inspect event markers and graphs, and export results.
-7. For CFD, begin with a coarse grid and a small iteration budget. Inspect whether
-   flow has actually converged, refine the grid, and compare results. For FEA,
-   choose a component, material, explicit load and clamp; perform mesh refinement
-   before using its stress field. A colored plot alone establishes no accuracy.
+6. Open **Flight** and press the large red **Launch** button. The progress
+   indicator reports calculation completion and a provisional ETA. After the
+   flight is calculated, playback starts from the rail and the camera follows it.
+   Adjust the camera manually; automatic **Follow** resumes after five seconds
+   without input. Pause or scrub the timeline, inspect event markers, graphs and
+   the north-up local map, then export results.
+7. For CFD, begin with a modest grid and bounded work budget. For longer settling,
+   choose **Run until converged**; **Wall time limit** `0` permits an unlimited
+   run with cancellation, without a known completion ETA. Inspect actual
+   convergence and backend; timed-out forces are partial. Then compare grid/domain
+   refinements. For FEA, choose a component, material, explicit load and clamp.
+   Leave **Automatic mesh sizing** on and read **Mesh readiness**; **Use recommended
+   mesh** can raise the budget within its permitted limit. Use **Use beam/fin
+   estimates** or a smaller externally prepared CAD part when a whole thin solid
+   cannot fit. Perform refinement before using stress; a heatmap alone establishes
+   no accuracy.
 
 The installer includes [synthetic tutorial assets](../examples/README.md) under
 `_internal/examples/`. They exercise project, motor, CAD and coefficient import;
@@ -140,18 +159,55 @@ saved projects available.
 restart Windows. The app displays the execution backend. GPU memory, compatibility
 and library initialization can prevent CUDA use even if Windows recognizes the
 GPU; choose CPU or automatic mode to continue. Bundled CUDA cannot replace a driver.
+Open **GPU diagnostics** for the failing check and driver/runtime/device details
+when available. A working 3D viewport does not establish numerical CUDA support.
+The capability probe is cached; restart the app after changing a driver.
 
-**Slow/failed job.** Use a coarser grid or larger mesh size, inspect the error and
-method budget, then rerun. CFD iterations and tetrahedron counts directly affect
-resources. Cancellation is cooperative at solver checkpoints.
+**CFD stopped at “wall clock budget.”** This is an elapsed-computation limit,
+not a converged solution. Returned pressure/forces remain partial. Inspect actual
+backend and residual history, then increase allowed work or enable **Run until
+converged**. With **Wall time limit** `0`, completion time is unknown and you may need to cancel
+the run. At Mach below 0.3 the pressure-drag warning remains relevant even if
+numerical convergence is reached. Refining a grid adds work; a faster or longer
+run does not establish physical accuracy.
+
+**FEA says mesh size must be ≤ thickness/2.** Keep this requirement; coarse
+solid elements across a thin wall can give misleading stiffness. Read **Mesh
+readiness** and choose **Use recommended mesh** if the budget permits. If it exceeds even
+the maximum budget, choose **Use beam/fin estimates** where supported or import a smaller physical
+CAD part prepared outside the app with justified local loads/supports. Shell FEA
+and region cutting are not included. CAD thickness is unknown and still needs
+measurement and a refinement study.
+
+**Slow/failed job.** Inspect the error, actual backend and method budget before
+rerunning. A coarser CFD grid can help diagnose a workflow but reduces geometric
+resolution. FEA mesh size must still resolve thin features; do not bypass its
+thickness guard to finish a job. Cancellation is cooperative at solver checkpoints.
+
+**CAD does not sit on the selected part.** Check source units, enable **Automatic
+alignment**, and click **Preview automatic alignment**. The proposed axis/direction
+is a guess: use **Reverse direction** or choose **Source axis** X/Y/Z, then attach
+and compare with original geometry. Turn automatic alignment off for manual
+alignment as needed. Default placement preserves real dimensions. Explicit
+**Fit selected length** changes all dimensions and computed volume/mass. Review reported
+gaps/overlaps at neighboring parts; placement does not create a structural bond
+or a material Boolean union.
 
 **Blank 3D viewport.** Update the graphics driver. Launch from PowerShell with
 `$env:QTWEBENGINE_CHROMIUM_FLAGS='--disable-gpu'` before starting the executable
 to diagnose the graphics path. This diagnostic uses software rendering.
 
 **OpenRocket motor missing.** Motor names/digests are not thrust curves. Import an
-authoritative thrust curve and verify the mapping; no online motor download is
-required by, or silently performed by, this application.
+authoritative local curve or choose **Find motor online** to search ThrustCurve.org.
+Review the selected curve and source before importing, then assign it to the
+intended configuration. Only requested motor searches/downloads require internet;
+the engineering solvers and embedded project curves work offline. A service
+outage does not prevent using a local `.eng`/`.rse` file.
+
+**Panels hide a control.** Click **Show assembly** or **Show setup**, resize the
+dividers, or choose **Reset layout**. A **Tutorial** explains the controls for
+the current page; **User guide** provides instructions without relying on panel
+positions.
 
 **Local service startup.** The desktop application selects an available loopback
 port automatically. Headless development defaults to `127.0.0.1:8765`; close a

@@ -29,6 +29,7 @@ def test_run_snapshot_survives_project_edits_and_is_not_polled():
         project.components[0].mass_override = 100
         job = completed(manager, submitted["id"])
         assert job["status"] == "completed", job["error"]
+        assert job["progress_basis"] == "completion_fraction"
         assert "project_snapshot" not in job
         snapshot = manager.input_project(job["id"])
         assert snapshot.components[0].mass_override == original_mass
@@ -119,3 +120,84 @@ def test_cancelled_queued_jobs_can_be_pruned_without_worker_errors():
         manager.shutdown()
     with pytest.raises(RuntimeError, match="shutting down"):
         manager.submit(demo_project(), "sweep", Conditions(), options={"count": 2})
+
+
+@pytest.mark.parametrize("until_converged, wall_seconds, basis", [
+    (True, 0, "convergence_unknown"),
+    (True, "0", "convergence_unknown"),
+    (True, 60, "budget_usage"),
+    (False, 0, "budget_usage"),
+])
+def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, until_converged, wall_seconds, basis):
+    """Gate actual numerical work so running/cancelled states are inspectable.
+
+    Fields come from ten conservative Euler advances on a real portable cube
+    asset, rather than canned test pressure/stress values.
+    """
+    import json
+    import numpy as np
+    import trimesh
+    from rocket_workbench.models import Component, GeometryAsset, Project
+    from rocket_workbench.solvers import cfd
+
+    mesh = trimesh.creation.box(extents=[0.1, 0.1, 0.1])
+    project = Project(assets=[GeometryAsset(id="cube", name="Cube", format="stl",
+        vertices=mesh.vertices.tolist(), faces=mesh.faces.tolist(),
+        volume=0.001, watertight=True)], components=[Component(id="body", kind="imported",
+            asset_id="cube", geometry_mode="replacement")])
+    entered = threading.Event()
+    release = threading.Event()
+    real_solve = cfd.solve
+
+    def controlled_solve(value, conditions, configuration_id, options, progress, cancelled):
+        def observed(fraction, message):
+            progress(fraction, message)
+            if message.startswith("Euler step 10;") or message.startswith("Euler step 10/"):
+                entered.set()
+                if not release.wait(timeout=5):
+                    raise AssertionError("Test did not release the real CFD worker")
+        return real_solve(value, conditions, configuration_id, options, observed, cancelled)
+
+    monkeypatch.setattr(cfd, "solve", controlled_solve)
+    manager = JobManager()
+    try:
+        submitted = manager.submit(project, "cfd", Conditions(mach=0.3, wind_speed=0), options={
+            "backend": "cpu", "grid_resolution": 12, "cfl": 0.7,
+            "max_steps": 20, "flow_through_times": 8,
+            "run_until_converged": until_converged, "max_wall_seconds": wall_seconds,
+            "sample_limit": 100, "surface_limit": 100,
+        })
+        assert submitted["progress_basis"] == basis
+        assert entered.wait(timeout=5), manager.get(submitted["id"])
+        running = manager.get(submitted["id"])
+        assert running["status"] == "running" and running["result"] is None
+        assert running["progress_basis"] == basis
+        if basis == "convergence_unknown":
+            assert running["progress"] > 0.01  # ETA must be unknown despite apparent progress.
+            assert running["eta_seconds"] is None
+        elif not until_converged:
+            assert running["eta_seconds"] is not None and running["eta_seconds"] >= 0
+        manager.cancel(submitted["id"])
+        release.set()
+        stopped = completed(manager, submitted["id"])
+        assert stopped["status"] == "cancelled" and stopped["error"] is None
+        assert stopped["progress"] < 1 and stopped["eta_seconds"] is None
+        assert stopped["progress_basis"] == basis
+        assert "cancel" not in stopped and "project_snapshot" not in stopped
+        result = stopped["result"]
+        assert result is not None and result["summary"]["status"] == "cancelled"
+        assert result["summary"]["steps"] == 10 and not result["summary"]["converged"]
+        assert not result["summary"]["pressure_force_steady"]
+        assert np.ptp([row["pressure_pa"] for row in result["samples"]]) > 1
+        assert min(row["pressure_pa"] for row in result["samples"]) > 0
+        assert result["inputs"]["project_sha256"] == stopped["project_sha256"]
+        assert result["inputs"]["options"]["run_until_converged"] == until_converged
+        json.dumps(stopped, allow_nan=False)
+        with pytest.raises(ValueError, match="completed, numerically converged CFD"):
+            manager.submit(project, "fea", Conditions(), options={
+                "component_id": "body", "load_mode": "cfd_pressure",
+                "cfd_job_id": stopped["id"],
+            })
+    finally:
+        release.set()
+        manager.shutdown()

@@ -22,7 +22,7 @@ export function numberInputIssue(
 /** Prevent running with an unfinished numeric edit and silently using an older value. */
 export function assertValidNumberFields() {
   const input = document.querySelector<HTMLInputElement>(
-    '.inspector input[aria-invalid="true"]',
+    '.inspector input[aria-invalid="true"]:not(:disabled)',
   );
   if (!input) return;
   input.focus();

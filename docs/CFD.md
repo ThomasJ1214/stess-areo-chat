@@ -129,8 +129,9 @@ Options passed to `cfd.solve`:
 | `domain_padding` | 0.5 | Padding in multiples of corresponding geometry extent; downstream padding is at least 0.65 |
 | `max_cells` | 300,000 | Explicit allocation budget, maximum 2,000,000; excess grids are rejected |
 | `max_steps` | 5,000 | Maximum accepted conservative steps, 1–10,000 |
+| `run_until_converged` | false | Ignore step and physical-time ceilings; continue until numerical convergence, cancellation, or a nonzero wall-clock timeout |
 | `cfl` | 0.35 | CFL multiplier, 0.01–0.8 |
-| `max_wall_seconds` | 1,200 | Wall-clock integration budget, 1–3,600 seconds |
+| `max_wall_seconds` | 1,200 | Solver wall-clock budget, 0–86,400 seconds; **0 disables this timeout** |
 | `flow_through_times` | 2 | Target simulated time in domain-crossing times |
 | `max_physical_time` | derived | Optional explicit physical integration time in seconds |
 | `convergence_tolerance` | 0.00001 | Tolerance for conserved-state, wall-pressure, force and moment rate changes per crossing time |
@@ -142,9 +143,20 @@ Options passed to `cfd.solve`:
 The default grid is a quick experimental run, especially for thin fins; it
 is not sufficient merely because the solver finishes. Compare progressively
 refined grids and enlarged domains. Memory and runtime grow rapidly with
-resolution. Cell and time budgets prevent an unattended job from exhausting
-the workstation. A wall-clock budget is checked between steps and excludes
-final extraction time; it is not a precise process timeout.
+resolution. Cell budgets always limit grid allocations. Default time/step
+budgets make an initial run bounded; they are stopping rules, not an assurance
+that the flow reaches steady state. A wall-clock budget is checked between
+steps, includes voxelization, and excludes final extraction and the first cached
+CUDA check; it is not a precise process timeout.
+
+For a full numerical steady-state attempt, enable **Stop only at convergence**
+(`run_until_converged`) and set **Wall time limit** to **0**. This can run indefinitely
+when the flow does not settle; **Cancel** still stops between steps and preserves
+actual partial fields. A nonzero time limit remains active in convergence mode.
+The stored step count and target flow time remain useful reference budgets but
+do not stop that mode. Diagnostic history is thinned to at most 4,000 samples,
+retaining the first and latest sample, so long runs do not accumulate unlimited
+history memory. This temporal sampling does not alter the numerical state.
 
 The history reports accepted step, physical time, actual step size, normalized
 RMS conserved-state rate of change, raw normalized step change, minimum fluid
@@ -161,6 +173,22 @@ among many undisturbed farfield cells. Steady convergence therefore requires
 a domain crossing time. This criterion does not establish grid convergence or
 physical validation. Percentage and ETA refer to the configured work budget,
 not a promise that the underlying flow reaches steady state by that time.
+Unlimited convergence mode has no meaningful completion percentage or
+convergence ETA. Its progress text instead reports accepted steps, physical
+domain crossings, all residuals, and whether the half-crossing minimum time has
+been reached. `progress_basis = convergence_unknown` distinguishes that mode.
+
+The summary reports `domain_crossings_completed`,
+`minimum_convergence_time_s`, `minimum_convergence_time_reached`, measured
+integration steps per wall second, and simulated seconds per wall second.
+`estimated_seconds_to_minimum_flow_time` and
+`estimated_seconds_to_target_flow_time` extrapolate **current measured integration
+throughput**, excluding voxelization and extraction. These are estimates of time
+to a given physical flow time, never convergence estimates; changing waves,
+retries and GPU/CPU load can change them. A domain crossing is axial domain
+length divided by resultant freestream speed, with a 0.1-sound-speed floor at
+near-zero inflow. Reaching the minimum only permits the convergence test; all
+four residuals must still stay below tolerance for 20 successive steps.
 
 The `summary.status` value distinguishes `converged`, `step_budget`,
 `physical_time_budget`, `wall_clock_budget`, and `cancelled`. A budget-limited
@@ -180,6 +208,12 @@ solid; skin-friction force is absent. JSON exports include fidelity and warnings
 Pressure forces remain visible during transient or budget-limited runs as
 actual numerical outputs; `pressure_force_steady` explicitly distinguishes a
 converged result and `pressure_force_validated` is false in this release.
+`pressure_output_kind` explicitly calls an unfinished load a partial transient
+numerical pressure resultant, rather than a steady drag prediction. For example,
+a 100 m/s sea-level run with modest lateral wind is approximately Mach 0.294:
+its pressure drag is in the scheme's low-Mach dissipation region. A large force
+after a wall-clock timeout cannot be interpreted as the rocket's real drag.
+Longer runtime alone does not remove that numerical-method limitation.
 Only a converged result with appreciable lateral force receives `cp_m`, the
 least-squares position on the project X axis satisfying its lateral moment:
 `x_cp = (Fy*Mz - Fz*My)/(Fy²+Fz²)`. It is a **condition-specific pressure-resultant
@@ -196,11 +230,37 @@ runtime and a compatible installed NVIDIA driver are usable. Rendering uses
 the desktop GPU independently of numerical execution. Geometry voxelization
 and final JSON extraction run on CPU in either case.
 
-`auto` falls back to CPU and reports `backend = numpy-cpu` plus a warning.
+The application checks import, driver/runtime versions, device discovery, then
+a tiny **actual float64 allocation, compiled multiplication and reduction**.
+`gpu_diagnostics` in health capabilities and `cuda_diagnostics` in automatic/GPU
+CFD results report the selected device, compute capability, VRAM, CuPy version,
+CUDA driver/runtime versions, failed check stage and the actual exception reason.
+The check is cached until application restart to keep health polling inexpensive;
+restart after changing a driver. Enumeration alone is not counted as working
+numerical execution.
+
+`auto` falls back to CPU and reports `backend = numpy-cpu` plus the specific
+failed CUDA check and reason in its warning.
 An explicit `gpu` selection raises an error if CUDA is unavailable; it never
 pretends CPU work ran on a GPU. AMD/Intel rendering support does not imply CUDA
 solver support. The CUDA runtime can be bundled, but a hardware-specific GPU
 driver remains a prerequisite installed on the Windows computer.
+
+The finite-volume CPU/GPU kernels reuse already recovered primitive states for
+the Rusanov Euler fluxes. This removes redundant full-grid work without changing
+the conservative flux, reflected-wall pressure or positivity checks.
+
+## Why thin features need refinement
+
+`geometry_extent_cells` gives three-axis bounding-box resolution;
+`median_solid_cross_section_cells` gives the measured median occupied Y/Z spans
+of axial slices. Neither is a grid-accuracy guarantee. `fin_resolution` compares
+each active original fin's declared thickness against Cartesian cell support
+along the fin normal (including angular placement and cant). A thickness below
+two cells receives a specific refinement warning. Replacement CAD fin thickness
+is **unknown**, rather than inferred from obsolete OpenRocket dimensions. A
+zero-width or merged voxel fin can still produce plausible-looking pressure
+colors; inspect progressively refined grids before interpreting its loading.
 
 ## Verification and interpretation
 
@@ -227,7 +287,11 @@ driver remains a prerequisite installed on the Windows computer.
 - A nonzero Mach 0.3, 5-degree oblique-flow box run reaching the configured
   conserved-state **and pressure-load** steady-state criteria, with a condition-specific pressure-resultant
   CP near the symmetric box center and explicit unvalidated-force metadata.
-- Cancellation, JSON finiteness and explicit unavailable-GPU handling.
+- Cancellation, zero/nonzero wall timeout, full convergence mode beyond step and
+  flow-time ceilings, bounded history, JSON finiteness and explicit unavailable-GPU
+  handling. Hardware-discovery tests use controlled fake runtimes to verify error
+  stages, failed kernel execution, cache behavior and vendor messages; they do not
+  substitute for physical NVIDIA hardware validation.
 - Rejection of apparent whole-domain convergence while wall pressure/loads
   continue to change, and an explicit low-Mach dissipation warning.
 

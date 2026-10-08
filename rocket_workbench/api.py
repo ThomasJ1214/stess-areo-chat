@@ -21,6 +21,7 @@ from pydantic import Field, JsonValue, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
+from .alignment import AlignmentOptions, propose_alignment
 from .demo import demo_project
 from .jobs import JobManager, compare
 from .models import AnalysisSettings, Component, Conditions, FlightConfiguration, Model, Project, Transform, validate_project_references
@@ -43,15 +44,44 @@ class SettingsRequest(Model):
     settings: AnalysisSettings
 
 
+class AlignmentRequest(AlignmentOptions):
+    component_id: str
+    asset_id: str
+    include_mesh: bool = False
+
+
 class AttachRequest(Model):
     component_id: str
     asset_id: str
     transform: Transform = Field(default_factory=Transform)
     geometry_mode: str = "replacement"
+    auto_align: bool = False
+    alignment_options: AlignmentOptions = Field(default_factory=AlignmentOptions)
 
 
 class StandaloneRequest(Model):
     asset_id: str
+
+
+class FeaPreflightRequest(Model):
+    component_id: str
+    options: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class MotorSearchRequest(Model):
+    query: str = Field(default="", max_length=80)
+    manufacturer: str = Field(default="", max_length=80)
+    limit: int = Field(default=30, ge=1, le=50)
+
+
+class MotorPreviewRequest(Model):
+    motor_id: str = Field(pattern=r"^[a-fA-F0-9]{24}$")
+    simfile_id: str = Field(pattern=r"^[a-fA-F0-9]{24}$")
+
+
+class MotorImportRequest(Model):
+    project_id: str
+    review_token: str = Field(min_length=1, max_length=100)
 
 
 async def upload_bytes(file: UploadFile) -> bytes:
@@ -68,17 +98,14 @@ def _filename(name: str) -> str:
 
 
 def capabilities() -> dict:
-    gpu, detail = False, "CPU; GPU compute runtime not installed"
-    if importlib.util.find_spec("cupy"):
-        try:
-            import cupy
-            gpu = cupy.cuda.runtime.getDeviceCount() > 0
-            detail = "NVIDIA CUDA / CuPy" if gpu else "CPU; no compatible CUDA device detected"
-        except Exception:
-            detail = "CPU; CUDA runtime or compatible driver unavailable"
+    from .backenddiagnostics import cuda_diagnostics
+    diagnostics = cuda_diagnostics()
+    gpu = diagnostics["available"]
+    detail = "NVIDIA CUDA / CuPy" if gpu else f"CPU; {diagnostics['reason']}"
     return {"cad": importlib.util.find_spec("OCP") is not None,
             "fea": importlib.util.find_spec("gmsh") is not None,
             "cfd": True, "gpu_compute": gpu, "gpu_backend": detail,
+            "gpu_diagnostics": diagnostics,
             "desktop": importlib.util.find_spec("PySide6") is not None}
 
 
@@ -92,6 +119,8 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
     lock = threading.RLock()
     app.state.project = demo_project()
     app.state.jobs = JobManager()
+    from .motor_catalog import MotorCatalog
+    app.state.motor_catalog = MotorCatalog()
     if data_dir:
         data_dir.mkdir(parents=True, exist_ok=True)
         session = data_dir / "last-project.json"
@@ -201,6 +230,47 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
         save(value)
         return motors
 
+    # Catalog lookups only transmit the entered designation/manufacturer and
+    # selected provider IDs; project geometry and simulation data stay local.
+    @app.post("/api/motors/search")
+    async def search_motors(request: MotorSearchRequest):
+        from .motor_catalog import CatalogUnavailable
+        try:
+            return await run_in_threadpool(app.state.motor_catalog.search, request.query, request.manufacturer, request.limit)
+        except CatalogUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.get("/api/motors/{motor_id}/curves")
+    async def motor_curves(motor_id: str):
+        from .motor_catalog import CatalogUnavailable
+        try:
+            return await run_in_threadpool(app.state.motor_catalog.curves, motor_id)
+        except CatalogUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/motors/preview")
+    async def preview_motor(request: MotorPreviewRequest):
+        from .motor_catalog import CatalogUnavailable
+        try:
+            return await run_in_threadpool(app.state.motor_catalog.preview, request.motor_id, request.simfile_id)
+        except CatalogUnavailable as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/motors/import")
+    def import_reviewed_motor(request: MotorImportRequest):
+        motor = app.state.motor_catalog.reviewed_motor(request.review_token)
+        # Import into the latest project under the lock, so a slow network
+        # lookup cannot overwrite design edits or a newly opened project.
+        with lock:
+            if request.project_id != app.state.project.id:
+                raise HTTPException(409, "The project changed during motor review. Search/preview again in the current project.")
+            value = project()
+            if not any(item.provenance.get("provider") == motor.provenance.get("provider")
+                       and item.provenance.get("simfile_id") == motor.provenance.get("simfile_id")
+                       and item.provenance.get("curve_sha256") == motor.provenance.get("curve_sha256") for item in value.motors):
+                value.motors.append(motor)
+            return save(value)
+
     @app.post("/api/import/polar")
     async def import_polar(file: UploadFile = File(...)):
         from .solvers.aero import geometry_signature
@@ -246,15 +316,30 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
         return Response(value.model_dump_json(indent=2), media_type="application/json",
             headers={"Content-Disposition": f'attachment; filename="{_filename(value.name)}.rocket.json"'})
 
+    @app.post("/api/geometry/alignment")
+    def alignment(request: AlignmentRequest):
+        value = project()
+        component = next((c for c in value.components if c.id == request.component_id), None)
+        asset = next((a for a in value.assets if a.id == request.asset_id), None)
+        if component is None or asset is None:
+            raise ValueError("Choose an existing component and imported geometry asset.")
+        options = AlignmentOptions.model_validate(request.model_dump(exclude={"component_id", "asset_id", "include_mesh"}))
+        return propose_alignment(value, component, asset, options, include_mesh=request.include_mesh)
+
     @app.post("/api/geometry/attach")
     def attach(request: AttachRequest):
         value = project()
         component = next((c for c in value.components if c.id == request.component_id), None)
-        if component is None or not any(a.id == request.asset_id for a in value.assets):
+        asset = next((a for a in value.assets if a.id == request.asset_id), None)
+        if component is None or asset is None:
             raise ValueError("Choose an existing component and imported geometry asset.")
         if request.geometry_mode not in {"original", "replacement"}:
             raise ValueError("Geometry mode must be original or replacement.")
-        component.asset_id, component.transform = request.asset_id, request.transform
+        transform = request.transform
+        if request.auto_align:
+            proposal = propose_alignment(value, component, asset, request.alignment_options)
+            transform = Transform.model_validate(proposal["transform"])
+        component.asset_id, component.transform = request.asset_id, transform
         component.geometry_mode = request.geometry_mode
         return save(value)
 
@@ -304,6 +389,11 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
             answer.append({"id": component.id, "name": component.name, "vertices": mesh.vertices.tolist(), "faces": mesh.faces.tolist()})
         return {"components": answer}
 
+    @app.post("/api/fea/preflight")
+    async def fea_preflight(request: FeaPreflightRequest):
+        from .fea_setup import preflight
+        return await run_in_threadpool(preflight, project(), request.component_id, request.options)
+
     @app.post("/api/analyze")
     def analysis(request: AnalyzeRequest):
         from .solvers.aero import analyze
@@ -349,8 +439,8 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
             job = app.state.jobs.get(identity)
         except KeyError:
             raise HTTPException(404, "Job not found or expired.")
-        if job["status"] != "completed":
-            raise ValueError("Only completed simulations can be exported.")
+        if job["status"] != "completed" and not (job["status"] == "cancelled" and job["kind"] == "cfd" and job.get("result") is not None):
+            raise ValueError("Export requires a completed simulation or actual retained partial CFD fields.")
         result = job["result"]
         if format == "json":
             content, content_type = json.dumps(result, indent=2, allow_nan=False), "application/json"

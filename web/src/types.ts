@@ -65,6 +65,7 @@ export interface Motor {
   propellant_mass: number;
   curve: number[][];
   source: string;
+  provenance?: Record<string, unknown>;
 }
 export interface Asset {
   id: string;
@@ -128,6 +129,8 @@ export interface Job {
   id: string;
   status: string;
   progress: number;
+  progress_basis?:
+    "completion_fraction" | "budget_usage" | "convergence_unknown";
   message: string;
   elapsed_seconds: number;
   eta_seconds: number | null;

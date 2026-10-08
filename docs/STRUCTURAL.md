@@ -138,6 +138,49 @@ points. Interior tabs are fixed as embedded supports. For arbitrary CAD,
 choose a justified plane/tolerance.
 The GUI's displacement scale changes display only; physical results stay in metres.
 
+### Choose a mesh before starting a solve
+
+The Structural page can inspect the selected actual part through
+`POST /api/fea/preflight`, with `component_id` and an `options` object containing
+`mesh_size` and `max_elements`. This read-only check constructs the actual
+triangle surface but does not call the native volume mesher. It reports solid
+validity, placed bounds, the material, a mesh-size suggestion, and the same
+thickness and resource checks used by the solver. A passing preflight is not
+validation of supports, loading, element quality, or convergence.
+
+For an original OpenRocket part, **Use recommended mesh** starts from the smaller
+of part scale/12 and its procedural thickness/2. Thus a 3 mm procedural fin
+requires a mesh size no larger than 1.5 mm. The recommendation is a starting
+mesh, not proof that first-order tetrahedra accurately predict bending. For CAD,
+the suggestion is scale/12; the OpenRocket thickness parameter is deliberately
+not assigned to the replacement solid. CAD thin features must be measured and
+resolved by the user, with a mesh-refinement study.
+
+If the recommendation exceeds the current budget, the preflight indicates
+whether increasing the budget up to 300,000 elements can pass the preliminary
+screen. If even the maximum screen cannot fit the whole thin part, retain the
+thickness guard. Run the separate beam/fin estimates for supported original
+tubes/fins, or prepare and import a smaller physical CAD part in your CAD
+software. The app does not currently include a region-cutting tool or a shell
+FEA solver. Merely coarsening a thin wall to obtain a coloured stress plot would
+hide inadequate bending resolution.
+
+The nominal pre-mesh estimate is `6 × material volume / mesh_size³`, corresponding
+to six tetrahedra per edge-sized cube. The existing coarse budget screen allows
+this estimate to be up to four times `max_elements`; equivalently it checks
+`1.5 × material volume / mesh_size³ <= max_elements`. Both counts are reported
+separately. This approximate screen is not a guaranteed bound: curvature,
+thin features, surface remeshing, and disconnected solids can change the count.
+The actual Gmsh tetrahedron count must remain below the declared hard limit.
+Extremely small requests whose count cannot be usefully represented are
+reported as unavailable counts and rejected by the budget check.
+
+For original fins the preflight suggests the procedural radial-root clamp.
+This identifies a useful supported option; it does not establish that your
+real fin joint is rigid or correctly bonded. Choose and inspect the physical
+support yourself. CAD touching another rocket part does not create contact or
+bonding automatically.
+
 `aero_pressure` uses the shared body-frame mean freestream (including lateral
 wind) and q = ρ|relative flow|²/2. Wind direction is a toward angle: 0° is +Y,
 90° is +Z. Specified Mach sets the main stream speed before lateral wind is
@@ -190,9 +233,10 @@ physical/grid validation or correct stagnation/shock resolution.
 
 First-order solid tetrahedra need refinement to represent bending. Procedural
 thin components require mesh size ≤ thickness/2. Whole 12 ft thin rocket bodies
-will often exceed the safe volume-element budget; the solver reports this
-rather than showing a coarse misleading stress image. A dedicated shell solver
-would be the appropriate future extension. Imported CAD wall thickness cannot
+will often exceed the volume-element budget; the preflight and solver report
+this rather than showing a coarse misleading stress image. A dedicated shell
+solver would be the appropriate future extension and is not currently included.
+Imported CAD wall thickness cannot
 be inferred reliably from an arbitrary triangle surface: the user must choose
 an adequate mesh and demonstrate convergence, particularly for hollow parts.
 
@@ -256,6 +300,14 @@ exceedance also produce warnings, not simulated nonlinear failure.
 * Invalid support/load options, extremely small mesh requests and unverified
   enclosed material volumes fail before invoking the native mesher. Deliberately
   unloaded solid solves preserve zero pressure and an explicit warning.
+
+`tests/test_fea_setup.py` additionally verifies that a thin fin's suggested mesh
+retains the thickness constraint and completes an actual supported solid solve,
+that a long thin tube remains blocked by the resource limit, and that switching
+to a small CAD bar produces a new geometry-specific suggestion without inventing
+CAD thickness. The bar's prescribed traction yields its known end-area force.
+Read-only API checks verify no volume meshing or project changes occur during
+preflight; invalid material volume and extreme mesh requests remain rejected.
 
 These establish implementation consistency for these cases, not validation of
 arbitrary rocket structures, CAD topology, aerodynamic pressure predictions,
