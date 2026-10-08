@@ -1,0 +1,294 @@
+{
+  "schema_version": 1,
+  "id": "synthetic-example-project",
+  "name": "Synthetic tutorial rocket",
+  "components": [
+    {
+      "id": "nose",
+      "name": "Ogive nose",
+      "kind": "nosecone",
+      "parent_id": null,
+      "x": 0.0,
+      "length": 0.45,
+      "radius": 0.06,
+      "radius_end": null,
+      "thickness": 0.003,
+      "fin_count": 3,
+      "root_chord": 0.25,
+      "tip_chord": 0.1,
+      "span": 0.12,
+      "sweep": 0.1,
+      "mass_override": 0.65,
+      "cg_override": null,
+      "material_id": "fiberglass",
+      "asset_id": null,
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0
+      },
+      "geometry_mode": "original",
+      "enabled": true,
+      "external": true,
+      "metadata": {
+        "nose_shape": "ogive"
+      }
+    },
+    {
+      "id": "payload",
+      "name": "Payload bay — replace with CAD",
+      "kind": "bodytube",
+      "parent_id": null,
+      "x": 0.45,
+      "length": 0.65,
+      "radius": 0.06,
+      "radius_end": null,
+      "thickness": 0.003,
+      "fin_count": 3,
+      "root_chord": 0.25,
+      "tip_chord": 0.1,
+      "span": 0.12,
+      "sweep": 0.1,
+      "mass_override": 1.25,
+      "cg_override": null,
+      "material_id": "fiberglass",
+      "asset_id": null,
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0
+      },
+      "geometry_mode": "original",
+      "enabled": true,
+      "external": true,
+      "metadata": {}
+    },
+    {
+      "id": "airframe",
+      "name": "Main airframe",
+      "kind": "bodytube",
+      "parent_id": null,
+      "x": 1.1,
+      "length": 1.65,
+      "radius": 0.06,
+      "radius_end": null,
+      "thickness": 0.003,
+      "fin_count": 3,
+      "root_chord": 0.25,
+      "tip_chord": 0.1,
+      "span": 0.12,
+      "sweep": 0.1,
+      "mass_override": 1.8,
+      "cg_override": null,
+      "material_id": "fiberglass",
+      "asset_id": null,
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0
+      },
+      "geometry_mode": "original",
+      "enabled": true,
+      "external": true,
+      "metadata": {}
+    },
+    {
+      "id": "fins",
+      "name": "Fiberglass fins",
+      "kind": "trapezoidfinset",
+      "parent_id": null,
+      "x": 2.3,
+      "length": 0.4,
+      "radius": 0.06,
+      "radius_end": null,
+      "thickness": 0.005,
+      "fin_count": 3,
+      "root_chord": 0.4,
+      "tip_chord": 0.18,
+      "span": 0.18,
+      "sweep": 0.12,
+      "mass_override": null,
+      "cg_override": null,
+      "material_id": "fiberglass",
+      "asset_id": null,
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0
+      },
+      "geometry_mode": "original",
+      "enabled": true,
+      "external": true,
+      "metadata": {}
+    },
+    {
+      "id": "avionics",
+      "name": "Avionics mass",
+      "kind": "masscomponent",
+      "parent_id": null,
+      "x": 1.0,
+      "length": 0.1,
+      "radius": 0.035,
+      "radius_end": null,
+      "thickness": 0.002,
+      "fin_count": 3,
+      "root_chord": 0.25,
+      "tip_chord": 0.1,
+      "span": 0.12,
+      "sweep": 0.1,
+      "mass_override": 0.4,
+      "cg_override": null,
+      "material_id": "fiberglass",
+      "asset_id": null,
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": 1.0
+      },
+      "geometry_mode": "original",
+      "enabled": true,
+      "external": false,
+      "metadata": {}
+    }
+  ],
+  "configurations": [
+    {
+      "id": "dual",
+      "name": "Dual deployment",
+      "active_component_ids": null,
+      "motor_id": "demo-motor",
+      "motor_mount_id": null,
+      "motor_position": null,
+      "deployment": "dual",
+      "drogue_cd_area": 0.35,
+      "main_cd_area": 3.5,
+      "main_deploy_altitude": 250.0,
+      "apogee_delay": 0.5,
+      "ignition_delay": 0.0
+    },
+    {
+      "id": "single",
+      "name": "Single deployment",
+      "active_component_ids": null,
+      "motor_id": "demo-motor",
+      "motor_mount_id": null,
+      "motor_position": null,
+      "deployment": "single",
+      "drogue_cd_area": 0.35,
+      "main_cd_area": 3.5,
+      "main_deploy_altitude": 250.0,
+      "apogee_delay": 0.5,
+      "ignition_delay": 0.0
+    }
+  ],
+  "active_configuration_id": "dual",
+  "materials": [
+    {
+      "id": "fiberglass",
+      "name": "Fiberglass",
+      "density": 1850.0,
+      "youngs_modulus": 25000000000.0,
+      "poisson_ratio": 0.25,
+      "yield_strength": 200000000.0,
+      "description": "Isotropic engineering surrogate; verify laminate properties."
+    },
+    {
+      "id": "aluminum",
+      "name": "Aluminum 6061-T6",
+      "density": 2700.0,
+      "youngs_modulus": 68900000000.0,
+      "poisson_ratio": 0.33,
+      "yield_strength": 276000000.0,
+      "description": "Typical room-temperature values; verify stock and temper."
+    }
+  ],
+  "motors": [
+    {
+      "id": "demo-motor",
+      "name": "Synthetic demonstration motor",
+      "diameter": 0.075,
+      "length": 0.35,
+      "dry_mass": 0.75,
+      "propellant_mass": 0.85,
+      "curve": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.05,
+          800.0
+        ],
+        [
+          0.15,
+          1100.0
+        ],
+        [
+          1.0,
+          1000.0
+        ],
+        [
+          2.0,
+          850.0
+        ],
+        [
+          2.5,
+          650.0
+        ],
+        [
+          2.8,
+          0.0
+        ]
+      ],
+      "source": "Synthetic educational curve. Replace with validated manufacturer/test data before design decisions."
+    }
+  ],
+  "assets": [],
+  "unit_system": "metric",
+  "import_warnings": [
+    "Demonstration geometry and motor are synthetic; this is not a validated launch design."
+  ],
+  "metadata": {
+    "demo": true
+  }
+}

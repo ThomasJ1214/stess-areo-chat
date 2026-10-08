@@ -1,0 +1,14 @@
+* text=auto
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+*.ork -text
+*.stl -text
+# Preserve CAD exporter formatting and upstream license text verbatim.
+*.step whitespace=-blank-at-eol
+tests/fixtures/openrocket/LICENSE.TXT whitespace=-blank-at-eol,-blank-at-eof

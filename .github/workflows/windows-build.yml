@@ -1,0 +1,89 @@
+name: Windows offline installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main']
+    tags: ['v*']
+
+# Artifacts stay within this repository. This workflow does not publish a
+# public release or change repository visibility.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install locked desktop, engineering and bundled CUDA libraries
+        run: uv sync --locked --extra desktop --extra dev --extra gpu
+      - name: Tests before packaging
+        run: uv run --no-sync pytest
+      - name: Frontend dependency installation
+        run: npm ci
+        working-directory: web
+      - name: Frontend tests
+        run: npm test
+        working-directory: web
+      - name: Install Inno Setup when absent
+        shell: pwsh
+        run: |
+          if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build and smoke-test the frozen application
+        run: uv run --no-sync python scripts/build_windows.py
+      - name: Test silent installation and installed calculation engine
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem release/*-setup.exe | Select-Object -First 1).FullName
+          $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
+          $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR="' + $installed + '"') -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $smoke = Start-Process -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($smoke.ExitCode -ne 0) { throw "Installed smoke test failed: $($smoke.ExitCode)" }
+      - name: Test installed native desktop, API session and WebGL viewport
+        shell: pwsh
+        env:
+          # Hosted VMs have no workstation GPU. Test the complete graphics path
+          # with software WebGL; this does not establish hardware GPU validation.
+          QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu-compositing --ignore-gpu-blocklist --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader'
+        run: |
+          $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
+          $data = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-desktop-smoke'
+          $ui = Start-Process -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ArgumentList '--desktop-smoke-test','--data-dir',('"' + $data + '"') -Wait -PassThru
+          if ($ui.ExitCode -ne 0) {
+            if (Test-Path (Join-Path $data 'application.log')) { Get-Content (Join-Path $data 'application.log') }
+            throw "Installed native desktop smoke test failed: $($ui.ExitCode)"
+          }
+      - name: Preserve packaging diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RocketWorkbench-windows-build-diagnostics
+          path: |
+            ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
+            ${{ runner.temp }}/rocket-workbench-smoke-error-*.log
+            build/RocketWorkbench/warn-*.txt
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RocketWorkbench-windows-x64-installer
+          path: |
+            release/*-setup.exe
+            release/*.sha256
+            build/bundle_manifest.json
+          if-no-files-found: error
+          retention-days: 30
