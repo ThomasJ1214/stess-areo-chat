@@ -38,6 +38,7 @@ include = ["rocket_workbench*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra"
 
 [tool.uv]
