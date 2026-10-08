@@ -29,7 +29,10 @@ jobs:
       - name: Install locked desktop, engineering and bundled CUDA libraries
         run: uv sync --locked --extra desktop --extra dev --extra gpu
       - name: Tests before packaging
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest --junitxml=build/pytest-results.xml
+      - name: Report test failures
+        if: always()
+        run: python scripts/summarize_tests.py build/pytest-results.xml
       - name: Frontend dependency installation
         run: npm ci
         working-directory: web
@@ -82,6 +85,7 @@ jobs:
         with:
           name: RocketWorkbench-windows-build-diagnostics
           path: |
+            build/pytest-results.xml
             ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
             ${{ runner.temp }}/RocketWorkbench-install.log
             ${{ runner.temp }}/rocket-workbench-smoke-error-*.log
