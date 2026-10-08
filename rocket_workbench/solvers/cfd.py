@@ -1,7 +1,7 @@
 """Experimental compressible Euler CFD on a uniform, Cartesian cut-free grid.
 
 This is a conservative first-order finite-volume solver, not a viscous CFD or
-turbulence model.  Solid cells impose reflected slip-wall Riemann states.
+turbulence model. Solid faces use the analytic reflected slip-wall Riemann flux.
 The staircase surface and coarse-grid numerical dissipation are significant.
 Every field returned by ``solve`` comes from the evolving conserved state.
 """
@@ -57,6 +57,27 @@ def rusanov_flux(left, right, axis: int, gamma: float = GAMMA, xp=np):
     return 0.5 * (euler_flux(left, axis, gamma, xp) + euler_flux(right, axis, gamma, xp)) - 0.5 * speed[..., None] * (right - left)
 
 
+def wall_riemann_pressure(density, pressure, velocity_toward_wall, gamma=GAMMA, xp=np):
+    """Exact symmetric Euler Riemann pressure at an impermeable stationary wall.
+
+    The mirror problem has zero contact velocity. Compression follows the
+    Rankine-Hugoniot shock curve; expansion follows the isentropic rarefaction
+    curve. A sufficiently strong expansion creates genuine vacuum at the wall.
+    Unlike a Rusanov reflection, an expansion cannot give negative pressure.
+    """
+    density = xp.asarray(density)
+    pressure = xp.asarray(pressure)
+    toward = xp.asarray(velocity_toward_wall)
+    sound = xp.sqrt(gamma * pressure / density)
+    # f(p*)=(p*-p)*sqrt(2/((gamma+1)*rho)/(p*+B))=u_toward.
+    compression_speed = xp.maximum(toward, 0)
+    d = compression_speed**2 * (gamma + 1) * density / 2
+    b = (gamma - 1) * pressure / (gamma + 1)
+    shock = pressure + d / 2 + xp.sqrt(d * (d + 4 * (pressure + b))) / 2
+    rarefaction = pressure * xp.maximum(0, 1 + (gamma - 1) * toward / (2 * sound)) ** (2 * gamma / (gamma - 1))
+    return xp.where(toward >= 0, shock, rarefaction)
+
+
 def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, xp=np):
     first = xp.take(state, [0], axis=axis)
     last = xp.take(state, [-1], axis=axis)
@@ -79,16 +100,20 @@ def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, x
     right = xp.concatenate((state, right_ghost), axis=axis)
     solid_left = xp.concatenate((first_solid, solid), axis=axis)
     solid_right = xp.concatenate((solid, last_solid), axis=axis)
-    # The mirror has the same density, energy and tangential momenta. Its normal
-    # momentum changes sign, imposing exactly zero mass/energy flow through a wall.
-    mirrored_left = left.copy()
-    mirrored_left[..., axis + 1] *= -1
-    mirrored_right = right.copy()
-    mirrored_right[..., axis + 1] *= -1
-    right = xp.where((~solid_left & solid_right)[..., None], mirrored_left, right)
-    left = xp.where((solid_left & ~solid_right)[..., None], mirrored_right, left)
+    # Rusanov is used only on fluid/fluid faces. Solid-face entries below are
+    # overwritten by the analytic reflected Riemann flux, avoiding full-grid
+    # mirror-state copies and their additional CPU/GPU memory allocations.
     flux = rusanov_flux(left, right, axis, gamma, xp)
     flux = xp.where((solid_left & solid_right)[..., None], 0.0, flux)
+    wall = solid_left ^ solid_right
+    fluid = xp.where(solid_left[wall][..., None], right[wall], left[wall])
+    rho, velocity, pressure, _ = primitives(fluid, gamma, xp)
+    toward = xp.where(solid_left[wall], -velocity[..., axis], velocity[..., axis])
+    # The exact reflected Riemann solution transports neither mass nor energy
+    # through the stationary wall. The normal pressure impulse is the only flux.
+    wall_flux = xp.zeros_like(fluid)
+    wall_flux[..., axis + 1] = wall_riemann_pressure(rho, pressure, toward, gamma, xp)
+    flux[wall] = wall_flux
     return flux, solid_left, solid_right
 
 
@@ -150,8 +175,19 @@ def _number(options, name, default, low, high, integer=False):
     return int(value) if integer else value
 
 
-def _voxel_domain(mesh, options):
-    """Voxelize the actual combined external mesh; interiors are impermeable solids."""
+def _exterior_flow_mask(surface_solid):
+    """Block enclosed space in a copied flow grid, preserving boundary-connected air.
+
+    Six-neighbor Cartesian connectivity matches the solver's six face fluxes.
+    Material and sealed air cavities are both nonflow; this operation changes no
+    CAD triangles, signed material volume, asset, or FEA geometry.
+    """
+    from scipy.ndimage import binary_fill_holes, generate_binary_structure
+    return binary_fill_holes(surface_solid, structure=generate_binary_structure(3, 1))
+
+
+def _voxel_domain(mesh, options, *, diagnostics=None):
+    """Voxelize exterior-flow boundaries on a separate immutable-source flow grid."""
     if len(mesh.vertices) == 0 or len(mesh.faces) == 0:
         raise ValueError("CFD needs external rocket geometry.")
     if not np.isfinite(mesh.vertices).all():
@@ -182,7 +218,7 @@ def _voxel_domain(mesh, options):
     # imported triangles exactly before discretization and avoids ray/rtree deps.
     grid_mesh = mesh.copy()
     grid_mesh.vertices /= spacing
-    voxel = grid_mesh.voxelized(pitch=1.0, method="subdivide").fill()
+    voxel = grid_mesh.voxelized(pitch=1.0, method="subdivide")
     points = np.asarray(voxel.points)
     origin = lower
     indices = np.rint(points - origin / spacing).astype(int)
@@ -195,6 +231,23 @@ def _voxel_domain(mesh, options):
         raise ValueError("The voxel grid does not resolve any solid geometry.")
     if solid[0].any() or solid[-1].any() or solid[:, 0].any() or solid[:, -1].any() or solid[:, :, 0].any() or solid[:, :, -1].any():
         raise ValueError("Geometry intersects the farfield boundary; increase domain_padding.")
+    surface_cells = int(solid.sum())
+    solid = _exterior_flow_mask(solid)
+    # These counts deliberately distinguish surface voxels from all enclosed
+    # nonflow volume, not material from air: boundary tessellation alone cannot
+    # establish a trustworthy volumetric material/void decomposition.
+    if diagnostics is not None:
+        digest = hashlib.sha256()
+        digest.update(np.asarray(solid.shape, dtype="<i8").tobytes())
+        digest.update(np.asarray(spacing, dtype="<f8").tobytes())
+        digest.update(np.asarray(origin, dtype="<f8").tobytes())
+        digest.update(np.packbits(solid, bitorder="little").tobytes())
+        diagnostics.update(surface_voxel_cells=surface_cells,
+                           enclosed_nonflow_cells=int(solid.sum()) - surface_cells,
+                           exterior_fluid_cells=int((~solid).sum()),
+                           aerodynamic_voxel_sha256=digest.hexdigest(),
+                           aerodynamic_geometry_policy="Only air connected to the six farfield faces is solved; sealed interiors are nonflow",
+                           source_material_mesh_modified=False)
     warnings = []
     if not mesh.is_watertight:
         warnings.append("The combined mesh is not watertight. Surface voxels were filled where enclosed; leaks and overlaps may change the solid mask. Inspect the voxel counts and use closed CAD parts.")
@@ -207,44 +260,65 @@ def _voxel_domain(mesh, options):
     if diameter_cells < 8:
         warnings.append(f"The median solid cross-section spans only {diameter_cells:.1f} transverse cells. Refine substantially before interpreting pressure forces.")
     warnings.append("Fins or gaps thinner than one cell are stair-stepped or merged; mesh refinement and domain-size studies are required.")
-    warnings.append("Closed assembled cavities are filled as impermeable solids. Open bores and leaks remain flow passages; cap an imported opening only if the physical flight vehicle is actually sealed.")
+    warnings.append("Aerodynamics uses only exterior-connected air: sealed interior space is blocked in a separate flow grid and generates no internal pressure faces. Source CAD cavities, component mass and FEA geometry are unchanged. Open bores and leaks remain flow passages; cap an opening only if the physical vehicle is sealed.")
     return solid, spacing, origin, warnings
 
 
-def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_inf, limit):
-    """Integrate actual wall Riemann pressure on every exposed voxel face."""
-    positions, pressures, normals = [], [], []
-    total_force = np.zeros(3)
-    total_moment = np.zeros(3)
+def _wall_geometry(solid, spacing, origin):
+    """Positions, solid-outward normals, areas and adjacent fluid-cell indices."""
+    positions, normals, areas, fluid_indices = [], [], [], []
     for axis in range(3):
         area = float(np.prod(np.delete(spacing, axis)))
-        flux, left_solid, right_solid = _axis_flux(state, solid, axis, farfield)
+        end_shape = list(solid.shape)
+        end_shape[axis] = 1
+        empty = np.zeros(end_shape, dtype=bool)
+        left_solid = np.concatenate((empty, solid), axis=axis)
+        right_solid = np.concatenate((solid, empty), axis=axis)
         boundary = left_solid ^ right_solid
         indices = np.argwhere(boundary)
         if not len(indices):
             continue
-        pressure = flux[..., axis + 1][boundary]
         # Face k separates centers k-1 and k. Outward normal points from solid to fluid.
         position = origin + indices * spacing
         position[:, axis] -= spacing[axis] / 2
         normal = np.zeros_like(position)
         normal[:, axis] = np.where(left_solid[boundary], 1.0, -1.0)
-        force = -(pressure - pressure_inf)[:, None] * normal * area
-        total_force += np.sum(force, axis=0)
-        total_moment += np.sum(np.cross(position, force), axis=0)
+        fluid = indices.copy()
+        fluid[:, axis] -= right_solid[boundary].astype(int)
+        if np.any(fluid < 0) or np.any(fluid >= np.asarray(solid.shape)):
+            raise ValueError("Solid geometry touches the external fluid boundary.")
         positions.append(position)
-        pressures.append(pressure)
         normals.append(normal)
+        areas.append(np.full(len(indices), area))
+        fluid_indices.append(fluid)
     if not positions:
         raise RuntimeError("No exposed wall faces were found in the solid grid.")
-    positions = np.concatenate(positions)
-    pressures = np.concatenate(pressures)
-    normals = np.concatenate(normals)
+    return dict(positions=np.concatenate(positions), normals=np.concatenate(normals),
+                areas=np.concatenate(areas), fluid_indices=np.concatenate(fluid_indices))
+
+
+def _wall_pressure(state, wall, xp=np):
+    indices = wall["fluid_indices"]
+    fluid = state[indices[:, 0], indices[:, 1], indices[:, 2]]
+    rho, velocity, pressure, _ = primitives(fluid, xp=xp)
+    toward = -xp.sum(velocity * wall["normals"], axis=-1)
+    return wall_riemann_pressure(rho, pressure, toward, xp=xp)
+
+
+def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_inf, limit):
+    """Integrate the same exact wall Riemann flux used by the conservative update."""
+    wall = _wall_geometry(solid, spacing, origin)
+    positions, normals = wall["positions"], wall["normals"]
+    pressures = _wall_pressure(state, wall)
+    force = -(pressures - pressure_inf)[:, None] * normals * wall["areas"][:, None]
+    total_force = force.sum(axis=0)
+    total_moment = np.cross(positions, force).sum(axis=0)
     count = len(pressures)
     take = np.linspace(0, count - 1, min(count, limit), dtype=int)
     q = 0.5 * rho_inf * speed**2
+    coefficient_defined = q > pressure_inf * np.finfo(float).eps * 64
     rows = [dict(position=positions[i].tolist(), pressure_pa=float(pressures[i]),
-                 pressure_coefficient=float((pressures[i] - pressure_inf) / q) if q > 0 else None,
+                 pressure_coefficient=float((pressures[i] - pressure_inf) / q) if coefficient_defined else None,
                  normal=normals[i].tolist()) for i in take]
     return rows, total_force, total_moment, count, int(np.sum(pressures <= 0))
 
@@ -279,7 +353,8 @@ def solve(project, conditions, configuration_id: str | None = None,
     mesh_digest = hashlib.sha256()
     mesh_digest.update(np.asarray(mesh.vertices, dtype="<f8").tobytes())
     mesh_digest.update(np.asarray(mesh.faces, dtype="<i8").tobytes())
-    solid_cpu, spacing, origin, voxel_warnings = _voxel_domain(mesh, options)
+    geometry_diagnostics = {}
+    solid_cpu, spacing, origin, voxel_warnings = _voxel_domain(mesh, options, diagnostics=geometry_diagnostics)
     warnings.extend(voxel_warnings)
     air = atmosphere(conditions.altitude, conditions.temperature_delta)
     # The shared aerodynamic convention includes wind and treats optional Mach
@@ -300,17 +375,34 @@ def solve(project, conditions, configuration_id: str | None = None,
         raise ValueError("The actual freestream including lateral wind exceeds the supported Mach 2 range.")
     if conditions.turbulence:
         warnings.append("The turbulence input is not modeled by inviscid Euler; no turbulent or viscous fluctuations are synthesized.")
+    if 0 < actual_mach < 0.3:
+        warnings.append("Low-Mach flow below 0.3: this acoustic-speed Rusanov scheme has no all-speed preconditioning. Numerical dissipation can dominate the small physical pressure differences; pressure drag is especially unreliable even if the residual converges.")
     warnings.extend([
         "Experimental inviscid Euler: no skin friction, boundary layers, transition, viscous separation, heat transfer, turbulence or wall/shear stress.",
         "Unvalidated first-order stair-step grid. Supersonic shocks can be represented, but transonic/drag predictions need grid/domain convergence and comparison to trusted measurements or a validated viscous solver.",
         "Prescribed freestream on all six domain faces can reflect disturbances, especially for subsonic flow; enlarge the domain and inspect sensitivity.",
-        "Surface pressure uses the slip-wall numerical momentum flux; absolute pressure and gauge pressure forces are available, but these are not structural stress results.",
+        "Surface pressure uses the exact reflected Euler slip-wall Riemann momentum flux; absolute pressure and gauge pressure forces are available, but these are not structural stress results.",
     ])
     farfield_cpu = conserved(rho_inf, velocity, pressure_inf)
     farfield = xp.asarray(farfield_cpu)
     solid = xp.asarray(solid_cpu)
     state = xp.broadcast_to(farfield, solid_cpu.shape + (5,)).copy()
     fluid_count = int(np.sum(~solid_cpu))
+    wall_cpu = _wall_geometry(solid_cpu, spacing, origin)
+    wall = {key: xp.asarray(value) for key, value in wall_cpu.items()}
+    previous_wall_pressure = _wall_pressure(state, wall, xp)
+    # A whole-domain RMS can be diluted by many nearly undisturbed farfield
+    # cells. Independently require surface pressure, force and moment rates to
+    # settle on dynamic-pressure scales before accepting pressure-transfer FEA.
+    dynamic_pressure = 0.5 * rho_inf * speed**2
+    if dynamic_pressure <= pressure_inf * np.finfo(float).eps * 64:
+        warnings.append("Pressure coefficient is undefined: incoming dynamic pressure is zero or too small relative to atmospheric-pressure floating-point precision. Absolute solved pressure is retained.")
+    pressure_scale = max(dynamic_pressure, pressure_inf * 1e-6)
+    projected_area = float(np.sum(wall_cpu["areas"] * np.abs(wall_cpu["normals"] @ (velocity / speed)))) / 2 if speed else float(np.sum(wall_cpu["areas"])) / 2
+    force_scale = max(pressure_scale * projected_area, 1e-18)
+    geometry_extent = np.ptp(np.asarray(mesh.vertices), axis=0)
+    moment_scale = force_scale * float(np.max(geometry_extent))
+    relative_wall_positions = wall["positions"] - xp.asarray(np.mean(mesh.bounds, axis=0))
     # Reference scales normalize change in each conserved quantity separately.
     momentum_scale = rho_inf * max(speed, sound_inf)
     scales = xp.asarray([rho_inf, momentum_scale, momentum_scale, momentum_scale, float(farfield_cpu[4])])
@@ -324,6 +416,7 @@ def solve(project, conditions, configuration_id: str | None = None,
     steps = 0
     stable_streak = 0
     rejected_steps = 0
+    wall_pressure_residual = force_residual = moment_residual = None
     for step in range(1, max_steps + 1):
         if cancelled and cancelled():
             status = "cancelled"
@@ -347,6 +440,13 @@ def solve(project, conditions, configuration_id: str | None = None,
         # Normalize by dt in crossing-time units. A smaller time step must not
         # make an equally unsteady state appear better converged.
         residual = state_change * flow_time / dt
+        wall_pressure = _wall_pressure(candidate, wall, xp)
+        pressure_change = wall_pressure - previous_wall_pressure
+        wall_pressure_residual = float(xp.sqrt(xp.sum(wall["areas"] * (pressure_change / pressure_scale)**2) / xp.sum(wall["areas"]))) * flow_time / dt
+        force_change = -pressure_change[..., None] * wall["normals"] * wall["areas"][..., None]
+        force_residual = float(xp.linalg.norm(xp.sum(force_change, axis=0))) / force_scale * flow_time / dt
+        moment_residual = float(xp.linalg.norm(xp.sum(xp.cross(relative_wall_positions, force_change), axis=0))) / moment_scale * flow_time / dt
+        previous_wall_pressure = wall_pressure
         state = candidate
         physical_time += dt
         steps = step
@@ -355,16 +455,19 @@ def solve(project, conditions, configuration_id: str | None = None,
         max_mach = float(xp.max(xp.where(solid, 0, xp.linalg.norm(vel, axis=-1) / sound)))
         if step == 1 or step % 5 == 0 or step == max_steps or physical_time >= target_time:
             history.append(dict(step=step, time_s=physical_time, dt_s=dt, residual=residual,
+                                wall_pressure_residual=wall_pressure_residual,
+                                force_residual=force_residual, moment_residual=moment_residual,
                                 normalized_state_change=state_change,
                                 min_pressure_pa=min_pressure, max_mach=max_mach))
         # Avoid labeling the initially undisturbed far field converged before a
         # disturbance has had time to traverse the body/domain.
-        stable_streak = stable_streak + 1 if residual < tolerance and physical_time >= 0.5 * flow_time else 0
+        rates = (residual, wall_pressure_residual, force_residual, moment_residual)
+        stable_streak = stable_streak + 1 if max(rates) < tolerance and physical_time >= 0.5 * flow_time else 0
         elapsed = time.perf_counter() - start
         completion = min(1.0, max(step / max_steps, physical_time / target_time, elapsed / max_wall))
         if progress and (step == 1 or step % 5 == 0):
             eta = elapsed * (1 - completion) / max(completion, 1e-9)
-            progress(min(completion * 0.95, 0.95), f"Euler step {step}/{max_steps}; residual {residual:.3g}; estimated {eta:.0f} s remaining")
+            progress(min(completion * 0.95, 0.95), f"Euler step {step}/{max_steps}; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; estimated {eta:.0f} s remaining")
         if physical_time >= target_time * (1 - 1e-12):
             status = "physical_time_budget"
             break
@@ -373,6 +476,8 @@ def solve(project, conditions, configuration_id: str | None = None,
             break
     if steps and history[-1]["step"] != steps:
         history.append(dict(step=steps, time_s=physical_time, dt_s=dt, residual=residual,
+                            wall_pressure_residual=wall_pressure_residual,
+                            force_residual=force_residual, moment_residual=moment_residual,
                             normalized_state_change=state_change,
                             min_pressure_pa=min_pressure, max_mach=max_mach))
     if backend == "cupy-cuda":
@@ -396,7 +501,7 @@ def solve(project, conditions, configuration_id: str | None = None,
         state_cpu, solid_cpu, spacing, origin, farfield_cpu, pressure_inf,
         speed, rho_inf, surface_limit)
     if negative_wall_faces:
-        warnings.append(f"{negative_wall_faces} numerical wall-face pressures are nonpositive. This indicates unresolved wall expansion/startup effects; pressure loads require further refinement and are not reliable.")
+        warnings.append(f"{negative_wall_faces} wall Riemann expansions reach vacuum (zero pressure). These loads cannot be transferred to FEA; inspect the flow and refine before interpreting them.")
     if status != "converged":
         warnings.append(f"Stopping reason: {status}. The returned fields are the actual partial solution, not a converged steady-flow prediction.")
     lateral_force_squared = float(force[1] ** 2 + force[2] ** 2)
@@ -415,6 +520,15 @@ def solve(project, conditions, configuration_id: str | None = None,
                    force_n=force.tolist(), moment_about_origin_nm=moment.tolist(),
                    pressure_drag_n=float(np.dot(force, velocity / speed)) if speed else 0.0,
                    pressure_force_steady=status == "converged", pressure_force_validated=False,
+                   wall_pressure_residual=wall_pressure_residual,
+                   force_residual=force_residual, moment_residual=moment_residual,
+                   convergence_tolerance=tolerance,
+                   pressure_convergence_scale_pa=pressure_scale,
+                   force_convergence_scale_n=force_scale,
+                   moment_convergence_scale_nm=moment_scale,
+                   wall_flux="Exact symmetric reflected Euler Riemann solution",
+                   low_mach_preconditioned=False,
+                   convergence_requires="Global conserved-state, wall-pressure, resultant-force and centered-moment rates all below tolerance for 20 steps after half a crossing time",
                    cp_m=cp_m, cp_kind="Condition-specific pressure-resultant centerline fit; not Barrowman derivative CP",
                    cp_fit_moment_residual_nm=cp_fit_residual,
                    cell_count=int(solid_cpu.size), solid_cells=int(solid_cpu.sum()),
@@ -431,6 +545,7 @@ def solve(project, conditions, configuration_id: str | None = None,
                    configuration_id=configuration_id or project.active_configuration_id,
                    original_geometry=original, mesh_sha256=mesh_digest.hexdigest(),
                    max_steps=max_steps, max_wall_seconds=max_wall, cfl=cfl)
+    summary.update(geometry_diagnostics)
     if progress:
         progress(1.0, f"Euler solve finished: {status}; {steps} conservative steps")
     return dict(samples=samples, surface=surface, history=history, summary=summary,

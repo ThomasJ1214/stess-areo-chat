@@ -18,7 +18,9 @@ from rocket_workbench.solvers import aero
 
 def _validated_motor(project: Project, configuration_id: str | None) -> tuple:
     cfg = configuration(project, configuration_id)
-    unsupported = set(project.metadata.get("unsupported_features", []))
+    if not cfg.recovery_defined:
+        raise ValueError("Recovery is not defined for this configuration. Enter and confirm supported parachute Cd×area and deployment settings before running a flight; recovery must not be inferred from default values.")
+    unsupported = aero._configuration_features(project, configuration_id)
     forbidden = unsupported & {"multistage", "cluster", "parallelstage", "podset", "active_guidance", "motor_ignition_event", "deployment_event"}
     if forbidden:
         raise ValueError("Point-mass flight does not support this configuration: " + ", ".join(sorted(forbidden)) + ".")
@@ -245,6 +247,8 @@ def simulate(
         progress(0.0, "Integrating point-mass flight and quasi-static loads on CPU")
     if cfg.ignition_delay == 0:
         record_event("ignition")
+    if pad_balance(0.0) > 0:
+        record_event("liftoff")
     append_row()
     while time < conditions.max_time - 1e-10 and not landed:
         if cancelled and cancelled():
@@ -258,6 +262,8 @@ def simulate(
             dt = min(dt, min(pending_times) - time)
         liftoff_crossing = False
         if on_rail and np.linalg.norm(state[:3]) < 1e-9 and np.linalg.norm(state[3:]) < 1e-9:
+            if pad_balance(time) >= -1e-10 and pad_balance(time + dt) > 0:
+                record_event("liftoff")
             if pad_balance(time) < -1e-10 and pad_balance(time + dt) > 0:
                 low, high = 0.0, dt
                 for _ in range(32):
@@ -268,17 +274,20 @@ def simulate(
                         high = middle
                 dt = high
                 liftoff_crossing = True
-        if chute != "none":
-            # Full canopy drag can be stiff immediately after deployment. Keep
-            # the dissipative RK4 step inside its stability region; the user's dt
-            # remains an upper bound, not a license for nonphysical oscillation.
-            atm_now = aero.atmosphere(conditions.altitude + max(0.0, float(state[2])), conditions.temperature_delta)
-            mass_now = motor_at(time)[1]
-            area_now = cfg.main_cd_area if chute == "main" else cfg.drogue_cd_area
-            drag_derivative = atm_now["density_kg_m3"] * area_now * max(1.0, float(np.linalg.norm(state[3:] - wind(time))))
-            if drag_derivative > 0:
-                dt = min(dt, 0.5 * mass_now / drag_derivative)
+        # Quadratic drag can be stiff for large canopies, high supplied Cd, or
+        # light rockets. Account for both body and canopy drag, rather than only
+        # stabilizing descent. The user's dt remains an upper bound.
+        atm_now = aero.atmosphere(conditions.altitude + max(0.0, float(state[2])), conditions.temperature_delta)
+        mass_now = motor_at(time)[1]
+        speed_now = float(np.linalg.norm(state[3:] - wind(time)))
+        body_area = prepared["reference_area_m2"] * aero._evaluate(prepared, atm_now, max(1.0, speed_now))["cd"]
+        canopy_area = cfg.main_cd_area if chute == "main" else cfg.drogue_cd_area if chute == "drogue" else 0.0
+        drag_derivative = atm_now["density_kg_m3"] * (body_area + canopy_area) * max(1.0, speed_now)
+        if drag_derivative > 0:
+            dt = min(dt, 0.5 * mass_now / drag_derivative)
         candidate = integrate(time, state, dt)
+        if not np.all(np.isfinite(candidate)):
+            raise ValueError("Flight integration became non-finite. Check the supplied aerodynamic/motor data and use a smaller time step; no valid trajectory can be returned.")
         event_name = None
         if on_rail and float(np.dot(candidate[:3], rail_direction)) >= conditions.rail_length:
             dt, candidate = event_root(time, state, dt, lambda s: float(np.dot(s[:3], rail_direction)), conditions.rail_length)
@@ -352,6 +361,8 @@ def simulate(
         warnings.append("Part of the flight lies outside supplied aerodynamic polar Mach coverage; those rows use the original reference-geometry estimates and are labelled polar_applied=false.")
     if nonpositive_stability:
         warnings.append("Part of the trajectory has a nonpositive static stability margin. This point-mass solver cannot predict tumbling, so its smooth trajectory does not establish stable physical flight.")
+    if undefined_stability:
+        warnings.append("Part of the trajectory has no positive normal-force slope, so CP and static stability are undefined for those rows. The point-mass trajectory does not establish stable physical flight.")
     for name, key in [("max_acceleration", "acceleration"), ("max_q", "dynamic_pressure"), ("max_velocity", "velocity")]:
         index = max(range(len(trajectory)), key=lambda i: trajectory[i][key])
         events.append({"name": name, "time": trajectory[index]["time"], "index": index})

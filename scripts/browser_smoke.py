@@ -6,12 +6,15 @@ or fabricated solver results are used. Hardware CUDA is a separate check.
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import re
 import socket
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -36,6 +39,10 @@ def main():
     process = subprocess.Popen([sys.executable, "-m", "rocket_workbench.main", "--headless", "--port", str(port)],
                                cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     receipt = []
+    external, errors = [], []
+    started_at = datetime.now(timezone.utc).isoformat()
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT).strip())
     try:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -53,7 +60,6 @@ def main():
             browser = playwright.chromium.launch(executable_path=args.browser, headless=True,
                 args=["--no-sandbox", "--enable-unsafe-swiftshader", "--use-angle=swiftshader"])
             context = browser.new_context(viewport={"width": 1600, "height": 1100}, accept_downloads=True)
-            external, errors = [], []
             def local_only(route):
                 if route.request.url.startswith(base + "/"):
                     route.continue_()
@@ -63,9 +69,19 @@ def main():
             context.route("**/*", local_only)
             page = context.new_page()
             page.on("pageerror", lambda error: errors.append(str(error)))
+            job_requests = []
+            page.on("request", lambda request: job_requests.append(request.url)
+                    if request.method == "POST" and request.url.endswith("/api/jobs") else None)
             page.goto(base, wait_until="networkidle")
             expect(page.locator("canvas")).to_be_visible()
             assert page.evaluate("!!document.querySelector('canvas').getContext('webgl2')")
+            guide_button = page.get_by_role("button", name="User guide", exact=True)
+            guide_button.click()
+            expect(page.get_by_role("dialog", name="Using Rocket Workbench")).to_be_visible()
+            page.keyboard.press("Escape")
+            expect(page.get_by_role("dialog", name="Using Rocket Workbench")).to_have_count(0)
+            expect(guide_button).to_be_focused()
+            receipt.append("Offline user guide and accessible dialog focus/Escape")
 
             def no_errors():
                 assert page.locator(".error-banner").count() == 0, page.locator(".error-banner").all_text_contents()
@@ -100,6 +116,12 @@ def main():
                     page.wait_for_timeout(150)
                 raise AssertionError(f"{button} did not finish")
 
+            def save_project(filename):
+                with page.expect_download() as saved:
+                    page.get_by_role("button", name="Save project", exact=True).click()
+                saved.value.save_as(args.artifacts / filename)
+                return json.loads((args.artifacts / filename).read_text("utf8"))
+
             navigate("Aerodynamics")
             with page.expect_response(lambda r: r.url.endswith("/api/analyze")) as analyzed:
                 page.get_by_role("button", name="Run aerodynamic analysis", exact=True).click()
@@ -121,8 +143,21 @@ def main():
                 page.get_by_role("button", name="Flight data CSV", exact=True).click()
             exported.value.save_as(args.artifacts / "flight.csv")
             assert "dynamic_pressure" in (args.artifacts / "flight.csv").read_text().splitlines()[0]
+            with (args.artifacts / "flight.csv").open(newline="", encoding="utf8") as stream:
+                first_row = next(csv.DictReader(stream))
+            assert first_row["_result_fidelity"] and first_row["_result_backend"]
+            assert json.loads(first_row["_result_inputs"])["project_sha256"] == flight["inputs"]["project_sha256"]
+            with page.expect_download() as run_inputs:
+                page.get_by_role("button", name="Run input project", exact=True).click()
+            run_inputs.value.save_as(args.artifacts / "flight-inputs.rocket.json")
+            snapshot = json.loads((args.artifacts / "flight-inputs.rocket.json").read_text("utf8"))
+            assert snapshot["analysis_settings"]["conditions"] == flight["inputs"]["conditions"]
+            digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+            assert digest == flight["inputs"]["project_sha256"]
+            assert flight["inputs"]["application_version"] and flight["inputs"]["submitted_at"]
+            (args.artifacts / "flight-result.json").write_text(json.dumps(flight, indent=2, allow_nan=False), "utf8")
             page.screenshot(path=str(args.artifacts / "flight.png"), full_page=True)
-            receipt.append("Complete dual-deployment flight, events, timeline, follow camera and CSV")
+            receipt.append("Complete dual-deployment flight, events, timeline, CSV and content-verified portable run inputs")
 
             navigate("Studies")
             page.get_by_label("Samples", exact=True).fill("3")
@@ -151,6 +186,36 @@ def main():
             assert loaded["assets"][0]["id"] == asset["id"]
             receipt.append("Real STEP replacement and portable project save/reload")
 
+            navigate("Aerodynamics")
+            page.get_by_label("Primary stream speed", exact=True).fill("123")
+            page.get_by_label("Lateral wind", exact=True).fill("7.25")
+            saved_settings = save_project("analysis-settings.rocket.json")
+            assert saved_settings["analysis_settings"]["conditions"]["speed"] == 123
+            assert saved_settings["analysis_settings"]["conditions"]["wind_speed"] == 7.25
+            page.get_by_label("Primary stream speed", exact=True).fill("99")
+            page.get_by_label("Lateral wind", exact=True).fill("9")
+            upload('input[accept=".json,.rocket"]', args.artifacts / "analysis-settings.rocket.json", "project/load")
+            navigate("Aerodynamics")
+            expect(page.get_by_label("Primary stream speed", exact=True)).to_have_value("123")
+            expect(page.get_by_label("Lateral wind", exact=True)).to_have_value("7.25")
+            # Reloading the same numeric value must also discard an unfinished
+            # local edit; a primitive prop equality alone cannot signal reload.
+            wind_input = page.get_by_label("Lateral wind", exact=True)
+            wind_input.fill("7.25e")
+            wind_input.blur()
+            expect(wind_input).to_have_attribute("aria-invalid", "true")
+            upload('input[accept=".json,.rocket"]', args.artifacts / "analysis-settings.rocket.json", "project/load")
+            expect(page.get_by_label("Lateral wind", exact=True)).to_have_value("7.25")
+            expect(page.get_by_label("Lateral wind", exact=True)).to_have_attribute("aria-invalid", "false")
+            # A browser restart reads backend-persisted settings rather than
+            # keeping those values only in the current React component.
+            page.reload(wait_until="networkidle")
+            navigate("Aerodynamics")
+            expect(page.get_by_label("Primary stream speed", exact=True)).to_have_value("123")
+            expect(page.get_by_label("Lateral wind", exact=True)).to_have_value("7.25")
+            receipt.append("Edited analysis conditions persist in saved/reloaded projects and browser restarts")
+
+            navigate("Design")
             page.get_by_role("button", name="Geometry", exact=True).click()
             page.get_by_label("Mesh file units", exact=True).select_option("m")
             cube_file = args.artifacts / "browser-box.stl"
@@ -165,17 +230,36 @@ def main():
             navigate("CFD")
             expect(page.get_by_label("Mach override")).to_be_enabled()
             mach_input = page.get_by_label("Mach override")
+            before_requests = len(job_requests)
+            mach_input.fill("1e")
+            page.get_by_role("button", name="Solve flow field", exact=True).click()
+            expect(page.locator(".error-banner")).to_contain_text("Correct Mach override")
+            expect(mach_input).to_have_value("1e")
+            assert len(job_requests) == before_requests, "A malformed field must not submit stale solver inputs"
+            page.get_by_role("button", name="Dismiss error", exact=True).click()
             mach_input.fill("")
             mach_input.press_sequentially("0.3")
             expect(mach_input).to_have_value("0.3")
+            receipt.append("Malformed numeric edits block jobs; same-value project reload resets unfinished text")
             page.get_by_label("Angle of attack", exact=True).fill("5")
             page.get_by_label("Lateral wind", exact=True).fill("0")
             for label, value in [("Lengthwise grid cells", "12"), ("Maximum steps", "1500"), ("Flow-through times", "8"), ("CFL number", "0.7"), ("Convergence tolerance", "0.001")]:
                 page.get_by_label(label, exact=True).fill(value)
-            flow = job("Solve flow field", timeout=120)
+            cfd_settings = save_project("cfd-settings.rocket.json")
+            assert cfd_settings["analysis_settings"]["cfd_options"]["grid_resolution"] == 12
+            assert cfd_settings["analysis_settings"]["cfd_options"]["max_steps"] == 1500
+            assert cfd_settings["analysis_settings"]["cfd_options"]["convergence_tolerance"] == 0.001
+            page.get_by_label("Lengthwise grid cells", exact=True).fill("16")
+            upload('input[accept=".json,.rocket"]', args.artifacts / "cfd-settings.rocket.json", "project/load")
+            navigate("CFD")
+            expect(page.get_by_label("Lengthwise grid cells", exact=True)).to_have_value("12")
+            expect(page.get_by_label("Maximum steps", exact=True)).to_have_value("1500")
+            expect(page.get_by_label("Convergence tolerance", exact=True)).to_have_value("0.001")
+            flow = job("Solve flow field", timeout=240)
             assert flow["summary"]["converged"] and flow["samples"] and flow["summary"]["min_pressure_pa"] > 0
+            (args.artifacts / "cfd-result.json").write_text(json.dumps(flow, indent=2, allow_nan=False), "utf8")
             page.screenshot(path=str(args.artifacts / "cfd.png"), full_page=True)
-            receipt.append("Standalone STL geometry and genuinely converged nonzero CFD")
+            receipt.append("Standalone STL geometry, portable solver settings and genuinely converged nonzero CFD")
 
             navigate("Structures")
             page.get_by_label("Target mesh size", exact=True).fill("0.035")
@@ -185,6 +269,11 @@ def main():
             assert structure["summary"]["cfd_pressure_transfer"]["mapped_surface_area_fraction"] > 0.5
             assert structure["summary"]["force_balance_relative_error"] < 1e-7
             assert structure["summary"]["max_von_mises_pa"] > 0
+            cfd_source = structure["inputs"]["cfd_source"]
+            assert cfd_source["inputs"]["project_sha256"] == flow["inputs"]["project_sha256"]
+            surface_digest = hashlib.sha256(json.dumps(flow["surface"], sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+            assert cfd_source["surface_sha256"] == surface_digest
+            (args.artifacts / "fea-result.json").write_text(json.dumps(structure, indent=2, allow_nan=False), "utf8")
             page.get_by_role("button", name="Deformation", exact=True).click()
             expect(page.get_by_role("button", name="Deformation", exact=True)).to_have_attribute("aria-pressed", "true")
             page.screenshot(path=str(args.artifacts / "fea.png"), full_page=True)
@@ -200,9 +289,15 @@ def main():
             assert not external, external
             browser.close()
         (args.artifacts / "receipt.json").write_text(json.dumps({"status": "passed", "checks": receipt,
+            "started_at": started_at, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "source_commit": revision, "source_dirty": dirty,
             "graphics": "Chromium software WebGL; hardware GPU/CUDA not established", "external_requests": external}, indent=2), encoding="utf8")
         print(json.dumps({"status": "passed", "checks": receipt}, indent=2))
-    except Exception:
+    except Exception as exc:
+        (args.artifacts / "receipt.json").write_text(json.dumps({"status": "failed", "checks_completed": receipt,
+            "error": str(exc), "started_at": started_at, "completed_at": datetime.now(timezone.utc).isoformat(),
+            "source_commit": revision, "source_dirty": dirty, "external_requests": external,
+            "javascript_errors": errors}, indent=2), encoding="utf8")
         if "page" in locals() and not page.is_closed():
             try:
                 page.screenshot(path=str(args.artifacts / "failure.png"), full_page=True)

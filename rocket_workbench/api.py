@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import html
 import importlib.util
 import io
 import json
@@ -16,14 +15,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .demo import demo_project
 from .jobs import JobManager, compare
-from .models import Component, Conditions, FlightConfiguration, Model, Project, Transform
+from .models import AnalysisSettings, Component, Conditions, FlightConfiguration, Model, Project, Transform, validate_project_references
 
 MAX_UPLOAD = 100 * 1024 * 1024
 
@@ -35,7 +35,12 @@ class AnalyzeRequest(Model):
 
 class JobRequest(AnalyzeRequest):
     kind: str
-    options: dict = Field(default_factory=dict)
+    options: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SettingsRequest(Model):
+    project_id: str
+    settings: AnalysisSettings
 
 
 class AttachRequest(Model):
@@ -92,8 +97,10 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
         session = data_dir / "last-project.json"
         if session.exists():
             try:
-                app.state.project = Project.model_validate_json(session.read_text(encoding="utf8"))
-            except (OSError, ValidationError):
+                restored = Project.model_validate_json(session.read_text(encoding="utf8"))
+                validate_project_references(restored)
+                app.state.project = restored
+            except (OSError, ValueError):
                 # Keep a recoverable invalid file rather than overwriting it at startup.
                 app.state.project.import_warnings.append("Previous session could not be restored; original file was preserved.")
 
@@ -102,37 +109,7 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
             return app.state.project.model_copy(deep=True)
 
     def save(value: Project):
-        # Validate cross-references at persistence boundaries, so importers can
-        # construct their hierarchy incrementally without invalid intermediate states.
-        collections = [value.components, value.configurations, value.materials, value.motors, value.assets]
-        for collection in collections:
-            identities = [item.id for item in collection]
-            if any(not identity.strip() for identity in identities) or len(set(identities)) != len(identities):
-                raise ValueError("Project identifiers must be nonempty and unique within each collection.")
-        components = {item.id: item for item in value.components}
-        materials, motors, assets = ({item.id for item in collection} for collection in [value.materials, value.motors, value.assets])
-        if not value.configurations or value.active_configuration_id not in {cfg.id for cfg in value.configurations}:
-            raise ValueError("Project must contain the selected flight configuration.")
-        for item in value.components:
-            if item.parent_id and item.parent_id not in components:
-                raise ValueError(f"{item.name}: parent component does not exist.")
-            if item.material_id and item.material_id not in materials:
-                raise ValueError(f"{item.name}: material does not exist.")
-            if item.asset_id and item.asset_id not in assets:
-                raise ValueError(f"{item.name}: imported geometry asset does not exist.")
-            seen, parent = {item.id}, item.parent_id
-            while parent:
-                if parent in seen:
-                    raise ValueError("Component hierarchy contains a cycle.")
-                seen.add(parent)
-                parent = components[parent].parent_id
-        for cfg in value.configurations:
-            if cfg.motor_id and cfg.motor_id not in motors:
-                raise ValueError(f"{cfg.name}: assigned motor does not exist.")
-            if cfg.motor_mount_id and cfg.motor_mount_id not in components:
-                raise ValueError(f"{cfg.name}: motor mount does not exist.")
-            if cfg.active_component_ids is not None and any(identity not in components for identity in cfg.active_component_ids):
-                raise ValueError(f"{cfg.name}: enabled component does not exist.")
+        validate_project_references(value)
         with lock:
             if data_dir:
                 destination = data_dir / "last-project.json"
@@ -158,6 +135,13 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
                 return JSONResponse({"detail": "Missing or invalid desktop session token."}, status_code=403)
         return await call_next(request)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(_request, exc):
+        # Do not echo arbitrary uploaded data into an error response. In
+        # particular, a rejected NaN/Infinity input is not valid response JSON.
+        return JSONResponse({"detail": [{"loc": error["loc"], "msg": error["msg"], "type": error["type"]}
+                                        for error in exc.errors()]}, status_code=422)
+
     @app.exception_handler(ValueError)
     async def bad_value(_request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -177,6 +161,17 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
     @app.put("/api/project")
     def update_project(value: Project):
         return save(value)
+
+    @app.put("/api/project/settings")
+    def update_settings(request: SettingsRequest):
+        # Patch the latest state atomically: delayed UI saves may never replace
+        # component edits or conditions belonging to a different project.
+        with lock:
+            if request.project_id != app.state.project.id:
+                raise HTTPException(409, "The project changed before these settings were saved.")
+            value = project()
+            value.analysis_settings = request.settings
+            return save(value)
 
     @app.post("/api/project/demo")
     def demo():
@@ -339,6 +334,15 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
         except KeyError:
             raise HTTPException(404, "Job not found or expired.")
 
+    @app.get("/api/jobs/{identity}/project")
+    def input_project(identity: str):
+        try:
+            snapshot = app.state.jobs.input_project(identity)
+        except KeyError:
+            raise HTTPException(404, "Job not found or expired.")
+        return Response(snapshot.model_dump_json(indent=2), media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{_filename(snapshot.name)}-run-{identity[:8]}.rocket.json"'})
+
     @app.get("/api/jobs/{identity}/export")
     def export(identity: str, format: str = "json", dataset: str = "auto"):
         try:
@@ -364,16 +368,28 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
                 rows = result.get("trajectory", result.get("rows", result.get("history", result.get("components", []))))
             if not rows or not isinstance(rows[0], dict):
                 raise ValueError("This result has no tabular data. Export JSON instead.")
+            # Keep ordinary rectangular CSV data and its scientific context in
+            # the same file. Global metadata occupies dedicated columns of the
+            # first data row; do not repeat kilobytes across every mesh node.
+            context = {key: result[key] for key in
+                ["fidelity", "backend", "warnings", "validity", "inputs", "summary", "conventions"] if key in result}
+            rows = [dict(row) for row in rows]
+            rows[0].update({f"_result_{key}": value for key, value in context.items()})
             fields = list(dict.fromkeys(key for row in rows for key in row))
             stream = io.StringIO(newline="")
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
-            writer.writerows([{key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in row.items()} for row in rows])
+            def csv_value(value):
+                if isinstance(value, (dict, list)):
+                    return json.dumps(value, allow_nan=False)
+                if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+                    return "'" + value
+                return value
+            writer.writerows([{key: csv_value(value) for key, value in row.items()} for row in rows])
             content, content_type = stream.getvalue(), "text/csv"
         elif format == "html":
-            content = "<!doctype html><meta charset='utf-8'><title>Rocket Workbench report</title><style>body{font:15px system-ui;max-width:1100px;margin:3rem auto;color:#182330}pre{white-space:pre-wrap;background:#f3f5f8;padding:1rem}</style>"
-            content += "<h1>Rocket Workbench simulation report</h1><p>All result quantities use SI units. Fidelity and warnings are part of the results.</p>"
-            content += "<h2>" + html.escape(job["kind"]) + "</h2><pre>" + html.escape(json.dumps(result, indent=2, allow_nan=False)) + "</pre>"
+            from .reports import render_report
+            content = render_report(job["kind"], result)
             content_type = "text/html"
         else:
             raise ValueError("Export format must be csv, json or html")

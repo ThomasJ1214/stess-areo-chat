@@ -96,6 +96,15 @@ Headless/Linux hosts need a usable display/graphics path; a browser-only check
 does not validate Qt startup. The smoke mode's 30-second UI deadline is a check,
 not a simulation time limit.
 
+The desktop keeps its loopback listener bound while the API starts, so launching
+two application instances cannot select the same released port. Startup logs
+include the application/Python version and session path, without the session
+token. `uv run --no-sync rocket-workbench --version` reports the source version.
+Add `--smoke-output build/engine-smoke.json` to `--smoke-test` to preserve its
+actual capability, flight and FEA evidence even in windowed Windows executables
+that have no terminal output. A previous receipt is removed before the check;
+only a successful check writes a replacement.
+
 ### Browser workflow check
 
 Install the optional developer-only `browser` extra and a Playwright Chromium
@@ -117,7 +126,11 @@ The script starts and stops an isolated loopback API automatically, uses actual
 solvers and imports, aborts external page requests, and writes screenshots,
 exported data, a server log and `receipt.json` under `build/browser-smoke/`.
 It covers STEP/CAD replacement, project roundtrip, flight playback/export,
-studies, converged CFD, one-way pressure-transfer FEA and the upstream ORK fixture.
+portable edited analysis/solver settings, studies, converged CFD, one-way
+pressure-transfer FEA and the upstream ORK fixture. It also downloads the actual
+flight input project and verifies its content digest against the result's
+recorded project digest. The receipt records source revision, dirty state,
+timestamps and either completed checks or failure details.
 Its software WebGL run is distinct from the native Qt startup check and from
 hardware GPU validation. Use `--artifacts <directory>` to change its output.
 
@@ -182,6 +195,21 @@ Nothing in the build script pushes Git commits or changes repository visibility.
 GitHub's **Windows offline installer** workflow runs on pushes to `main` or a
 version tag, and can be triggered manually; it uploads artifacts without
 publishing a public release.
+
+The manifest records the Git revision, tracked-file dirty state, SHA-256 hashes
+of copied source files, built frontend files and both dependency lockfiles, plus
+platform and whether CUDA bundling was requested. A local modified checkout is
+identified as dirty; its snapshot digest distinguishes it from that commit's
+original contents. Untracked files and upstream OpenRocket test fixtures are
+excluded from the shipped source snapshot. Its package inventory describes the
+build environment; PyInstaller excludes development modules from the executable.
+Changing versions requires matching `pyproject.toml` and the Python application
+version; packaging rejects mismatches and unsupported non-x64 interpreters.
+
+Unattended frozen/installed engine checks have a six-minute process deadline.
+The Windows workflow bounds installation to ten minutes and native startup to
+90 seconds, stops a timed-out process tree, and retains installer/application
+diagnostics on failure. These checks are independent of simulation budgets.
 
 Check [third-party notices](../THIRD_PARTY_NOTICES.md) before distributing binaries
 outside the requested private use. Build artifacts are unsigned unless a signing

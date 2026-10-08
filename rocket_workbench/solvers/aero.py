@@ -12,6 +12,7 @@ import hashlib
 import json
 
 import numpy as np
+import trimesh
 from scipy.integrate import quad
 from scipy.spatial.transform import Rotation
 
@@ -163,14 +164,24 @@ def _mesh_mass(project: Project, c: Component, density: float) -> tuple[float, f
         raise ValueError(f"{c.name}: CAD mass requires a triangular 3D mesh.")
     if np.any(faces < 0) or np.any(faces >= len(vertices)):
         raise ValueError(f"{c.name}: mesh triangle indices are out of bounds.")
+    # Project JSON can be edited independently of its saved import metadata. A
+    # stale watertight flag must not authorize integrating an actually open or
+    # inconsistently wound surface as a solid.
+    topology = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    if not topology.is_watertight or not topology.is_winding_consistent:
+        return 0.0, c.x, f"{c.name}: CAD mesh closure/winding is invalid; no reliable solid mass/CG is available. Set measured mass/CG overrides."
     rotation = Rotation.from_euler("xyz", c.transform.rotation, degrees=True).as_matrix()
     vertices = vertices * c.transform.scale @ rotation.T + np.asarray(c.transform.translation) + np.array([c.x, 0, 0])
-    triangles = vertices[faces]
+    # Center the tetrahedral integration near the part, avoiding cancellation
+    # when the CAD origin/placement is far from the small solid itself. Closed
+    # surface mass/volume is invariant to the integration origin.
+    integration_origin = vertices.mean(axis=0)
+    triangles = (vertices - integration_origin)[faces]
     signed = np.einsum("ij,ij->i", triangles[:, 0], np.cross(triangles[:, 1], triangles[:, 2])) / 6
     volume = float(signed.sum())
     if abs(volume) <= 1e-15:
         return 0.0, c.x, f"{c.name}: CAD enclosed volume is zero; set a measured mass override."
-    center = (signed[:, None] * triangles.sum(axis=1) / 4).sum(axis=0) / volume
+    center = integration_origin + (signed[:, None] * triangles.sum(axis=1) / 4).sum(axis=0) / volume
     return abs(volume) * density, float(center[0]), None
 
 
@@ -197,6 +208,8 @@ def _motor_state(project: Project, configuration_id: str | None, time: float) ->
                 partial = float(cumulative[idx] + curve[idx, 1] * elapsed + slope * elapsed * elapsed / 2)
                 fraction = min(1.0, max(0.0, partial / impulse))
     mount = next((c for c in project.components if c.id == cfg.motor_mount_id), None)
+    if cfg.motor_mount_id is not None and (mount is None or mount.id not in {c.id for c in active_components(project, configuration_id)}):
+        raise ValueError("The configured motor mount is missing or inactive in the selected configuration. Select an active mount or remove the motor assignment.")
     # cfg.motor_position, when supplied, is the absolute motor *center*. For an
     # ORK mount the imported metadata contains its rear overhang.
     if cfg.motor_position is not None:
@@ -362,6 +375,25 @@ def _cone_pressure_cd(mach: float, sine_angle: float) -> float:
                + (-2*u**3 + 3*u*u)*at_high + (u**3 - u*u)*0.3*slope_high)
 
 
+def _configuration_features(project: Project, configuration_id: str | None = None) -> set[str]:
+    """Selected import limitations plus unsupported geometry currently enabled.
+
+    New ORK imports preserve feature limits per configuration. The global union
+    remains a legacy fallback, so one unsupported configuration cannot prevent a
+    different, supported one from running.
+    """
+    cfg = configuration(project, configuration_id)
+    scoped = project.metadata.get("unsupported_features_by_configuration")
+    features = set(scoped.get(cfg.id, [])) if isinstance(scoped, dict) else set(project.metadata.get("unsupported_features", []))
+    components = active_components(project, configuration_id)
+    features.update(c.kind for c in components if c.kind in {"parallelstage", "podset"})
+    if any(str(c.metadata.get("cluster_configuration", "single")) not in {"single", "1", ""} for c in components):
+        features.add("cluster")
+    if sum(c.kind == "stage" for c in components) > 1:
+        features.add("multistage")
+    return features
+
+
 def _prepare(project: Project, configuration_id: str | None = None) -> dict:
     components = active_components(project, configuration_id)
     outer = [c for c in components if c.external and c.kind in BODY]
@@ -372,7 +404,7 @@ def _prepare(project: Project, configuration_id: str | None = None) -> dict:
     length = max((c.x + c.length for c in outer), default=diameter) - min((c.x for c in outer), default=0)
     length = max(length, diameter)
     warnings = list(project.import_warnings)
-    for feature in project.metadata.get("unsupported_features", []):
+    for feature in sorted(_configuration_features(project, configuration_id)):
         warnings.append(f"Unsupported reference-model feature: {feature}.")
     items = []
     for c in components:
@@ -496,7 +528,7 @@ def _evaluate(prepared: dict, atm: dict, speed: float, alpha_rad: float = 0, bet
     # and already included in the individual nose pressure-drag term.
     cd = sum(r["cd"] for r in rows) + base_cd
     total_cn = sum(row["cna_per_rad"] for row in rows)
-    cp = sum(row["cna_per_rad"] * row["cp_m"] for row in rows) / total_cn if total_cn > 0 else prepared["cp_m"]
+    cp = sum(row["cna_per_rad"] * row["cp_m"] for row in rows) / total_cn if total_cn > 0 else None
     result = {"cd": cd, "drag_n": q * prepared["reference_area_m2"] * cd,
             "normal_force_n": sum(r["normal_force_n"] for r in rows),
             "side_force_n": sum(r["side_force_n"] for r in rows), "dynamic_pressure_pa": q,
@@ -524,25 +556,30 @@ def analyze(project: Project, conditions: Conditions, configuration_id: str | No
     speed = float(np.linalg.norm(vector))
     alpha = math.atan2(float(vector[1]), float(vector[0])) if speed else 0
     beta = math.asin(float(np.clip(vector[2] / speed, -1, 1))) if speed else 0
+    incidence = math.atan2(float(np.linalg.norm(vector[1:])), float(vector[0])) if speed else 0
     result = _evaluate(prepared, atm, speed, alpha, beta)
     warnings = prepared["warnings"] + mass["warnings"]
     if result["mach"] > 2 + 1e-9:
         warnings.append("Actual resultant flow exceeds Mach 2: this aerodynamic model is outside its supported operating range.")
-    if max(abs(alpha), abs(beta)) > math.radians(10):
+    if incidence > math.radians(10):
         warnings.append("Resultant flow angle exceeds 10 degrees: small-angle CP/lift estimates are outside their useful scope.")
+    if result["cna_per_rad"] <= 0:
+        warnings.append("Total normal-force slope at this Mach is nonpositive: CP and static stability are undefined.")
     mass_map = {r["component_id"]: r for r in mass["components"]}
     for row in result["components"]:
         row.update({"mass_kg": mass_map[row["component_id"]]["mass_kg"], "cg_m": mass_map[row["component_id"]]["cg_m"]})
     if prepared["polar"] is not None and not result["polar_applied"]:
         warnings.append("Flow Mach is outside supplied aerodynamic polar coverage; original-reference estimates are returned instead.")
-    cp_valid = result["cp_m"] is not None and (result["polar_applied"] or (not prepared["replacement"] and result["mach"] < 0.7)) and max(abs(alpha), abs(beta)) <= math.radians(10)
+    cp_valid = result["cp_m"] is not None and (result["polar_applied"] or (not prepared["replacement"] and result["mach"] < 0.7)) and incidence <= math.radians(10)
     return {**result, "mass_kg": mass["mass_kg"], "cg_m": mass["cg_m"],
             "reference_area_m2": prepared["reference_area_m2"], "reference_diameter_m": prepared["diameter_m"],
             "stability_calibers": (result["cp_m"] - mass["cg_m"]) / prepared["diameter_m"] if result["cp_m"] is not None else None,
             "effective_angle_of_attack_deg": math.degrees(alpha), "effective_sideslip_deg": math.degrees(beta),
+            "effective_total_incidence_deg": math.degrees(incidence),
             "freestream_m_s": vector.tolist(), "cp_valid": cp_valid,
             "geometry_basis": "User supplied aerodynamic polar matched to current geometry" if result["polar_applied"] else "original Barrowman reference geometry", "mass_basis": mass["fidelity"],
             "atmosphere": atm, "warnings": list(dict.fromkeys(warnings)),
             "fidelity": "User supplied aerodynamic polar (not independently validated)" if result["polar_applied"] else "Preliminary Barrowman small-angle stability / empirical component drag estimate",
             "validity": {"max_mach": 2, "preferred_mach_below": 0.7, "max_small_angle_deg": 10,
-                         "within_operating_range": result["mach"] <= 2 + 1e-9, "cad_resolved": False}, "backend": "CPU"}
+                         "within_operating_range": result["mach"] <= 2 + 1e-9,
+                         "within_small_angle_range": incidence <= math.radians(10), "cad_resolved": False}, "backend": "CPU"}

@@ -28,6 +28,10 @@ semantics are rejected by the point-mass solver. Imported unsupported components
 remain visible and are identified in warnings. Speeds above Mach 2 are explicitly
 out of scope; the trajectory may complete using extrapolated estimates, but its
 validity flag is false. A point-mass solver cannot determine if a rocket tumbles.
+Import limitations are checked for the selected configuration, so an inactive
+unsupported stage does not block a supported single-stage configuration. Disabling
+an assembly or excluding it from a configuration also excludes all descendants;
+an assigned motor mount must still belong to that selected, enabled subtree.
 
 ## Atmosphere
 
@@ -72,13 +76,17 @@ replace the aggregate moment. ORK tab/shoulder/joint details not represented by 
 analytic volume require measured overrides; import warnings identify these limits.
 
 A replacement watertight triangular mesh is integrated as signed tetrahedra
-formed with the origin. Tetrahedron volume is `dot(a,cross(b,c))/6` and its centroid
+formed with a local integration origin near the solid to reduce cancellation for
+remote CAD coordinates. Tetrahedron volume is `dot(a,cross(b,c))/6` and its centroid
 is `(a+b+c)/4`. Mesh scale, Euler XYZ rotation and translation (relative to the
 component's axial origin) apply before integration. Uniform solid density is an
 assumption: hollow/heterogeneous assemblies need measured mass/CG. Open meshes do
 not receive an invented solid volume; a measured override is required. Signed
 volume needs consistent surface winding. A measured mass alone retains the
 watertight CAD centroid; a measured CG overrides it.
+Actual triangle closure and winding are checked before mass integration instead
+of trusting a saved `watertight` flag. These topological checks do not establish
+absence of self-intersection, overlapping solids or valid CAD construction.
 
 Motor thrust is piecewise linear. Propellant consumption is proportional to its
 integrated impulse, not elapsed burn time, corresponding to constant effective
@@ -106,7 +114,8 @@ Its CP is
 `x_fin + xs(Cr+2Ct)/[3(Cr+Ct)] + [Cr+Ct-CrCt/(Cr+Ct)]/6`.
 
 The rocket CP is the CNa-weighted component CP. Stability is `(CP-CG)/D`.
-With zero/nonpositive total slope, CP/stability are undefined (`null`), while
+With zero/nonpositive total slope at the evaluated Mach, CP/stability are undefined
+(`null`), while
 mass/drag diagnostics remain available. Flight then requires a supported reference
 shape or a geometry-matched supplied aerodynamic polar. One/two-fin systems use an
 azimuth average; fin-fin interference above four fins is not resolved. Freeform/
@@ -120,7 +129,9 @@ factor. A smoothstep bridge joins the two regimes. Fin CP shifts smoothly from
 quarter chord below Mach 0.5 toward half chord at Mach 2. This bridge and CP shift
 are **preliminary extensions**, not a port of OpenRocket's more detailed
 Mach-dependent CP and NACA interference implementation. High Mach and effective
-angles above 10 degrees invalidate the preferred small-angle CP claim.
+resultant cone incidence above 10 degrees invalidate the preferred small-angle CP
+claim. The limit applies to `atan2(hypot(V_y,V_z),V_x)`, not separately to yaw and
+pitch: two 8-degree components already give an 11.30-degree resultant incidence.
 
 An independent hand calculation in the tests uses `D=.1 m`, `s=.12 m`, `Cr=.25 m`,
 `Ct=.12 m`, `xs=.12 m`, `N=3`, `r=.05 m`, fin position `1.18 m` and a `.3 m` cone.
@@ -194,7 +205,8 @@ to the rail until its traveled distance reaches rail length. The pad reaction
 holds it stationary until axial thrust exceeds gravity/drag. Liftoff, rail exit,
 apogee, main altitude crossing and ground contact are root-located, not rounded to
 the output sample time. Integration splits at all thrust-curve knots, ignition,
-burnout and scheduled deployments. Full-canopy drag has a stability-based step cap;
+burnout and scheduled deployments. Combined body/canopy quadratic drag has a
+stability-based step cap (including large supplied Cd and light vehicles);
 user `dt` is an upper bound. A thrust curve ending at nonzero measured thrust uses
 left/right limits at burnout so an extra numerical impulse is not introduced.
 
@@ -216,6 +228,9 @@ opening shock, cord loads, separated components and pendulum motion require a
 different model. `max_acceleration` is the sampled maximum inertial magnitude
 over the whole flight, including the idealized canopy-force step; it should not
 be treated as a resolved recovery opening shock.
+An imported configuration without supported, positive-Cd×area recovery is marked
+undefined and cannot silently use the application's default canopy values. The
+user must enter and confirm a recovery setup before flight is allowed.
 
 Uniform wind uses the supplied toward azimuth. Turbulence is a deterministic
 seeded sum of three smooth sinusoidal gust frequencies (.23, .71, 1.9 Hz) on each
@@ -255,7 +270,9 @@ coefficient provenance/invalidation, event ordering/altitudes, deterministic win
 recovery, cancellation and explicit unsupported configurations. An independent
 closed-form vacuum triangular-thrust trajectory checks burnout velocity/height
 and apogee. Step halving checks flight convergence; a large recovery Cd×area case
-checks dissipative integration stability. These are **calculation verification**.
+checks dissipative integration stability. A deliberately stiff constant-Cd body
+case checks the independent exact quadratic-drag terminal approach during powered
+flight. These are **calculation verification**.
 There is no supplied flight log, actual thrust-test campaign, wind-tunnel data,
 or independently executed OpenRocket comparison establishing predictive accuracy.
 

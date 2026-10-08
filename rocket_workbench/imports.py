@@ -392,6 +392,9 @@ def import_ork(data: bytes, filename: str = "") -> Project:
         if component_id in seen_ids:
             raise ValueError(f"Duplicate component ID: {component_id}")
         seen_ids.add(component_id)
+        instance_count = _number(el, "instancecount", 1)
+        if instance_count != int(instance_count):
+            raise ValueError(f"{name}: instance count must be an integer.")
         metadata = {
             "source_kind": kind, "axial_method": method, "axial_offset": offset,
             "filled": filled, "finish": _text(el, "finish", "normal"),
@@ -401,7 +404,7 @@ def import_ork(data: bytes, filename: str = "") -> Project:
             "shape_clipped": _boolean(el, "shapeclipped"),
             "mass_subcomponents_overridden": _boolean(el, "overridesubcomponentsmass", _boolean(el, "overridesubcomponents")),
             "cg_subcomponents_overridden": _boolean(el, "overridesubcomponentscg", _boolean(el, "overridesubcomponents")),
-            "instance_count": int(_number(el, "instancecount", 1)),
+            "instance_count": int(instance_count),
         }
         for tag in ["aftshoulderradius", "aftshoulderlength", "aftshoulderthickness",
                     "foreshoulderradius", "foreshoulderlength", "foreshoulderthickness",
@@ -439,11 +442,11 @@ def import_ork(data: bytes, filename: str = "") -> Project:
             metadata["tab_position"] = _number_text(tab.text or "", 0)
             metadata["tab_position_method"] = tab.attrib.get("relativeto", "center")
         if kind in {"parachute", "streamer"}:
-            metadata["diameter"] = _number(el, "diameter")
-            metadata["cd"] = _number(el, "cd", 0.8 if kind == "parachute" else 0.6)
+            metadata["diameter"] = _nonnegative(_number(el, "diameter"), f"{name} canopy diameter")
+            metadata["cd"] = _nonnegative(_number(el, "cd", 0.8 if kind == "parachute" else 0.6), f"{name} recovery Cd")
             metadata["isdrogue"] = _boolean(el, "isdrogue")
-            metadata["striplength"] = _number(el, "striplength")
-            metadata["stripwidth"] = _number(el, "stripwidth")
+            metadata["striplength"] = _nonnegative(_number(el, "striplength"), f"{name} streamer length")
+            metadata["stripwidth"] = _nonnegative(_number(el, "stripwidth"), f"{name} streamer width")
         if el.find("overridecd") is not None:
             metadata["cd_override"] = _number(el, "overridecd")
             warnings.append(f"{name}: imported Cd override is recorded but solver-specific Cd calculation takes precedence.")
@@ -570,6 +573,20 @@ def import_ork(data: bytes, filename: str = "") -> Project:
             if c.parent_id in inactive:
                 inactive.add(c.id)
         cfg.active_component_ids = [c.id for c in project.components if c.id not in inactive]
+        # Geometry/event limitations belong to the selected configuration. Keep
+        # the overall union for import inspection, without blocking an unrelated
+        # single-stage configuration because another one contains a cluster.
+        active = [c for c in project.components if c.id not in inactive]
+        cfg_unsupported = set()
+        for c in active:
+            if c.metadata.get("unsupported"):
+                cfg_unsupported.add(f"component:{c.kind}")
+            if c.kind in {"parallelstage", "podset", "tubefinset"}:
+                cfg_unsupported.add(c.kind)
+            if c.metadata.get("cluster_configuration"):
+                cfg_unsupported.add("cluster")
+        if sum(c.kind == "stage" for c in active) > 1:
+            cfg_unsupported.add("multistage")
         assignments = []
         recovery = []
         for source_el in rocket.iter():
@@ -578,6 +595,7 @@ def import_ork(data: bytes, filename: str = "") -> Project:
                 continue
             mount = source_el.find("motormount")
             if mount is not None:
+                c.metadata["motor_overhang"] = _number(mount, "overhang")
                 matching = [m for m in mount.findall("motor") if m.attrib.get("configid", "default") == cfg_id]
                 for m in matching:
                     designation = _text(m, "designation")
@@ -592,6 +610,7 @@ def import_ork(data: bytes, filename: str = "") -> Project:
                     cfg.ignition_delay = _number(ignition, "ignitiondelay", _number(mount, "ignitiondelay"))
                     if event not in {"launch", "automatic"}:
                         unsupported.add("motor_ignition_event")
+                        cfg_unsupported.add("motor_ignition_event")
                         warnings.append(f"Configuration {cfg.name}: ignition event '{event}' is unsupported.")
                     candidates = [motor for motor in embedded_motors if motor.name.casefold() == designation.casefold()
                                   and abs(motor.diameter - assignment["diameter"]) < 0.002]
@@ -609,10 +628,11 @@ def import_ork(data: bytes, filename: str = "") -> Project:
                 if event in {"never"}:
                     continue
                 recovery.append({"component_id": c.id, "event": event, "cd_area": cd * area,
-                                 "altitude": _number(deploy, "deployaltitude", _number(source_el, "deployaltitude")),
-                                 "delay": _number(deploy, "deploydelay", _number(source_el, "deploydelay"))})
+                                 "altitude": _nonnegative(_number(deploy, "deployaltitude", _number(source_el, "deployaltitude")), "Recovery deployment altitude"),
+                                 "delay": _nonnegative(_number(deploy, "deploydelay", _number(source_el, "deploydelay")), "Recovery deployment delay")})
         if len(assignments) > 1:
             unsupported.add("cluster")
+            cfg_unsupported.add("cluster")
             cfg.motor_id = None
             warnings.append(f"Configuration {cfg.name}: multiple motor assignments require cluster/staging support; launch simulation is blocked.")
         primary = [r for r in recovery if r["event"] in {"apogee", "ejection"}]
@@ -620,10 +640,11 @@ def import_ork(data: bytes, filename: str = "") -> Project:
         unsupported_recovery = [r for r in recovery if r["event"] not in {"apogee", "ejection", "altitude"}]
         if unsupported_recovery or len(primary) > 1 or len(altitude) > 1:
             unsupported.add("deployment_event")
+            cfg_unsupported.add("deployment_event")
             warnings.append(f"Configuration {cfg.name}: recovery events cannot be represented by the single/dual apogee-altitude flight solver.")
         if primary:
             cfg.primary_deploy_event = "motor_ejection" if primary[0]["event"] == "ejection" else "apogee"
-            cfg.apogee_delay = max(0, primary[0]["delay"])
+            cfg.apogee_delay = primary[0]["delay"]
             if cfg.primary_deploy_event == "motor_ejection":
                 delay_text = assignments[0]["delay"].strip().lower() if len(assignments) == 1 else "none"
                 if delay_text not in {"none", "plugged", "p", ""}:
@@ -638,15 +659,23 @@ def import_ork(data: bytes, filename: str = "") -> Project:
             if altitude[0]["delay"]:
                 warnings.append(f"Configuration {cfg.name}: delayed altitude deployment is recorded but delay is not represented by this flight model.")
                 unsupported.add("deployment_event")
+                cfg_unsupported.add("deployment_event")
         elif primary:
             cfg.main_cd_area = max(primary[0]["cd_area"], 1e-9)
             cfg.drogue_cd_area = cfg.main_cd_area
         elif altitude:
             unsupported.add("deployment_event")
+            cfg_unsupported.add("deployment_event")
             warnings.append(f"Configuration {cfg.name}: altitude-only recovery requires a dedicated event model; flight is blocked.")
         else:
-            warnings.append(f"Configuration {cfg.name}: no supported active recovery device was found; review deployment and CdA before flight simulation.")
+            warnings.append(f"Configuration {cfg.name}: no supported active recovery device was found. Flight is blocked until recovery settings are explicitly defined.")
+        cfg.recovery_defined = bool(primary and primary[0]["cd_area"] > 0
+                                    and (not altitude or altitude[0]["cd_area"] > 0)
+                                    and "deployment_event" not in cfg_unsupported)
+        if primary and any(r["cd_area"] <= 0 for r in primary + altitude):
+            warnings.append(f"Configuration {cfg.name}: recovery device has zero Cd×area. Enter usable recovery settings before flight simulation.")
         project.metadata.setdefault("recovery_assignments", {})[cfg_id] = recovery
+        project.metadata.setdefault("unsupported_features_by_configuration", {})[cfg_id] = sorted(cfg_unsupported)
         project.configurations.append(cfg)
     project.active_configuration_id = default_id or project.configurations[0].id
     if not project.materials:

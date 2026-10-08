@@ -20,6 +20,7 @@ describe("engineering presentation", () => {
       "force",
       "density",
       "acceleration",
+      "energy",
     ] as const)
       for (const units of ["metric", "us"] as const)
         expect(

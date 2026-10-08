@@ -50,10 +50,16 @@ jobs:
         run: |
           $installer = (Get-ChildItem release/*-setup.exe | Select-Object -First 1).FullName
           $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
-          $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR="' + $installed + '"') -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
-          $smoke = Start-Process -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ArgumentList '--smoke-test' -Wait -PassThru
-          if ($smoke.ExitCode -ne 0) { throw "Installed smoke test failed: $($smoke.ExitCode)" }
+          $installLog = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-install.log'
+          & ./scripts/windows_process_check.ps1 -FilePath $installer -ProcessArguments @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR="' + $installed + '"'),('/LOG="' + $installLog + '"')) -TimeoutSeconds 600
+          $manifest = Get-Content 'build/bundle_manifest.json' -Raw | ConvertFrom-Json
+          $fileVersion = (Get-Item (Join-Path $installed 'RocketWorkbench.exe')).VersionInfo.ProductVersion
+          if ($fileVersion -ne $manifest.application_version) { throw "Installed executable version '$fileVersion' does not match manifest" }
+          $receipt = Join-Path (Get-Location).Path 'build/installed-engine-smoke.json'
+          & ./scripts/windows_process_check.ps1 -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ProcessArguments @('--smoke-test','--smoke-output',('"' + $receipt + '"')) -TimeoutSeconds 360
+          $evidence = Get-Content $receipt -Raw | ConvertFrom-Json
+          if ($evidence.status -ne 'ok' -or $evidence.fea_elements -le 0 -or $evidence.flight_samples -le 0) { throw 'Installed engine smoke receipt is incomplete' }
+          Get-Content $receipt
       - name: Test installed native desktop, API session and WebGL viewport
         shell: pwsh
         env:
@@ -63,10 +69,12 @@ jobs:
         run: |
           $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
           $data = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-desktop-smoke'
-          $ui = Start-Process -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ArgumentList '--desktop-smoke-test','--data-dir',('"' + $data + '"') -Wait -PassThru
-          if ($ui.ExitCode -ne 0) {
+          try {
+            & ./scripts/windows_process_check.ps1 -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ProcessArguments @('--desktop-smoke-test','--data-dir',('"' + $data + '"')) -TimeoutSeconds 90
+            Copy-Item (Join-Path $data 'application.log') 'build/installed-desktop-smoke.log'
+          } catch {
             if (Test-Path (Join-Path $data 'application.log')) { Get-Content (Join-Path $data 'application.log') }
-            throw "Installed native desktop smoke test failed: $($ui.ExitCode)"
+            throw
           }
       - name: Preserve packaging diagnostics on failure
         if: failure()
@@ -75,6 +83,7 @@ jobs:
           name: RocketWorkbench-windows-build-diagnostics
           path: |
             ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
+            ${{ runner.temp }}/RocketWorkbench-install.log
             ${{ runner.temp }}/rocket-workbench-smoke-error-*.log
             build/RocketWorkbench/warn-*.txt
           if-no-files-found: ignore
@@ -84,6 +93,10 @@ jobs:
           path: |
             release/*-setup.exe
             release/*.sha256
+            release/*.txt
             build/bundle_manifest.json
+            build/frozen-smoke.json
+            build/installed-engine-smoke.json
+            build/installed-desktop-smoke.log
           if-no-files-found: error
           retention-days: 30

@@ -11,6 +11,7 @@ import * as THREE from "three";
 import { Maximize2, RotateCcw, MousePointer2, Move3D } from "lucide-react";
 import type { MeshResponse, Overlays, Units } from "./types";
 import { fmt, quantity, fitSphereDistance } from "./units";
+import { flightDragDirection, fieldRange } from "./viewerData";
 
 interface Props {
   meshes: MeshResponse | null;
@@ -222,8 +223,7 @@ function CFD({
   const pressures = (surface.length ? surface : samples).map(
     (s: any) => s.pressure_pa,
   );
-  const min = Math.min(...pressures),
-    max = Math.max(...pressures);
+  const [min, max] = fieldRange(pressures);
   const stride = Math.max(1, Math.ceil(samples.length / 120));
   const points = useMemo(() => {
     const source = surface.length ? surface : samples;
@@ -360,18 +360,40 @@ function Scene({
   const parts = p.meshes?.components || [];
   const box = useMemo(() => {
     const b = new THREE.Box3();
-    parts.forEach((part) =>
+    const visibleParts = p.overlays.original
+      ? [...parts, ...(p.originalMeshes?.components || [])]
+      : parts;
+    visibleParts.forEach((part) =>
       part.vertices.forEach((v) =>
         b.expandByPoint(new THREE.Vector3(...(v as [number, number, number]))),
       ),
     );
+    if (p.fea && p.overlays.deformation)
+      p.fea.vertices?.forEach((v: number[], i: number) =>
+        b.expandByPoint(
+          new THREE.Vector3(
+            ...(v.map(
+              (n, axis) =>
+                n +
+                (p.fea.displacements?.[i]?.[axis] || 0) * p.deformationScale,
+            ) as [number, number, number]),
+          ),
+        ),
+      );
     if (b.isEmpty())
       b.setFromCenterAndSize(
         new THREE.Vector3(0.5, 0, 0),
         new THREE.Vector3(1, 0.15, 0.15),
       );
     return b;
-  }, [p.meshes]);
+  }, [
+    p.meshes,
+    p.originalMeshes,
+    p.overlays.original,
+    p.fea,
+    p.overlays.deformation,
+    p.deformationScale,
+  ]);
   const center = box.getCenter(new THREE.Vector3()).toArray();
   const dimensions = box.getSize(new THREE.Vector3());
   const size = Math.max(dimensions.x, dimensions.y, dimensions.z, 0.1);
@@ -483,7 +505,13 @@ function Scene({
           rotation={tracking ? [0, 0, -Math.PI / 2] : [0, 0, 0]}
           scale={rocketScale}
         >
-          <group position={tracking ? [-center[0], 0, 0] : [0, 0, 0]}>
+          <group
+            position={
+              tracking
+                ? (center.map((n) => -n) as [number, number, number])
+                : [0, 0, 0]
+            }
+          >
             <Line
               points={[
                 [min - size * 0.12, 0, 0],
@@ -599,12 +627,16 @@ function Scene({
                     color="#829dba"
                   />
                 )}
-                <Arrow
-                  start={[cg ?? center[0], 0, dimensions.z * 0.7]}
-                  direction={[1, 0, 0]}
-                  length={size * 0.22}
-                  color="#e9a777"
-                />
+                {Math.abs(p.flightRow?.drag ?? p.aero?.drag_n ?? 0) > 0 && (
+                  <Arrow
+                    start={[cg ?? center[0], 0, dimensions.z * 0.7]}
+                    direction={
+                      p.flightRow ? flightDragDirection(p.flightRow) : [1, 0, 0]
+                    }
+                    length={size * 0.22}
+                    color="#e9a777"
+                  />
+                )}
                 {!overview && (
                   <Html
                     position={[
@@ -626,12 +658,14 @@ function Scene({
                 )}
                 {p.workspace !== "flight" && (
                   <>
-                    <Arrow
-                      start={[cp ?? center[0], 0, dimensions.z * 0.7]}
-                      direction={[0, Math.sign(p.aero.normal_force_n) || 1, 0]}
-                      length={size * 0.13}
-                      color="#74c6bd"
-                    />
+                    {Math.abs(p.aero.normal_force_n || 0) > 0 && (
+                      <Arrow
+                        start={[cp ?? center[0], 0, dimensions.z * 0.7]}
+                        direction={[0, Math.sign(p.aero.normal_force_n), 0]}
+                        length={size * 0.13}
+                        color="#74c6bd"
+                      />
+                    )}
                     <Html
                       position={[
                         cp ?? center[0],
@@ -645,6 +679,29 @@ function Scene({
                         {quantity(p.aero.normal_force_n, "force", p.units)}
                       </div>
                     </Html>
+                    {Math.abs(p.aero.side_force_n || 0) > 0 && (
+                      <>
+                        <Arrow
+                          start={[cp ?? center[0], 0, 0]}
+                          direction={[0, 0, Math.sign(p.aero.side_force_n)]}
+                          length={size * 0.13}
+                          color="#a3b8ec"
+                        />
+                        <Html
+                          position={[
+                            cp ?? center[0],
+                            0,
+                            Math.sign(p.aero.side_force_n) * size * 0.19,
+                          ]}
+                          center
+                        >
+                          <div className="scene-label force-label">
+                            Side{" "}
+                            {quantity(p.aero.side_force_n, "force", p.units)}
+                          </div>
+                        </Html>
+                      </>
+                    )}
                   </>
                 )}
               </>
@@ -761,10 +818,18 @@ export default function Viewport(p: Props) {
             ))}
           </>
         )}
-        <button title="Fit model" onClick={() => setReset((x) => x + 1)}>
+        <button
+          aria-label="Fit model"
+          title="Fit model"
+          onClick={() => setReset((x) => x + 1)}
+        >
           <Maximize2 size={16} />
         </button>
-        <button title="Reset view" onClick={() => setReset((x) => x + 1)}>
+        <button
+          aria-label="Reset view"
+          title="Reset view"
+          onClick={() => setReset((x) => x + 1)}
+        >
           <RotateCcw size={16} />
         </button>
       </div>

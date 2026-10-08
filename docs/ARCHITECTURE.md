@@ -57,6 +57,13 @@ project model. Warnings describe unsupported assemblies, events and incomplete
 motor data. No network lookup substitutes a thrust curve for a motor digest.
 Users can supply local ENG/RSE files.
 
+Unsupported geometry and event features are recorded per flight configuration,
+alongside the overall import warning list. An inactive stage's motor cluster or
+recovery event does not prevent analysis of another, supported configuration.
+Imported configurations without a usable active recovery device require the user
+to explicitly define recovery settings before flight simulation; placeholder
+default parachute values never establish imported recovery physics.
+
 STEP/STP is tessellated by Open CASCADE; STL/OBJ/PLY supply triangular assets.
 Mesh input units are explicit; STEP's embedded units are honored by Open CASCADE.
 Vertex coordinates become metres. The project saves
@@ -70,6 +77,19 @@ mode, while retaining the OpenRocket reference geometry for comparison. Watertig
 geometry can contribute solid volume, mass and CG. Surface shells, overlaps and
 solid-versus-thin-wall choices must be inspected; a watertight tessellation does
 not by itself prove assembly/material correctness.
+
+Repeated non-fin component instances also repeat their aligned replacement CAD
+geometry, with the source axial spacing; fin-set replacement assets represent the
+selected set as a whole. Closed surface shells whose bounding boxes overlap
+without containment are conservatively marked as having ambiguous material
+volume. This can include nonintersecting complex shells with overlapping bounds;
+the importer does not claim to perform a CAD Boolean union. Such geometry remains
+available for viewing and CFD, while mass requires a measured override and solid
+FEA requires an unambiguous closed source. Nested unitless mesh shells use an
+explicitly warned even/odd material-versus-void interpretation; STEP preserves
+its encoded shell orientation and refuses enclosed positive overlapping solids.
+Geometry inspection and FEA retain these import reliability decisions after
+project saving/loading rather than relying on triangle closure alone.
 
 Arbitrary CAD does not silently become a valid Barrowman shape. The fast CP and
 stability calculation identifies its original-geometry approximation. **New

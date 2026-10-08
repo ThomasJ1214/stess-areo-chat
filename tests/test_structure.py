@@ -57,6 +57,49 @@ def test_tetrahedral_uniaxial_patch_matches_exact_elasticity():
     assert result["relative_equilibrium_residual"] < 1e-9
     assert result["force_balance_relative_error"] < 1e-9
     assert result["moment_balance_relative_error"] < 1e-9
+    assert result["strain_energy_j"] == pytest.approx(traction**2 * 0.01 / (2 * youngs_modulus))
+    assert result["external_work_j"] == pytest.approx(2 * result["strain_energy_j"])
+
+
+def test_hydrostatic_patch_recovers_pressure_strain_and_zero_von_mises():
+    """Closed pressure loading has an exact isotropic affine compression field."""
+    vertices, tetrahedra = box_tetrahedra()
+    pressure, youngs_modulus, poisson = 1e6, 70e9, 0.3
+    forces = np.zeros_like(vertices)
+    for face in _boundary_faces(vertices, tetrahedra):
+        a, b, c = vertices[face]
+        # -p n A / 3 for each node of a constant-pressure triangular face.
+        forces[face] -= pressure * np.cross(b - a, c - a) / 6
+    # Remove six rigid motions without preventing uniform volume contraction.
+    fixed = [0, 1, 2, 4, 5, 11]
+    result = solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson, forces, fixed)
+    strain = -pressure * (1 - 2 * poisson) / youngs_modulus
+    assert result["displacements"] == pytest.approx(vertices * strain, abs=1e-13)
+    assert result["element_stress_pa"][:, :3] == pytest.approx(np.full((6, 3), -pressure), abs=1e-6)
+    assert result["element_von_mises_pa"].max() < 1e-6
+    expected_energy = 3 * pressure**2 * (1 - 2 * poisson) * 0.01 / (2 * youngs_modulus)
+    assert result["strain_energy_j"] == pytest.approx(expected_energy)
+    assert result["external_work_j"] == pytest.approx(2 * expected_energy)
+    assert result["reaction_force_n"] == pytest.approx([0, 0, 0], abs=1e-6)
+
+
+def test_solid_elasticity_is_invariant_under_rigid_cad_alignment():
+    vertices, tetrahedra = box_tetrahedra()
+    forces = np.zeros_like(vertices)
+    forces[[1, 2, 5, 6], 0] = 2500
+    root_nodes = np.flatnonzero(vertices[:, 0] == 0)
+    fixed = (root_nodes[:, None] * 3 + np.arange(3)).ravel()
+    baseline = solve_tetrahedral(vertices, tetrahedra, 70e9, 0.3, forces, fixed)
+    # An independent 3D orthogonal transform, with a distant CAD origin.
+    axis = np.array([1, 2, 3]) / np.sqrt(14)
+    cross = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    rotation = np.eye(3) + math.sin(0.8) * cross + (1 - math.cos(0.8)) * cross @ cross
+    transformed = vertices @ rotation.T + [20000, -30000, 40000]
+    result = solve_tetrahedral(transformed, tetrahedra, 70e9, 0.3, forces @ rotation.T, fixed)
+    assert result["displacements"] == pytest.approx(baseline["displacements"] @ rotation.T, rel=1e-7, abs=1e-12)
+    assert result["element_von_mises_pa"] == pytest.approx(baseline["element_von_mises_pa"], rel=1e-7)
+    assert result["strain_energy_j"] == pytest.approx(baseline["strain_energy_j"], rel=1e-7)
+    assert result["moment_balance_relative_error"] < 1e-8
 
 
 def test_body_force_is_distributed_by_real_element_volume():
@@ -87,6 +130,32 @@ def test_elasticity_has_positive_energy_and_expected_shear():
     assert d[3, 3] == pytest.approx(70e9 / 2.6)
     with pytest.raises(ValueError):
         elasticity_matrix(70e9, 0.5)
+
+
+@pytest.mark.parametrize("modulus,poisson", [(float("nan"), .3), (float("inf"), .3),
+                                           (70e9, float("nan")), (70e9, float("inf"))])
+def test_nonfinite_material_values_are_rejected(modulus, poisson):
+    with pytest.raises(ValueError):
+        elasticity_matrix(modulus, poisson)
+
+
+def test_thin_wall_section_retains_the_limiting_area_and_inertia():
+    radius, thickness = .05, 1e-18
+    area, inertia = tube_section(radius, thickness)
+    assert area == pytest.approx(2 * math.pi * radius * thickness, rel=1e-12, abs=0)
+    assert inertia == pytest.approx(math.pi * radius**3 * thickness, rel=1e-12, abs=0)
+
+
+def test_fractional_mesh_indices_and_nonfinite_density_are_rejected():
+    vertices, tetrahedra = box_tetrahedra()
+    invalid = tetrahedra.astype(float)
+    invalid[0, 0] = .5
+    with pytest.raises(ValueError, match="integer"):
+        solve_tetrahedral(vertices, invalid, 1e9, .3, np.zeros_like(vertices), [0, 1, 2])
+    with pytest.raises(ValueError, match="integer"):
+        solve_tetrahedral(vertices, tetrahedra, 1e9, .3, np.zeros_like(vertices), [.5, 1, 2])
+    with pytest.raises(ValueError, match="density"):
+        solve_tetrahedral(vertices, tetrahedra, 1e9, .3, np.zeros_like(vertices), [0, 1, 2], density=float("nan"))
 
 
 def test_gmsh_meshes_actual_closed_box_not_bounding_box():
@@ -130,6 +199,33 @@ def test_full_component_fea_under_prescribed_end_traction():
     assert result["summary"]["relative_equilibrium_residual"] < 1e-8
     assert len(result["von_mises_pa"]) == len(result["vertices"])
     assert len(result["surface_pressure_pa"]) == len(result["surface_faces"])
+    assert result["summary"]["traction_faces"] > 0
+    assert result["summary"]["surface_force_n"] == pytest.approx([100, 0, 0], abs=1e-8)
+    assert result["summary"]["body_force_n"] == pytest.approx([0, 0, 0], abs=1e-8)
+    assert result["summary"]["strain_energy_j"] > 0
+
+
+def test_full_cad_fea_respects_scale_rotation_and_component_placement():
+    import trimesh
+    from rocket_workbench.models import Component, Conditions, GeometryAsset, Material, Project, Transform
+    from rocket_workbench.solvers.structure import solve_fea
+
+    mesh = trimesh.creation.box(extents=[.1, .01, .01])
+    asset = GeometryAsset(id="bar", name="Aligned bar", format="stl", vertices=mesh.vertices.tolist(),
+                          faces=mesh.faces.tolist(), watertight=True, volume=mesh.volume)
+    component = Component(id="bar", x=.2, asset_id="bar", geometry_mode="replacement", material_id="al",
+                          transform=Transform(scale=2, rotation=[0, 0, 90], translation=[.03, .02, .01]))
+    material = Material(id="al", density=2700, youngs_modulus=70e9, poisson_ratio=.3)
+    result = solve_fea(Project(components=[component], assets=[asset], materials=[material]), "bar", Conditions(speed=0),
+                       {"mesh_size": .006, "load_mode": "traction", "clamp_axis": "y",
+                        "traction_pa": [0, 1e6, 0], "backend": "cpu", "max_elements": 10000})
+    summary = result["summary"]
+    assert summary["volume_m3"] == pytest.approx(mesh.volume * 8, rel=1e-5)
+    assert summary["relative_volume_difference"] < 1e-5
+    assert summary["mass_kg"] == pytest.approx(2700 * mesh.volume * 8, rel=1e-5)
+    assert summary["applied_force_n"] == pytest.approx([0, 400, 0], abs=1e-7)
+    assert summary["applied_moment_nm"] == pytest.approx([-4, 0, 92], abs=1e-7)
+    assert summary["max_displacement_m"] == pytest.approx(1e6 / 70e9 * .2, rel=.06)
 
 
 def test_flight_stress_specific_acceleration_and_pressure_scaling():
@@ -206,6 +302,8 @@ def test_static_fea_aero_pressure_uses_shared_crosswind_freestream():
     assert result["summary"]["freestream_velocity_m_s"] == pytest.approx([0, 20, 0])
     # A cube face perpendicular to the crosswind gets the declared Cp=2.
     assert result["summary"]["applied_force_n"] == pytest.approx([0, 2 * q * 0.01, 0], abs=1e-8)
+    assert result["summary"]["max_von_mises_pa"] > 0
+    assert result["summary"]["strain_energy_j"] > 0
 
 
 def test_radial_fin_root_clamp_covers_thickness_edges_and_cant():
@@ -255,3 +353,83 @@ def test_zero_thickness_reference_parts_are_unsupported_without_blocking_other_p
     assert not rows["phantom"]["supported"]
     assert "Zero-thickness" in rows["phantom"]["warnings"][0]
     assert rows["tube"]["supported"]
+
+
+def test_invalid_wall_dimensions_do_not_hide_other_component_estimates():
+    from rocket_workbench.models import Component, Conditions, Project
+    from rocket_workbench.solvers.structure import analyze
+    invalid = Component(id="invalid", kind="bodytube", radius=.01, thickness=.02)
+    valid = Component(id="valid", kind="bodytube", x=.1, radius=.01, thickness=.002)
+    rows = {row["component_id"]: row for row in analyze(Project(components=[invalid, valid]), Conditions())["components"]}
+    assert not rows["invalid"]["supported"]
+    assert "exceeds" in rows["invalid"]["warnings"][0]
+    assert rows["valid"]["supported"]
+
+
+def _solid_project(*, verified=True):
+    import trimesh
+    from rocket_workbench.models import Component, GeometryAsset, Project
+    mesh = trimesh.creation.box(extents=[.1, .1, .1])
+    asset = GeometryAsset(id="cube", name="Cube", format="stl", vertices=mesh.vertices.tolist(),
+                          faces=mesh.faces.tolist(), watertight=verified, volume=mesh.volume if verified else 0)
+    component = Component(id="cube", asset_id="cube", geometry_mode="replacement")
+    return Project(components=[component], assets=[asset])
+
+
+@pytest.mark.parametrize("options,reason", [
+    ({"backend": "fake_gpu"}, "backend"),
+    ({"clamp_axis": "other"}, "clamp_axis"),
+    ({"clamp_type": "radial_root"}, "procedural"),
+    ({"load_mode": "unsupported"}, "load_mode"),
+    ({"traction_pa": [0, float("nan"), 0]}, "traction_pa"),
+    ({"acceleration_m_s2": [0, float("inf"), 0]}, "acceleration"),
+    ({"clamp_tolerance": float("nan")}, "clamp_tolerance"),
+    ({"mesh_size": 1e-200}, "budget"),
+])
+def test_invalid_structural_options_fail_before_native_meshing(monkeypatch, options, reason):
+    from rocket_workbench.models import Conditions
+    from rocket_workbench.solvers import structure
+    def unexpected_mesh(*args, **kwargs):
+        pytest.fail("Invalid inputs reached native meshing")
+    monkeypatch.setattr(structure, "_volume_mesh", unexpected_mesh)
+    with pytest.raises(ValueError, match=reason):
+        structure.solve_fea(_solid_project(), "cube", Conditions(), {"mesh_size": .03, **options})
+
+
+def test_unverified_enclosed_material_volume_cannot_be_used_for_fea(monkeypatch):
+    from rocket_workbench.models import Conditions
+    from rocket_workbench.solvers import structure
+    def unexpected_mesh(*args, **kwargs):
+        pytest.fail("Unverified material volume reached native meshing")
+    monkeypatch.setattr(structure, "_volume_mesh", unexpected_mesh)
+    with pytest.raises(ValueError, match="verified enclosed material volume"):
+        structure.solve_fea(_solid_project(verified=False), "cube", Conditions(), {"mesh_size": .03})
+
+
+def test_explicit_zero_pressure_is_preserved_and_labeled_as_unloaded():
+    from rocket_workbench.models import Conditions
+    from rocket_workbench.solvers.structure import solve_fea
+    result = solve_fea(_solid_project(), "cube", Conditions(speed=100),
+                       {"mesh_size": .03, "load_mode": "aero_pressure", "load_pressure_pa": 0,
+                        "backend": "cpu"})
+    assert result["summary"]["dynamic_pressure_pa"] > 0
+    assert result["summary"]["load_pressure_pa"] == 0
+    assert result["summary"]["max_von_mises_pa"] == 0
+    assert result["summary"]["strain_energy_j"] == 0
+    assert any("unloaded solution" in warning for warning in result["warnings"])
+
+
+def test_pressure_transfer_finds_a_matching_normal_beyond_first_sixteen_samples():
+    from rocket_workbench.solvers.structure import _transfer_cfd_pressure
+    vertices = np.array([[0, 0, 0], [.03, 0, 0], [0, .03, 0]])
+    centroid = vertices.mean(axis=0)
+    rows = [{"position": (centroid + [0, 0, .0001 * i]).tolist(),
+             "pressure_pa": 105000, "normal": [0, 0, -1]} for i in range(16)]
+    rows.append({"position": (centroid + [.003, 0, 0]).tolist(),
+                 "pressure_pa": 102000, "normal": [0, 0, 1]})
+    pressure, summary = _transfer_cfd_pressure(vertices, [[0, 1, 2]], {
+        "cfd_surface": rows, "cfd_converged": True, "cfd_freestream_pressure_pa": 100000,
+        "cfd_cell_spacing_m": [.01, .01, .01]})
+    assert pressure == pytest.approx([2000])
+    assert summary["mapped_surface_area_fraction"] == 1
+    assert summary["fallback_search_faces"] == 1

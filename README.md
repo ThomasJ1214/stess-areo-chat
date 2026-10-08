@@ -33,6 +33,9 @@ driver must already be installed. Other GPUs still render the viewport; numerica
 solvers use their reported CPU backend when CUDA is unavailable. Large CFD/FEA
 jobs need substantial RAM and/or VRAM.
 
+Start with the [step-by-step user guide](docs/USER_GUIDE.md) for OpenRocket setup,
+CAD replacement, exterior airflow, launch playback, CFD/FEA, studies and exports.
+
 ## What is implemented
 
 | Workflow | Calculation and practical scope |

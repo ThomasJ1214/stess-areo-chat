@@ -217,3 +217,94 @@ def test_canonical_profile_matches_mesh_shape_and_flipped_nose():
     m=component_mesh(Project(),c)
     ring=m.vertices[np.isclose(m.vertices[:,0],.15)]
     assert np.linalg.norm(ring[:,1:],axis=1).max()==pytest.approx(radii[1])
+
+
+def test_overlapping_closed_shells_do_not_double_count_material_volume():
+    first = trimesh.creation.box([.1, .1, .1])
+    second = first.copy()
+    second.apply_translation([.04, .03, .02])
+    asset = import_geometry(trimesh.util.concatenate([first, second]).export(file_type='stl'),
+                            'overlapping-assembly.stl', 'm')
+    # Both box boundaries are topologically closed, but their sum is not a
+    # verified physical material union and would double-count the intersection.
+    assert not asset.watertight
+    assert asset.volume == 0
+    assert any('overlapping assembly' in warning for warning in asset.warnings)
+    component = Component(asset_id=asset.id, geometry_mode='replacement')
+    project = Project(assets=[asset], components=[component])
+    assert component_mesh(project, component).is_watertight
+    properties = geometry_properties(project, component)
+    assert not properties['watertight']
+    assert properties['volume_m3'] is None
+
+
+def test_replaced_repeated_component_keeps_all_instances_and_geometric_cg():
+    box = trimesh.creation.box([.01, .02, .03])
+    asset = import_geometry(box.export(file_type='stl'), 'ring-detail.stl', 'm')
+    component = Component(x=.4, asset_id=asset.id, geometry_mode='replacement',
+                          transform=Transform(translation=[.1, .02, 0], scale=2),
+                          metadata={'instance_count': 3, 'instanceseparation': .2})
+    project = Project(components=[component], assets=[asset])
+    mesh = component_mesh(project, component)
+    assert len(mesh.split()) == 3
+    assert mesh.volume == pytest.approx(3 * box.volume * 2 ** 3)
+    assert mesh.center_mass == pytest.approx([.7, .02, 0], abs=1e-10)
+    assert mesh.bounds[:, 0] == pytest.approx([.49, .91])
+
+
+def test_cad_replacement_changes_selected_component_without_mutating_neighbors_or_source():
+    from rocket_workbench.models import FlightConfiguration
+    detailed = trimesh.creation.box([.10, .04, .06])
+    asset = import_geometry(detailed.export(file_type='stl'), 'selected-payload.stl', 'm')
+    nose = Component(name='Nose', kind='nosecone', x=0, length=.3, radius=.05)
+    payload = Component(name='Payload', x=.3, length=.2, radius=.05)
+    tail = Component(name='Tail', x=.5, length=.6, radius=.05)
+    project = Project(assets=[asset], components=[nose, payload, tail],
+                      configurations=[FlightConfiguration()])
+    original_project = project.model_copy(deep=True)
+    before = {component.id: component_mesh(project, component).copy() for component in project.components}
+    payload.asset_id = asset.id
+    payload.geometry_mode = 'replacement'
+    payload.transform = Transform(translation=[.10, .01, 0], rotation=[0, 0, 90], scale=2)
+    saved = project.model_dump()
+
+    replaced = component_mesh(project, payload)
+    assert replaced.extents == pytest.approx([.08, .20, .12])
+    assert replaced.center_mass == pytest.approx([.4, .01, 0])
+    for neighbor in (nose, tail):
+        after = component_mesh(project, neighbor)
+        np.testing.assert_array_equal(after.vertices, before[neighbor.id].vertices)
+        np.testing.assert_array_equal(after.faces, before[neighbor.id].faces)
+    reference = component_mesh(project, payload, original=True)
+    np.testing.assert_array_equal(reference.vertices, before[payload.id].vertices)
+    np.testing.assert_array_equal(reference.faces, before[payload.id].faces)
+    np.testing.assert_array_equal(project_mesh(project, original=True).vertices,
+                                  project_mesh(original_project).vertices)
+    # Repeated analysis/inspection must never compound an asset's scale,
+    # rotation or translation into its portable source coordinates.
+    for _ in range(3):
+        np.testing.assert_array_equal(component_mesh(project, payload).vertices, replaced.vertices)
+        project_mesh(project)
+        geometry_properties(project, payload)
+    assert project.model_dump() == saved
+    assert asset.model_dump() == original_project.assets[0].model_dump()
+
+
+def test_external_project_mesh_excludes_internal_and_disabled_parts_preserving_material_meshes():
+    from rocket_workbench.models import FlightConfiguration
+    exterior = Component(name='Exterior', x=0, length=.6, radius=.05, thickness=.002)
+    internal = Component(name='Internal bulkhead', kind='bulkhead', x=.25,
+                         length=.01, radius=.04, external=False)
+    disabled = Component(name='Disabled body', x=1, length=.3, radius=.2, enabled=False)
+    project = Project(components=[exterior, internal, disabled], configurations=[FlightConfiguration()])
+    saved = project.model_dump()
+    aerodynamic_input = project_mesh(project)
+    exterior_mesh = component_mesh(project, exterior)
+    np.testing.assert_array_equal(aerodynamic_input.vertices, exterior_mesh.vertices)
+    np.testing.assert_array_equal(aerodynamic_input.faces, exterior_mesh.faces)
+    material_mesh = component_mesh(project, internal)
+    assert material_mesh.is_watertight
+    assert material_mesh.volume == pytest.approx(math.pi * .04 ** 2 * .01, rel=.002)
+    # The aerodynamic component filter leaves solid/material geometry available
+    # for mass, inspection and FEA; it does not destructively hollow a project.
+    assert project.model_dump() == saved

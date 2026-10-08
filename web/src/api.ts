@@ -1,4 +1,7 @@
-const session = new URLSearchParams(window.location.search).get("token");
+const session =
+  typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("token");
 export async function request<T = any>(
   path: string,
   init: RequestInit = {},

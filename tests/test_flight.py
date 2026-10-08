@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from rocket_workbench.models import Component, Conditions, Motor, Project
+from rocket_workbench.models import Component, Conditions, FlightConfiguration, Motor, Project
 from rocket_workbench.solvers import aero, flight
 
 
@@ -215,3 +215,71 @@ def test_tube_only_flight_fails_without_a_valid_aerodynamic_polar():
     p.components = [p.components[1]]
     with pytest.raises(ValueError, match="positive normal-force slope"):
         flight.simulate(p, conditions())
+
+
+def test_immediate_positive_thrust_records_liftoff_at_ignition():
+    p = rocket()
+    p.motors[0].curve = [[0, 200], [1, 200], [1.1, 0]]
+    result = flight.simulate(p, conditions(max_time=2))
+    assert event(result, "liftoff")["time"] == 0
+    assert event(result, "ignition")["time"] == 0
+    assert event(result, "rail_exit")["time"] > 0
+    p.configurations[0].ignition_delay = .7
+    delayed = flight.simulate(p, conditions(max_time=2))
+    assert event(delayed, "liftoff")["time"] == pytest.approx(.7, abs=1e-9)
+
+
+def test_configuration_limits_do_not_block_a_supported_configuration():
+    p = rocket()
+    supported = p.configurations[0]
+    blocked = FlightConfiguration(id="unsupported", motor_id="motor")
+    p.configurations.append(blocked)
+    p.metadata["unsupported_features"] = ["deployment_event"]
+    p.metadata["unsupported_features_by_configuration"] = {supported.id: [], blocked.id: ["deployment_event"]}
+    result = flight.simulate(p, conditions(max_time=2), supported.id)
+    assert not any("Unsupported reference-model feature: deployment_event" in warning for warning in result["warnings"])
+    with pytest.raises(ValueError, match="deployment_event"):
+        flight.simulate(p, conditions(max_time=2), blocked.id)
+
+
+def test_newly_enabled_unsupported_geometry_is_detected_without_import_metadata():
+    p = rocket()
+    p.components.append(Component(kind="podset", external=False))
+    with pytest.raises(ValueError, match="podset"):
+        flight.simulate(p, conditions())
+    p.components[-1].enabled = False
+    p.components[1].metadata["cluster_configuration"] = "three"
+    with pytest.raises(ValueError, match="cluster"):
+        flight.simulate(p, conditions())
+
+
+def test_undefined_imported_recovery_is_not_replaced_with_default_canopies():
+    p = rocket()
+    p.configurations[0].recovery_defined = False
+    with pytest.raises(ValueError, match="Recovery is not defined"):
+        flight.simulate(p, conditions())
+
+
+def test_high_body_drag_matches_closed_form_terminal_approach(monkeypatch):
+    # Constant-mass, constant-thrust, vertical quadratic drag has the independent
+    # exact solution v(t)=sqrt(a/b)*tanh(sqrt(a*b)*t), a=T/m-g,
+    # b=rho*Cd*A/(2m). This deliberately stiff numerical-conditioning case must
+    # remain stable even with a 0.2 s user output step and no deployed canopy.
+    original = aero.atmosphere
+    def constant_atmosphere(altitude, temperature_delta=0):
+        return original(0)
+    monkeypatch.setattr(aero, "atmosphere", constant_atmosphere)
+    p = rocket()
+    p.motors[0].propellant_mass = 0
+    p.motors[0].curve = [[0, 200], [1, 200], [1.1, 0]]
+    p.metadata["aerodynamic_polars"] = [
+        {"mach": mach, "cd": 10000, "cna": 10, "cp_m": 1.2, "geometry_signature": aero.geometry_signature(p)}
+        for mach in [0, 2]
+    ]
+    result = flight.simulate(p, conditions(dt=.2, rail_length=.01, max_time=1))
+    mass, density, area = 3.1, original(0)["density_kg_m3"], math.pi*.05**2
+    acceleration, damping = 200/mass-aero.G0, density*10000*area/(2*mass)
+    expected = math.sqrt(acceleration/damping)*math.tanh(math.sqrt(acceleration*damping))
+    assert result["trajectory"][-1]["vertical_velocity"] == pytest.approx(expected, rel=2e-5)
+    assert all(0 <= row["vertical_velocity"] <= expected*(1+1e-4) for row in result["trajectory"])
+    assert result["summary"]["integration_steps"] > 5

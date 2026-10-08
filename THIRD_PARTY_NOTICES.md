@@ -8,6 +8,10 @@ The installer retains installed distribution metadata and available license
 files under its `_internal` directory. `bundle_manifest.json` identifies the
 exact packages in a build; `uv.lock` and `web/package-lock.json` identify resolved
 versions and artifact hashes. See those files for the actual dependency set.
+The manifest's package inventory includes installed build-environment packages;
+PyInstaller's exclusions mean that inventory is broader than the executable's
+runtime imports. Source, compiled frontend and lockfile content hashes identify
+the actual inputs independently of the recorded Git revision.
 
 | Dependency | Purpose | Upstream license / terms |
 | --- | --- | --- |

@@ -87,6 +87,19 @@ def _orient_enclosed_shells(mesh: trimesh.Trimesh) -> None:
     depths = {i: 0 for i in closed}
     nested = False
     trusted = mesh.metadata.get("trusted_step_winding", False)
+    # Separate closed shells need not be separate material. Bounding boxes
+    # crossing without containment can hide an intersecting assembly; summing
+    # signed volumes would count the overlap twice. Surface import cannot prove
+    # a CAD Boolean union, so preserve inspection geometry and require measured
+    # mass (or a unioned source) for these conservatively ambiguous cases.
+    scale_tolerance = max(float(np.max(mesh.extents)), 1e-12) * 1e-10
+    for ii, i in enumerate(closed):
+        for j in closed[ii + 1:]:
+            overlap = np.minimum(bounds[i][1], bounds[j][1]) - np.maximum(bounds[i][0], bounds[j][0])
+            contains_i = np.all(bounds[i][0] <= bounds[j][0]) and np.all(bounds[i][1] >= bounds[j][1])
+            contains_j = np.all(bounds[j][0] <= bounds[i][0]) and np.all(bounds[j][1] >= bounds[i][1])
+            if np.all(overlap > scale_tolerance) and not (contains_i or contains_j):
+                mesh.metadata["volume_ambiguous"] = "Closed shells have intersecting bounds without containment; overlapping assembly material volume cannot be verified. Use measured mass or a CAD union."
     for i in closed:
         candidates = [j for j in closed if i != j
                       and np.all(bounds[j][0] <= bounds[i][0])
@@ -467,6 +480,11 @@ def component_mesh(project: Project, component: Component, original: bool = Fals
         if asset is None:
             raise ValueError(f"Replacement asset for {component.name} is missing.")
         mesh = trimesh.Trimesh(vertices=asset.vertices, faces=asset.faces, process=False)
+        if not asset.watertight:
+            # Retain the importer's material-volume decision when reconstructing
+            # the portable asset. Closed triangle topology alone cannot turn an
+            # ambiguous overlapping assembly into a verified physical solid.
+            mesh.metadata["volume_ambiguous"] = "Imported asset has no reliable enclosed material volume."
         mesh.vertices *= component.transform.scale
         mesh.vertices = Rotation.from_euler("xyz", component.transform.rotation, degrees=True).apply(mesh.vertices)
         mesh.apply_translation(component.transform.translation)
@@ -478,14 +496,14 @@ def component_mesh(project: Project, component: Component, original: bool = Fals
             radial = component.metadata.get("radialposition", 0)
             angle = math.radians(component.metadata.get("radialdirection", 0))
             mesh.apply_translation([0, radial * math.cos(angle), radial * math.sin(angle)])
-        count = component.metadata.get("instance_count", 1)
-        if count > 1 and component.kind not in FINS and component.kind != "tubefinset":
-            instances = []
-            for index in range(count):
-                piece = mesh.copy()
-                piece.apply_translation([index * component.metadata.get("instanceseparation", 0), 0, 0])
-                instances.append(piece)
-            mesh = trimesh.util.concatenate(instances)
+    count = component.metadata.get("instance_count", 1)
+    if count > 1 and component.kind not in FINS and component.kind != "tubefinset":
+        instances = []
+        for index in range(count):
+            piece = mesh.copy()
+            piece.apply_translation([index * component.metadata.get("instance_separation", component.metadata.get("instanceseparation", 0)), 0, 0])
+            instances.append(piece)
+        mesh = trimesh.util.concatenate(instances)
     mesh.apply_translation([component.x, 0, 0])
     return mesh
 
@@ -501,7 +519,8 @@ def geometry_properties(project: Project, component: Component, original: bool =
     mesh = component_mesh(project, component, original)
     if not len(mesh.faces):
         return {"bounds_m": None, "volume_m3": 0.0, "watertight": False, "centroid_m": None}
-    watertight = bool(mesh.is_watertight)
+    watertight = bool(mesh.is_watertight and mesh.is_winding_consistent
+                      and not mesh.metadata.get("volume_ambiguous"))
     return {"bounds_m": mesh.bounds.tolist(), "extents_m": mesh.extents.tolist(),
             "volume_m3": abs(float(mesh.volume)) if watertight else None,
             "watertight": watertight,

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 import { Info, Check, ShieldCheck, Activity } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -14,6 +14,7 @@ import {
 import { fmt, displayValue, fromDisplay, unitLabel } from "./units";
 import type { Quantity } from "./units";
 import type { Units } from "./types";
+import { numberInputIssue, parseNumberInput } from "./numericInput";
 export function NumberField({
   label,
   value,
@@ -23,6 +24,7 @@ export function NumberField({
   max,
   step = "any",
   hint,
+  normalize,
 }: {
   label: string;
   value: number | null;
@@ -32,20 +34,36 @@ export function NumberField({
   max?: number;
   step?: number | string;
   hint?: string;
+  normalize?: (n: number) => number;
 }) {
   // Keep partial decimal/scientific/negative text editable; persist only finite numbers.
   const [text, setText] = useState(value === null ? "" : String(value));
   const focused = useRef(false);
+  const lastEmitted = useRef<number | null | undefined>(undefined);
+  const fieldId = useId();
+  const issue = numberInputIssue(text, min, max);
   useEffect(() => {
-    if (!focused.current) setText(value === null ? "" : String(value));
+    // Preserve an in-progress edit only when this field caused the update.
+    // Project/settings loads must also replace a currently focused field.
+    if (!focused.current || value !== lastEmitted.current)
+      setText(value === null ? "" : String(value));
+    lastEmitted.current = undefined;
   }, [value]);
   const commit = (raw: string) => {
     setText(raw);
-    if (!raw.trim()) onChange(null);
-    else if (Number.isFinite(Number(raw))) onChange(Number(raw));
+    if (!raw.trim()) {
+      lastEmitted.current = null;
+      onChange(null);
+    } else {
+      const parsed = parseNumberInput(raw);
+      if (parsed !== null) {
+        lastEmitted.current = normalize ? normalize(parsed) : parsed;
+        onChange(parsed);
+      }
+    }
   };
   return (
-    <label className="field">
+    <label className={`field ${issue ? "invalid-field" : ""}`}>
       <span>
         {label}
         {hint && (
@@ -63,28 +81,26 @@ export function NumberField({
           aria-valuenow={value ?? undefined}
           aria-valuemin={min}
           aria-valuemax={max}
-          aria-invalid={!!text.trim() && !Number.isFinite(Number(text))}
+          aria-invalid={!!issue}
+          aria-describedby={
+            issue ? `${fieldId}-error` : hint ? `${fieldId}-hint` : undefined
+          }
           value={text}
           onFocus={() => {
             focused.current = true;
           }}
           onBlur={() => {
             focused.current = false;
-            setText(
-              text.trim() && Number.isFinite(Number(text))
-                ? String(Number(text))
-                : value === null
-                  ? ""
-                  : String(value),
-            );
+            // Keep malformed nonempty edits visible: clicking Run must not
+            // silently revert them and simulate an older valid value.
+            if (!text.trim() || parseNumberInput(text) !== null)
+              setText(value === null ? "" : String(value));
           }}
           onChange={(e) => commit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "ArrowUp" || e.key === "ArrowDown") {
               e.preventDefault();
-              const base = Number.isFinite(Number(text))
-                ? Number(text)
-                : (value ?? 0);
+              const base = parseNumberInput(text) ?? value ?? 0;
               const increment = typeof step === "number" ? step : 1;
               const next = Math.max(
                 min ?? -Infinity,
@@ -99,6 +115,16 @@ export function NumberField({
         />
         {unit && <small>{unit}</small>}
       </div>
+      {hint && (
+        <small id={`${fieldId}-hint`} className="sr-only">
+          {hint}
+        </small>
+      )}
+      {issue && (
+        <small id={`${fieldId}-error`} className="field-error">
+          {issue}
+        </small>
+      )}
     </label>
   );
 }
@@ -116,18 +142,29 @@ export function SIField({
   max?: number;
   hint?: string;
 }) {
+  const present = (n: number) =>
+    Number(displayValue(n, kind, units).toPrecision(8));
+  const min = props.min === undefined ? undefined : present(props.min);
+  const max = props.max === undefined ? undefined : present(props.max);
   return (
     <NumberField
       {...props}
-      value={
-        props.value === null
-          ? null
-          : Number(displayValue(props.value, kind, units).toPrecision(8))
-      }
+      value={props.value === null ? null : present(props.value)}
       onChange={(n) =>
-        props.onChange(n === null ? null : fromDisplay(n, kind, units))
+        props.onChange(
+          n === null
+            ? null
+            : n === min
+              ? props.min!
+              : n === max
+                ? props.max!
+                : fromDisplay(n, kind, units),
+        )
       }
       unit={unitLabel(kind, units)}
+      min={min}
+      max={max}
+      normalize={(n) => Number(n.toPrecision(8))}
     />
   );
 }
@@ -178,11 +215,24 @@ export function Metric({
 export function Fidelity({
   data,
   compact = false,
+  currentConditions,
+  currentOptions,
 }: {
   data: any;
   compact?: boolean;
+  currentConditions?: object;
+  currentOptions?: object;
 }) {
   if (!data) return null;
+  const differs = (current: object | undefined, original: any) =>
+    current &&
+    original &&
+    Object.entries(current).some(
+      ([key, value]) => JSON.stringify(value) !== JSON.stringify(original[key]),
+    );
+  const changed =
+    differs(currentConditions, data.inputs?.conditions) ||
+    differs(currentOptions, data.inputs?.options);
   return (
     <div className={`fidelity ${compact ? "compact" : ""}`}>
       <ShieldCheck size={15} />
@@ -199,6 +249,53 @@ export function Fidelity({
               <li key={i}>{w}</li>
             ))}
           </ul>
+        )}
+        {!compact && data.inputs?.application_version && (
+          <div className="result-provenance">
+            Engine {data.inputs.application_version}
+            {data.inputs.submitted_at && (
+              <span>
+                {" "}
+                · {new Date(data.inputs.submitted_at).toLocaleString()}
+              </span>
+            )}
+            {typeof data.inputs.project_sha256 === "string" && (
+              <span
+                title={`Input project SHA-256: ${data.inputs.project_sha256}`}
+              >
+                · Input {data.inputs.project_sha256.slice(0, 12)}
+              </span>
+            )}
+          </div>
+        )}
+        {!compact && changed && (
+          <p className="field-error">
+            Setup changed since this run. Rerun the solver to calculate the new
+            setup.
+          </p>
+        )}
+        {!compact && data.inputs && (
+          <details className="run-inputs">
+            <summary>Inspect run inputs · SI units</summary>
+            <p>Configuration: {data.inputs.configuration_id || "default"}</p>
+            <pre>
+              {JSON.stringify(
+                {
+                  conditions: data.inputs.conditions,
+                  options: data.inputs.options,
+                },
+                null,
+                2,
+              )}
+            </pre>
+            {data.inputs.cfd_source && (
+              <p>
+                Pressure-transfer source fields belong to the recorded CFD run.
+                Download its solution JSON or rerun CFD before reproducing the
+                coupled load.
+              </p>
+            )}
+          </details>
         )}
       </div>
     </div>

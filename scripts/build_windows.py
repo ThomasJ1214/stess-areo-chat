@@ -11,7 +11,9 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
+import struct
 import subprocess
 import sys
 import tomllib
@@ -19,20 +21,31 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(arguments: list[str], *, cwd: Path = ROOT, env: dict | None = None) -> None:
+def run(arguments: list[str], *, cwd: Path = ROOT, env: dict | None = None,
+        timeout_seconds: int | None = None) -> None:
     print("Running:", " ".join(arguments), flush=True)
-    subprocess.run(arguments, cwd=cwd, env=env, check=True)
+    subprocess.run(arguments, cwd=cwd, env=env, check=True, timeout=timeout_seconds)
 
 
-def prepare_source_and_manifest() -> str:
+def file_record(path: Path, relative_path: str) -> dict:
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    return {"path": relative_path, "bytes": path.stat().st_size, "sha256": digest}
+
+
+def prepare_source_and_manifest(*, gpu_requested: bool = True) -> str:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text("utf-8"))["project"]["version"]
+    from rocket_workbench import __version__
+    if version != __version__:
+        raise RuntimeError("Application and packaging versions differ; update pyproject.toml and rocket_workbench/__init__.py together.")
     source_dir = ROOT / "build" / "source"
     if source_dir.exists():
         shutil.rmtree(source_dir)
     source_dir.mkdir(parents=True, exist_ok=True)
     # Include precisely repository source, never untracked files, local projects,
     # credentials, dependency caches, or generated application outputs.
-    for filename in subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0"):
+    source_files = []
+    for filename in sorted(subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")):
         if not filename:
             continue
         # Upstream GPL test data is repository validation material, not app data.
@@ -44,6 +57,7 @@ def prepare_source_and_manifest() -> str:
         destination = source_dir / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
+        source_files.append(file_record(destination, filename))
     notices_root = ROOT / "build" / "notices"
     if notices_root.exists():
         shutil.rmtree(notices_root)
@@ -85,10 +99,20 @@ def prepare_source_and_manifest() -> str:
             destination = notices_root / "python" / f"{name}-{dist.version}" / Path(*relative_parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT).strip())
+    frontend_files = [file_record(path, path.relative_to(ROOT / "web" / "dist").as_posix())
+                      for path in sorted((ROOT / "web" / "dist").rglob("*")) if path.is_file()]
+    source_digest = hashlib.sha256(json.dumps(source_files, sort_keys=True, separators=(",", ":")).encode("utf8")).hexdigest()
     manifest = {"application_version": version, "python": sys.version,
+                "build_platform": platform.platform(), "build_architecture": platform.machine(),
+                "gpu_runtime_requested": gpu_requested,
+                "package_inventory_scope": "Installed build-environment distributions; PyInstaller exclusions apply to the executable.",
                 "packages": sorted(packages, key=lambda item: (item["name"] or "").lower()),
                 "frontend_packages": sorted(frontend_packages, key=lambda item: item["name"].lower()),
-                "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()}
+                "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip(),
+                "source_dirty": dirty, "source_snapshot_sha256": source_digest,
+                "source_files": source_files, "frontend_files": frontend_files,
+                "lockfiles": [file_record(ROOT / path, path) for path in ("uv.lock", "web/package-lock.json")]}
     (ROOT / "build" / "bundle_manifest.json").write_text(json.dumps(manifest, indent=2), "utf-8")
     return version
 
@@ -101,6 +125,8 @@ def main() -> None:
     args = parser.parse_args()
     if sys.platform != "win32":
         parser.error("Windows application packaging must run on Windows x64. Use the Windows build workflow.")
+    if struct.calcsize("P") != 8 or platform.machine().lower() not in {"amd64", "x86_64"}:
+        parser.error("Use a Windows x64 Python interpreter; native ARM64 and 32-bit builds are unsupported.")
     if sys.version_info[:2] != (3, 12):
         parser.error("Use the pinned Python 3.12 interpreter.")
     if not args.skip_web_build:
@@ -111,12 +137,12 @@ def main() -> None:
         run([npm, "run", "build"], cwd=ROOT / "web")
     if not (ROOT / "web" / "dist" / "index.html").is_file():
         parser.error("web/dist/index.html is missing; build the frontend first.")
-    version = prepare_source_and_manifest()
+    version = prepare_source_and_manifest(gpu_requested=not args.cpu_only)
     bundle_env = dict(os.environ, ROCKET_BUNDLE_GPU="0" if args.cpu_only else "1")
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
          str(ROOT / "scripts" / "rocket-workbench.spec")], env=bundle_env)
     executable = ROOT / "dist" / "RocketWorkbench" / "RocketWorkbench.exe"
-    run([str(executable), "--smoke-test"])
+    run([str(executable), "--smoke-test", "--smoke-output", str(ROOT / "build" / "frozen-smoke.json")], timeout_seconds=360)
     if args.skip_installer:
         print(f"Portable application directory: {executable.parent}")
         return
@@ -131,6 +157,20 @@ def main() -> None:
     with installer.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     installer.with_suffix(installer.suffix + ".sha256").write_text(f"{digest}  {installer.name}\n", "utf-8")
+    (installer.parent / "START_HERE.txt").write_text(
+        f"ROCKET WORKBENCH {version} - WINDOWS INSTALLATION\n\n"
+        "1. Extract the entire downloaded ZIP (right-click, Extract All).\n"
+        f"2. Open the release folder and double-click {installer.name}.\n"
+        "3. Accept the license and choose the default user-local installation.\n"
+        "4. Open Rocket Workbench from Start. Click User guide in the app.\n\n"
+        "Python, Node.js, CAD programs, Gmsh and CUDA Toolkit setup are not needed.\n"
+        "The NVIDIA driver is required for optional NVIDIA numerical GPU use.\n"
+        "The installer includes the runtime and engineering solvers; use is offline.\n\n"
+        "Read USER_GUIDE.txt for the complete workflow and engineering limits.\n"
+        "The .sha256 file identifies the installer checksum. Build manifests and\n"
+        "installed-engine/desktop smoke receipts are in the artifact's build folder.\n",
+        "utf-8")
+    shutil.copyfile(ROOT / "docs" / "USER_GUIDE.md", installer.parent / "USER_GUIDE.txt")
     print(f"Installer: {installer}")
 
 

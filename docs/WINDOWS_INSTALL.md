@@ -1,5 +1,9 @@
 # Windows installation and first use
 
+After installation, follow the [step-by-step user guide](USER_GUIDE.md). It shows
+the actual buttons, how to align/replace one CAD component, exterior-only airflow,
+motor/recovery setup, playback, numerical solvers and saving/exporting your work.
+
 ## Requirements
 
 - Windows 10 or 11, 64-bit x64-compatible system.
@@ -26,7 +30,9 @@ engine/native-desktop checks. See the [validation record](VALIDATION.md).
    of that run. GitHub may ask you to sign in for a private repository artifact.
 4. Right-click the downloaded ZIP and choose **Extract All**. The extracted files
    include the installer, a SHA-256 checksum and a dependency manifest. Open the
-   `release` folder if the download contains that folder.
+   `release` folder if the download contains that folder. The updated package
+   includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
+   **User guide** button.
 5. Optionally check the installer in PowerShell with
    `Get-FileHash .\RocketWorkbench-0.1.0-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
@@ -120,6 +126,15 @@ into the application directory.
 `%LOCALAPPDATA%\RocketWorkbench\application.log` by default. Provide that log
 and the version when reporting a failure. The desktop automatically selects a
 free loopback port and keeps the embedded browser profile in memory.
+For a rebuilt package, Windows **Properties → Details** on `RocketWorkbench.exe`
+shows its product version; the startup log records it as well.
+
+Saved project state is in `%LOCALAPPDATA%\RocketWorkbench\last-project.json`.
+Keep a backup before changing it. To recover from a broken session, close every
+Rocket Workbench window, rename that file to `last-project.backup.json`, and
+restart; the app opens its demonstration project. Reload your saved project
+through the interface. Uninstalling leaves this session directory and separately
+saved projects available.
 
 **CUDA unavailable.** Update the manufacturer's compatible NVIDIA driver and
 restart Windows. The app displays the execution backend. GPU memory, compatibility

@@ -177,3 +177,44 @@ def test_legacy_virtual_stock_texture_paths_are_ignored_safely():
         z.writestr('rocket.ork',ORK)
         z.writestr('/datafiles/textures/balsa.jpg',b'ignored untrusted texture')
     assert import_ork(out.getvalue()).name=='Test dual rocket'
+
+
+def test_unrelated_inactive_stage_does_not_block_single_stage_configuration():
+    extra = b'''<stage><id>booster-stage</id><subcomponents><bodytube><id>booster-body</id>
+    <length>0.4</length><radius>0.05</radius><subcomponents><innertube><id>cluster-mount</id>
+    <length>0.2</length><clusterconfiguration>three</clusterconfiguration>
+    </innertube></subcomponents></bodytube></subcomponents></stage>'''
+    xml = ORK.replace(b'<stage number="0" active="true"/>',
+                      b'<stage number="0" active="true"/><stage number="1" active="false"/>')
+    xml = xml.replace(b'</stage></subcomponents></rocket>',
+                      b'</stage>' + extra + b'</subcomponents></rocket>')
+    project = import_ork(xml)
+    scopes = project.metadata['unsupported_features_by_configuration']
+    assert 'multistage' in project.metadata['unsupported_features']
+    assert 'cluster' in project.metadata['unsupported_features']
+    assert scopes['h'] == []
+    assert scopes['empty'] == ['cluster']
+    assert 'booster-body' not in project.configurations[0].active_component_ids
+    assert 'cluster-mount' in project.configurations[1].active_component_ids
+
+
+def test_missing_or_zero_area_recovery_does_not_invent_a_flight_parachute():
+    import re
+    no_recovery = re.sub(rb'<parachute>.*?</parachute>', b'', ORK, flags=re.DOTALL)
+    project = import_ork(no_recovery)
+    assert not project.configurations[0].recovery_defined
+    assert project.metadata['recovery_assignments']['h'] == []
+    assert any('Flight is blocked' in warning for warning in project.import_warnings)
+    zero_area = import_ork(ORK.replace(b'<diameter>0.3</diameter>', b'<diameter>0</diameter>'))
+    assert not zero_area.configurations[0].recovery_defined
+    assert any('zero Cd' in warning for warning in zero_area.import_warnings)
+
+
+@pytest.mark.parametrize('before,after', [
+    (b'<length>0.25</length>', b'<length>0.25</length><instancecount>1.5</instancecount>'),
+    (b'<diameter>0.3</diameter>', b'<diameter>-0.3</diameter>'),
+    (b'<deploydelay>0.4</deploydelay>', b'<deploydelay>-0.4</deploydelay>'),
+])
+def test_invalid_physical_import_values_are_not_silently_rounded_or_clamped(before, after):
+    with pytest.raises(ValueError):
+        import_ork(ORK.replace(before, after))

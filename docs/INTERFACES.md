@@ -50,6 +50,7 @@ surface [{position:[x,y,z],pressure_pa}], history, summary, fidelity,warnings,ba
 
 * GET /api/health -> {status,version,capabilities}
 * GET /api/project -> Project; PUT /api/project (Project JSON) -> Project
+* PUT /api/project/settings -> {project_id,settings:AnalysisSettings}; atomically patches current settings, rejects a stale project ID
 * POST /api/project/demo -> Project
 * POST /api/import/ork (multipart file) -> Project
 * POST /api/import/geometry (multipart file, units) -> GeometryAsset, also stores it
@@ -64,6 +65,7 @@ surface [{position:[x,y,z],pressure_pa}], history, summary, fidelity,warnings,ba
 * POST /api/analyze -> {conditions,configuration_id?} -> {aero,structure}
 * POST /api/jobs -> {kind:flight|cfd|fea|sweep|monte_carlo|comparison,conditions,configuration_id?,options:{}} -> {id,...}
 * GET /api/jobs/{id} -> {id,status,progress,message,elapsed_seconds,eta_seconds,result,error}
+* GET /api/jobs/{id}/project -> immutable input-project JSON attachment with selected configuration, conditions and solver options
 * POST /api/jobs/{id}/cancel -> job
 * GET /api/jobs/{id}/export?format=csv|json|html -> attachment
 * POST /api/compare -> {conditions,configuration_id?} -> fast original/replacement comparison
@@ -81,6 +83,14 @@ time, residual tolerance, iteration and elapsed-time budgets. See method docs
 and solver argument validation for bounds; a job budget is not a claimed
 physical convergence criterion.
 
+CSV exports remain rectangular tables. Dedicated `_result_*` columns in the
+first data row retain the method, backend, warnings, validity, run inputs and
+summary; those columns are blank in later rows. Nested metadata uses JSON. Keep
+that row and these columns with the exported dataset when sharing engineering
+results. Text beginning with spreadsheet formula characters is prefixed with
+an apostrophe; numeric negative quantities remain ordinary numbers. JSON and
+HTML exports preserve the complete result structure.
+
 All /api requests require header X-Rocket-Session when desktop token enabled;
 localhost development disables token by default. Development API defaults to
 127.0.0.1 port 8765; Vite proxies /api. Desktop selects a free loopback port and
@@ -92,6 +102,43 @@ supplied polar), aero (conditions,
 force/CG/CP), flight (launch job + playback/timeline/events/graphs), structures
 (beam estimates + component FEA), CFD (grid/iterations/fidelity/progress), studies
 (parameter/wind sweep, Monte Carlo and comparisons). Persist project incl meshes.
+
+## Portable settings and run provenance
+
+`Project.analysis_settings` stores validated conditions, extensible JSON option
+dictionaries for CFD/FEA/studies, and the study mode. Older schema-1 projects
+receive defaults; saving with this version includes these fields. The UI restores
+and autosaves them, and flushes pending settings before saving a project or
+starting a calculation. Display units never change their SI values. Settings
+patches operate on the latest project and include its ID, so a delayed save from a
+previous project cannot overwrite a newly imported project.
+
+Jobs retain an input project independently of later edits. Progress polling omits
+that potentially large snapshot. Download it with `/jobs/{id}/project` while the
+job remains among the twelve retained runs. Results include application version,
+UTC submission timestamp, actual conditions/options and `project_sha256`. The
+digest covers the input project's complete JSON model, UTF-8 encoded with sorted
+keys and compact `(',', ':')` separators; whitespace in a downloaded file does
+not affect that canonical digest. It includes materials, motor curves, geometry
+assets, transforms and settings, while the separate geometry signature binds
+only aerodynamic shape. These records support reproducibility, not physical
+validation. Jobs/results remain session-local; export them before closing.
+
+Pressure-transfer FEA also records `inputs.cfd_source`, including the source run's
+inputs and mesh/wall-field hashes. A run input project contains the source job ID,
+not its complete solved CFD field. That ID expires across sessions: export the
+source CFD JSON for traceability and rerun its recorded inputs before pressure
+transfer in a new session. CUDA and sparse-mesher results can vary with hardware
+and mesh generation; a matching input hash does not promise bitwise equality.
+
+Studies preserve each row's method, warnings and validity rather than dropping
+the underlying solver's limits. Sweeps share a gust seed to change one input at
+a time; Monte Carlo uses its recorded study seed for sampling and distinct gust
+seeds per sample. Flight speed/Mach are integrated outputs and cannot be swept as
+independent flight inputs. Static angle-of-attack flight sweeps vary the structural
+reference loading angle; this point-mass model does not integrate attitude.
+Failed samples are reported and excluded from statistics. Completed runs outside
+method limits remain visibly flagged estimates in the exported rows.
 
 Current scientific scope: Barrowman small-angle stability and documented Mach
 corrections up to 2; passive point-mass trajectory with rail/apogee/main events;

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
+from datetime import datetime, timezone
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +12,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from . import __version__
 from .models import Conditions, Project
 
 
@@ -18,12 +21,28 @@ class JobManager:
         self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rocket-simulation")
         self.lock = threading.RLock()
         self.jobs: dict[str, dict] = {}
+        self.closed = False
 
     def submit(self, project: Project, kind: str, conditions: Conditions,
                configuration_id: str | None = None, options: dict | None = None) -> dict:
         if kind not in {"flight", "cfd", "fea", "sweep", "monte_carlo", "comparison"}:
             raise ValueError("Unknown simulation kind")
         options = copy.deepcopy(options or {})
+        cfd_source = None
+        # Keep a portable input project for the run, separate from large solved
+        # fields and never included in every progress-poll response.
+        snapshot = project.model_copy(deep=True)
+        snapshot.active_configuration_id = configuration_id or project.active_configuration_id
+        snapshot.analysis_settings.conditions = conditions.model_copy(deep=True)
+        if kind == "cfd":
+            snapshot.analysis_settings.cfd_options = copy.deepcopy(options)
+        elif kind == "fea":
+            snapshot.analysis_settings.fea_options = copy.deepcopy(options)
+        elif kind in {"sweep", "monte_carlo", "comparison"}:
+            snapshot.analysis_settings.study_options = copy.deepcopy(options)
+            snapshot.analysis_settings.study_mode = kind
+        project_hash = hashlib.sha256(json.dumps(snapshot.model_dump(mode="json"),
+            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         from .solvers.aero import geometry_signature
         signature = geometry_signature(project, configuration_id)
         if kind == "fea" and options.get("load_mode") == "cfd_pressure":
@@ -40,6 +59,11 @@ class JobManager:
             if prior.get("geometry_signature") != signature:
                 raise ValueError("Rocket geometry changed after the CFD solve. Recompute CFD before transferring pressures.")
             cfd = prior["result"]
+            cfd_source = {"job_id": prior["id"], "inputs": copy.deepcopy(cfd.get("inputs", {})),
+                "surface_sha256": hashlib.sha256(json.dumps(cfd["surface"], sort_keys=True,
+                    separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+                "mesh_sha256": cfd["summary"].get("mesh_sha256"), "fidelity": cfd["fidelity"],
+                "replay": "The linked CFD job is session-local. Export its full result or rerun its recorded inputs before applying pressure in a new session."}
             from .geometry import project_mesh
             current_mesh = project_mesh(project, configuration_id)
             mesh_hash = hashlib.sha256(np.asarray(current_mesh.vertices, dtype="<f8").tobytes() +
@@ -53,6 +77,8 @@ class JobManager:
                 cfd_cell_spacing_m=cfd["summary"]["cell_spacing_m"],
                 cfd_fidelity=cfd["fidelity"], cfd_warnings=cfd["warnings"])
         with self.lock:
+            if self.closed:
+                raise RuntimeError("Simulation workers are shutting down.")
             if sum(j["status"] in {"queued", "running"} for j in self.jobs.values()) >= 4:
                 raise ValueError("Four jobs are already pending. Finish or cancel one first.")
             # Bound retained results as CFD/FEA outputs can be large.
@@ -64,7 +90,10 @@ class JobManager:
             identity = uuid4().hex
             self.jobs[identity] = {"id": identity, "kind": kind, "geometry_signature": signature, "status": "queued", "progress": 0.0,
                 "message": "Waiting for simulation worker", "created": time.monotonic(), "started": None,
-                "finished": None, "result": None, "error": None, "cancel": threading.Event()}
+                "finished": None, "result": None, "error": None, "cancel": threading.Event(),
+                "project_snapshot": snapshot, "project_sha256": project_hash,
+                "cfd_source": cfd_source,
+                "submitted_at": datetime.now(timezone.utc).isoformat()}
             self.executor.submit(self._execute, identity, project.model_copy(deep=True), kind,
                                  conditions.model_copy(deep=True), configuration_id, copy.deepcopy(options or {}))
             return self.get(identity)
@@ -74,11 +103,17 @@ class JobManager:
             job = self.jobs.get(identity)
             if job is None:
                 raise KeyError(identity)
-            elapsed = (job["finished"] or time.monotonic()) - (job["started"] or time.monotonic())
+            elapsed = (job["finished"] or time.monotonic()) - job["started"] if job["started"] else 0.0
             progress = job["progress"]
             eta = elapsed * (1 / progress - 1) if job["status"] == "running" and progress > 0.01 else None
-            return {k: v for k, v in job.items() if k not in {"cancel", "created", "started", "finished"}} | {
+            return {k: v for k, v in job.items() if k not in {"cancel", "created", "started", "finished", "project_snapshot"}} | {
                 "elapsed_seconds": max(0, elapsed), "eta_seconds": eta}
+
+    def input_project(self, identity: str) -> Project:
+        with self.lock:
+            if identity not in self.jobs:
+                raise KeyError(identity)
+            return self.jobs[identity]["project_snapshot"].model_copy(deep=True)
 
     def cancel(self, identity: str) -> dict:
         with self.lock:
@@ -91,22 +126,27 @@ class JobManager:
 
     def shutdown(self):
         with self.lock:
+            self.closed = True
             for job in self.jobs.values():
                 job["cancel"].set()
         self.executor.shutdown(wait=False, cancel_futures=True)
 
     def _execute(self, identity, project, kind, conditions, configuration_id, options):
+        with self.lock:
+            # A cancelled queued job may have been pruned before its future
+            # reaches the worker. Never dereference an expired registry entry.
+            job = self.jobs.get(identity)
+            if job is None or job["cancel"].is_set():
+                return
+            job.update(status="running", started=time.monotonic(), message="Preparing simulation")
+
         def progress(fraction, message):
             with self.lock:
-                self.jobs[identity].update(progress=float(np.clip(fraction, 0, 0.999)), message=str(message))
+                job.update(progress=float(np.clip(fraction, 0, 0.999)), message=str(message))
 
         def cancelled():
-            return self.jobs[identity]["cancel"].is_set()
+            return job["cancel"].is_set()
 
-        with self.lock:
-            if cancelled():
-                return
-            self.jobs[identity].update(status="running", started=time.monotonic(), message="Preparing simulation")
         try:
             if kind == "flight":
                 from .solvers.flight import simulate
@@ -126,15 +166,19 @@ class JobManager:
                 result = study(project, conditions, configuration_id, kind, options, progress, cancelled)
             result["inputs"] = {"project_id": project.id, "project_name": project.name,
                 "configuration_id": configuration_id or project.active_configuration_id,
-                "geometry_signature": self.jobs[identity]["geometry_signature"],
+                "geometry_signature": job["geometry_signature"],
+                "application_version": __version__, "project_sha256": job["project_sha256"],
+                "submitted_at": job["submitted_at"],
                 "conditions": conditions.model_dump(), "options": {k: v for k, v in options.items() if k != "cfd_surface"}}
+            if job["cfd_source"] is not None:
+                result["inputs"]["cfd_source"] = copy.deepcopy(job["cfd_source"])
             with self.lock:
-                self.jobs[identity].update(status="cancelled" if cancelled() else "completed", result=None if cancelled() else result,
+                job.update(status="cancelled" if cancelled() else "completed", result=None if cancelled() else result,
                     progress=1.0 if not cancelled() else self.jobs[identity]["progress"], message="Cancelled" if cancelled() else "Simulation completed",
                     finished=time.monotonic())
         except Exception as exc:
             with self.lock:
-                self.jobs[identity].update(status="cancelled" if cancelled() else "failed", error=str(exc),
+                job.update(status="cancelled" if cancelled() else "failed", error=str(exc),
                     message="Cancelled" if cancelled() else "Simulation failed", finished=time.monotonic())
 
 
@@ -194,50 +238,75 @@ def compare(project, conditions, configuration_id=None, options=None, progress=N
 def study(project, conditions, configuration_id, kind, options, progress, cancelled):
     from .solvers.aero import analyze
     from .solvers.flight import simulate
-    count = int(options.get("count", 10))
-    if not 2 <= count <= 200:
+    raw_count = options.get("count", 10)
+    count = int(raw_count)
+    if isinstance(raw_count, bool) or count != raw_count or not 2 <= count <= 200:
         raise ValueError("Study count must be between 2 and 200")
     parameter = options.get("parameter", "wind_speed" if kind == "monte_carlo" else "speed")
-    allowed = {"speed", "mach", "altitude", "angle_of_attack", "wind_speed", "wind_direction", "turbulence"}
+    allowed = {"speed", "mach", "altitude", "angle_of_attack", "wind_speed", "wind_direction", "turbulence",
+               "launch_angle", "launch_azimuth", "rail_length", "temperature_delta"}
     if parameter not in allowed:
         raise ValueError("Choose a supported condition parameter")
     use_flight = bool(options.get("flight", kind == "monte_carlo"))
-    rng = np.random.default_rng(int(options.get("seed", conditions.seed)))
+    if use_flight and parameter in {"speed", "mach"}:
+        raise ValueError("Flight speed/Mach are integrated outputs. Sweep wind, launch altitude or other supported flight inputs instead.")
+    if not use_flight and parameter in {"launch_angle", "launch_azimuth", "rail_length"}:
+        raise ValueError("Rail/launch parameters require flight mode; static aerodynamics does not use launch orientation.")
+    raw_seed = options.get("seed", conditions.seed)
+    study_seed = int(raw_seed)
+    if isinstance(raw_seed, bool) or study_seed != raw_seed or study_seed < 0:
+        raise ValueError("Study seed must be a nonnegative integer.")
+    rng = np.random.default_rng(study_seed)
     if kind == "monte_carlo":
         mean = float(options.get("mean", getattr(conditions, parameter) or 0))
         sigma = float(options.get("std", 1))
-        if not np.isfinite(sigma) or sigma < 0:
-            raise ValueError("Standard deviation must be finite and nonnegative")
+        if not np.isfinite(mean) or not np.isfinite(sigma) or sigma < 0:
+            raise ValueError("Mean must be finite; standard deviation must be finite and nonnegative")
         values = rng.normal(mean, sigma, count)
     else:
-        values = np.linspace(float(options.get("start", 0)), float(options.get("stop", 200)), count)
-    rows, failures = [], []
+        start, stop = float(options.get("start", 0)), float(options.get("stop", 200))
+        if not np.isfinite(start) or not np.isfinite(stop):
+            raise ValueError("Sweep endpoints must be finite.")
+        values = np.linspace(start, stop, count)
+    rows, failures, warnings = [], [], []
+    if use_flight and parameter == "angle_of_attack":
+        warnings.append("Angle-of-attack flight sweeps vary the fixed structural-load reference angle; the point-mass flight path does not integrate attitude/incidence.")
     for index, value in enumerate(values):
         if cancelled():
             raise RuntimeError("Study cancelled")
         update = conditions.model_dump() | {parameter: float(value)}
         if parameter == "speed":
             update["mach"] = None
-        update["seed"] = conditions.seed + index
+        # A deterministic sweep changes one condition with a common gust
+        # realization. Monte Carlo assigns distinct, reproducible gust seeds.
+        update["seed"] = study_seed + index if kind == "monte_carlo" else conditions.seed
         try:
             sample = Conditions.model_validate(update)
-            answer = simulate(project, sample, configuration_id, cancelled=cancelled) if use_flight else analyze(project, sample, configuration_id)
+            callback = (lambda fraction, message, i=index: progress((i + fraction) / count,
+                f"Run {i + 1} of {count}: {message}")) if progress else None
+            answer = simulate(project, sample, configuration_id, progress=callback, cancelled=cancelled) if use_flight else analyze(project, sample, configuration_id)
             metrics = answer.get("summary", answer)
-            row = {"index": index, "parameter": parameter, "value": float(value)}
+            row = {"index": index, "parameter": parameter, "value": float(value), "gust_seed": sample.seed,
+                "fidelity": answer.get("fidelity"), "warnings": answer.get("warnings", []),
+                "validity": answer.get("validity", {key: answer[key] for key in
+                    ["cp_valid", "within_mach_range", "within_small_angle_range", "cad_resolved"] if key in answer})}
+            warnings.extend(answer.get("warnings", []))
             row.update({k: v for k, v in metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
             rows.append(row)
         except ValueError as exc:
             failures.append({"index": index, "value": float(value), "error": str(exc)})
-        progress((index + 1) / count, f"Run {index + 1} of {count}")
+        if progress:
+            progress((index + 1) / count, f"Run {index + 1} of {count}")
     if not rows:
         raise ValueError("Every study run failed: " + str(failures[:1]))
     statistics = {}
     for key in rows[0]:
-        if key in {"index", "parameter", "value"}:
+        if key in {"index", "parameter", "value", "gust_seed", "fidelity", "warnings", "validity"}:
             continue
         numbers = [row[key] for row in rows if key in row]
         statistics[key] = {"mean": float(np.mean(numbers)), "std": float(np.std(numbers)),
                            "p05": float(np.percentile(numbers, 5)), "p95": float(np.percentile(numbers, 95))}
-    return {"rows": rows, "statistics": statistics, "failures": failures, "parameter": parameter, "seed": conditions.seed,
+    return {"rows": rows, "statistics": statistics, "failures": failures, "parameter": parameter, "seed": study_seed,
+            "gust_seed_policy": "independent per sample" if kind == "monte_carlo" else "common across sweep",
             "fidelity": "Seeded engineering study, using the same approximations as the selected underlying solver.",
-            "warnings": [f"{len(failures)} sampled inputs failed; statistics exclude them."] if failures else [], "backend": "CPU"}
+            "warnings": list(dict.fromkeys(warnings + ([f"{len(failures)} sampled inputs failed; statistics exclude them."] if failures else []))), "backend": "CPU"}

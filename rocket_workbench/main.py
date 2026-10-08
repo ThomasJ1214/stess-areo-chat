@@ -12,7 +12,49 @@ import time
 from pathlib import Path
 
 
-def smoke_test() -> int:
+def _start_local_service(app, timeout_seconds: float = 20):
+    """Keep the selected loopback port reserved until Uvicorn owns the listener."""
+    import logging
+    import uvicorn
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(128)
+        listener.setblocking(False)
+    except BaseException:
+        listener.close()
+        raise
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+        log_level="warning", log_config=None, access_log=False,
+        timeout_graceful_shutdown=3))
+
+    def run_server():
+        try:
+            server.run(sockets=[listener])
+        except BaseException:
+            # Uvicorn may use SystemExit for startup errors; record those too.
+            logging.getLogger(__name__).exception("Local application service failed")
+
+    worker = threading.Thread(target=run_server, daemon=True, name="rocket-local-api")
+    worker.start()
+    deadline = time.monotonic() + timeout_seconds
+    while not server.started and worker.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not server.started:
+        _stop_local_service(server, worker, listener)
+        raise RuntimeError("The local application service could not start.")
+    return server, worker, listener, port
+
+
+def _stop_local_service(server, worker, listener):
+    server.should_exit = True
+    worker.join(timeout=5)
+    listener.close()
+
+
+def smoke_test(output_path: Path | None = None) -> int:
     from .api import capabilities
     from .demo import demo_project
     from .models import Conditions
@@ -42,9 +84,14 @@ def smoke_test() -> int:
         "mesh_size": 0.01, "max_elements": 2000, "backend": "cpu", "load_mode": "traction", "traction_pa": [1000, 0, 0]})
     if fea["summary"]["force_balance_relative_error"] > 1e-7 or abs(fea["summary"]["applied_force_n"][0] - 0.4) > 1e-5:
         raise RuntimeError("Packaged FEA mesher/worker/solve smoke check failed")
-    print(json.dumps({"status": "ok", "capabilities": capabilities(), "vertices": len(mesh.vertices),
+    from . import __version__
+    evidence = {"status": "ok", "application_version": __version__, "capabilities": capabilities(), "vertices": len(mesh.vertices),
                       "flight_samples": len(flight["trajectory"]), "summary": flight["summary"],
-                      "fea_elements": fea["summary"]["elements"], "fea_equilibrium_error": fea["summary"]["force_balance_relative_error"]}))
+                      "fea_elements": fea["summary"]["elements"], "fea_equilibrium_error": fea["summary"]["force_balance_relative_error"]}
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(evidence, indent=2, allow_nan=False), "utf8")
+    print(json.dumps(evidence, allow_nan=False))
     return 0
 
 
@@ -53,15 +100,22 @@ def main(argv=None) -> int:
     import multiprocessing
     multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="Rocket Workbench desktop engineering application")
+    from . import __version__
+    parser.add_argument("--version", action="version", version=f"Rocket Workbench {__version__}")
     parser.add_argument("--headless", action="store_true", help="Run local API without a desktop window")
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "localhost"])
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument("--data-dir", type=Path, help="Optional session storage directory")
     parser.add_argument("--smoke-test", "--bundle-smoke-test", dest="smoke", action="store_true")
+    parser.add_argument("--smoke-output", type=Path, help="Write the engineering smoke receipt to a JSON file")
     parser.add_argument("--desktop-smoke-test", action="store_true", help="Launch the actual desktop and verify its UI/WebGL, then exit")
     options = parser.parse_args(argv)
+    if options.smoke_output and not options.smoke:
+        parser.error("--smoke-output requires --smoke-test")
     if options.smoke:
-        return smoke_test()
+        if options.smoke_output:
+            options.smoke_output.unlink(missing_ok=True)
+        return smoke_test(options.smoke_output)
     from .api import create_app
     import uvicorn
     if options.headless:
@@ -92,29 +146,20 @@ def main(argv=None) -> int:
     handler = RotatingFileHandler(log_path, maxBytes=3 * 1024 * 1024, backupCount=2, encoding="utf8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
-    logging.getLogger().setLevel(logging.WARNING)
+    previous_log_level = logging.getLogger().level
+    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger(__name__).info("Starting Rocket Workbench %s; Python %s; session directory %s", __version__, sys.version.split()[0], data_dir)
     token = secrets.token_hex(32)
-    # A free loopback port avoids silently attaching to a different local server.
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(create_app(token=token, data_dir=data_dir), host="127.0.0.1", port=port, log_level="warning", log_config=None, access_log=False))
-    def run_server():
-        try:
-            server.run()
-        except Exception:
-            logging.getLogger(__name__).exception("Local application service failed")
-    worker = threading.Thread(target=run_server, daemon=True, name="rocket-local-api")
-    worker.start()
-    deadline = time.monotonic() + 20
-    while not server.started and worker.is_alive() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if not server.started:
+    try:
+        server, worker, listener, port = _start_local_service(create_app(token=token, data_dir=data_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Desktop startup failed")
         if not options.desktop_smoke_test:
             QMessageBox.critical(None, "Rocket Workbench startup failed", f"The local application service could not start. Details: {log_path}")
         else:
             logging.getLogger(__name__).error("Desktop smoke: local service startup failed")
         logging.getLogger().removeHandler(handler)
+        logging.getLogger().setLevel(previous_log_level)
         handler.close()
         if smoke_directory:
             smoke_directory.cleanup()
@@ -158,7 +203,7 @@ def main(argv=None) -> int:
                         value = None
                 if isinstance(value, dict) and all(value.get(key) for key in ("shell", "webgl", "api", "project")):
                     smoke_done = True
-                    logging.getLogger(__name__).warning("Desktop smoke passed: %s", value)
+                    logging.getLogger(__name__).info("Desktop smoke passed: %s", value)
                     application.exit(0)
                 else:
                     QTimer.singleShot(500, check_ui)
@@ -187,14 +232,16 @@ def main(argv=None) -> int:
                 application.exit(1)
         QTimer.singleShot(500, check_ui)
         QTimer.singleShot(30000, timed_out)
-    exit_code = application.exec()
-    server.should_exit = True
-    worker.join(timeout=5)
-    view.close()
-    logging.getLogger().removeHandler(handler)
-    handler.close()
-    if smoke_directory:
-        smoke_directory.cleanup()
+    try:
+        exit_code = application.exec()
+    finally:
+        _stop_local_service(server, worker, listener)
+        view.close()
+        logging.getLogger().removeHandler(handler)
+        logging.getLogger().setLevel(previous_log_level)
+        handler.close()
+        if smoke_directory:
+            smoke_directory.cleanup()
     return exit_code
 
 

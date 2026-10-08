@@ -47,6 +47,7 @@ export interface Configuration {
   motor_mount_id: string | null;
   motor_position: number | null;
   deployment: "single" | "dual";
+  recovery_defined: boolean;
   primary_deploy_event: "apogee" | "motor_ejection";
   motor_ejection_delay: number | null;
   drogue_cd_area: number;
@@ -89,6 +90,14 @@ export interface Project {
   unit_system: Units;
   import_warnings: string[];
   metadata: Record<string, unknown>;
+  analysis_settings?: AnalysisSettings;
+}
+export interface AnalysisSettings {
+  conditions: Conditions;
+  cfd_options: Record<string, unknown>;
+  fea_options: Record<string, unknown>;
+  study_options: Record<string, unknown>;
+  study_mode: "sweep" | "monte_carlo" | "comparison";
 }
 export interface Conditions {
   speed: number;

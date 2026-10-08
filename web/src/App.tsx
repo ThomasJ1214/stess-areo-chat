@@ -34,9 +34,12 @@ import {
   ShieldCheck,
   Save,
   Trash2,
+  BookOpen,
 } from "lucide-react";
 
 import Viewport from "./Viewport";
+import FlightCharts from "./FlightCharts";
+import UserGuide from "./UserGuide";
 import {
   NumberField,
   SIField,
@@ -48,7 +51,8 @@ import {
   FieldSelect,
 } from "./Controls";
 import { request, post, upload, download } from "./api";
-import { defaultConditions } from "./types";
+import { usePersistentSettings, feaRequestOptions } from "./workspaceSettings";
+import { assertValidNumberFields } from "./numericInput";
 import type {
   Project,
   Component,
@@ -125,8 +129,7 @@ export default function App() {
   const [configurationDraft, setConfigurationDraft] =
     useState<Configuration | null>(null);
   const [draft, setDraft] = useState<Component | null>(null),
-    [materialDraft, setMaterialDraft] = useState<Material | null>(null),
-    [conditions, setConditions] = useState<Conditions>(defaultConditions);
+    [materialDraft, setMaterialDraft] = useState<Material | null>(null);
   const [analysis, setAnalysis] = useState<any>(null),
     [results, setResults] = useState<Record<string, any>>({}),
     [resultJobs, setResultJobs] = useState<Record<string, string>>({}),
@@ -147,6 +150,7 @@ export default function App() {
     stress: false,
   });
   const [fileMenu, setFileMenu] = useState(false),
+    [guideOpen, setGuideOpen] = useState(false),
     [designTab, setDesignTab] = useState("component"),
     [cadUnits, setCadUnits] = useState("mm"),
     [assetId, setAssetId] = useState(""),
@@ -154,46 +158,60 @@ export default function App() {
   const [playTime, setPlayTime] = useState(0),
     [playing, setPlaying] = useState(false),
     [playSpeed, setPlaySpeed] = useState(1);
-  const [cfdOptions, setCfdOptions] = useState({
-      grid_resolution: 48,
-      transverse_resolution: 24,
-      max_cells: 300000,
-      cfl: 0.35,
-      convergence_tolerance: 0.00001,
-      max_steps: 5000,
-      backend: "auto",
-      max_wall_seconds: 1200,
-      flow_through_times: 8,
-    }),
-    [feaOptions, setFeaOptions] = useState({
-      mesh_size: 0.015,
-      max_elements: 30000,
-      clamp_axis: "x",
-      clamp_side: "min",
-      load_mode: "aero_pressure",
-      backend: "auto",
-      load_pressure_pa: 0,
-      clamp_type: "plane",
-      acceleration_m_s2: [0, 0, 0],
-      traction_pa: [1000, 0, 0],
-    });
-  const [studyMode, setStudyMode] = useState("sweep"),
-    [studyOptions, setStudyOptions] = useState({
-      parameter: "wind_speed",
-      count: 10,
-      start: 0,
-      stop: 20,
-      mean: 5,
-      std: 2,
-      flight: false,
-      seed: 42,
-    }),
-    [studyMetric, setStudyMetric] = useState("drag_n");
+  const settings = usePersistentSettings(
+    (saved) =>
+      setProject((current) =>
+        current?.id === saved.id
+          ? {
+              ...current,
+              analysis_settings: saved.analysis_settings,
+            }
+          : current,
+      ),
+    setError,
+  );
+  const {
+    conditions,
+    setConditions,
+    cfdOptions,
+    setCfdOptions,
+    feaOptions,
+    setFeaOptions,
+    studyMode,
+    setStudyMode,
+    studyOptions,
+    setStudyOptions,
+  } = settings;
+  const restoreSettings = settings.restore;
+  const projectIdRef = useRef<string | null>(null);
+  const [studyMetric, setStudyMetric] = useState("drag_n");
   const orkInput = useRef<HTMLInputElement>(null),
     projectInput = useRef<HTMLInputElement>(null),
     cadInput = useRef<HTMLInputElement>(null),
     motorInput = useRef<HTMLInputElement>(null),
     polarInput = useRef<HTMLInputElement>(null);
+  const fileMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!fileMenu) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!fileMenuRef.current?.contains(event.target as Node))
+        setFileMenu(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFileMenu(false);
+        fileMenuRef.current
+          ?.querySelector<HTMLButtonElement>("button")
+          ?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [fileMenu]);
   const units = project?.unit_system || "metric",
     configuration = project?.configurations.find(
       (c) => c.id === project.active_configuration_id,
@@ -211,8 +229,17 @@ export default function App() {
     setConditions((c) => ({ ...c, [key]: key === "mach" ? n : (n ?? c[key]) }));
     setAnalysis(null);
     setResults({});
+    setResultJobs({});
     setComparison(null);
     setPlaying(false);
+  };
+  const clearResults = () => {
+    setAnalysis(null);
+    setResults({});
+    setResultJobs({});
+    setComparison(null);
+    setPlaying(false);
+    setPlayTime(0);
   };
   const toggleOverlay = (key: keyof Overlays) =>
     setOverlays((o) => ({ ...o, [key]: !o[key] }));
@@ -236,16 +263,25 @@ export default function App() {
     setOriginalMeshes(b);
   }, []);
   const acceptProject = useCallback(
-    async (p: Project) => {
+    async (p: Project, restore = false) => {
+      if (restore || projectIdRef.current !== p.id) restoreSettings(p);
+      projectIdRef.current = p.id;
       setProject(p);
-      setSelectedId((prev) =>
-        p.components.some((c) => c.id === prev)
+      setSelectedId((prev) => {
+        const savedComponent = p.analysis_settings?.fea_options.component_id;
+        if (
+          (restore || prev === null) &&
+          typeof savedComponent === "string" &&
+          p.components.some((c) => c.id === savedComponent)
+        )
+          return savedComponent;
+        return p.components.some((c) => c.id === prev)
           ? prev
-          : p.components[0]?.id || null,
-      );
+          : p.components[0]?.id || null;
+      });
       await refreshMeshes();
     },
-    [refreshMeshes],
+    [refreshMeshes, restoreSettings],
   );
   useEffect(() => {
     operation(async () => {
@@ -268,6 +304,10 @@ export default function App() {
     setMaterialDraft(mat ? structuredClone(mat) : null);
     setAssetId(selected?.asset_id || project?.assets[0]?.id || "");
   }, [selected, project?.materials, project?.assets]);
+  useEffect(() => {
+    if (selectedId && feaOptions.component_id !== selectedId)
+      setFeaOptions({ ...feaOptions, component_id: selectedId });
+  }, [selectedId]);
   useEffect(() => {
     if (!activeJob || !job) return;
     let disposed = false;
@@ -337,34 +377,42 @@ export default function App() {
     }
   }, [notice]);
   async function saveProject(p: Project) {
+    await settings.flush();
+    const restore = p.id !== projectIdRef.current;
+    const savedProject = restore
+      ? p
+      : { ...p, analysis_settings: settings.getSettings() };
     await acceptProject(
       await request<Project>("/project", {
         method: "PUT",
-        body: JSON.stringify(p),
+        body: JSON.stringify(savedProject),
       }),
+      restore,
     );
     if (p.unit_system === project?.unit_system) {
-      setAnalysis(null);
-      setResults({});
-      setComparison(null);
-      setPlaying(false);
+      clearResults();
     }
   }
   function importFile(kind: string, file: File | undefined) {
     if (!file) return;
+    if (activeJob) {
+      setError(
+        "Wait for or cancel the current simulation before importing a project or asset.",
+      );
+      return;
+    }
     operation(async () => {
+      await settings.flush();
       if (kind === "ork") {
-        await acceptProject(await upload<Project>("/import/ork", file));
-        setAnalysis(null);
-        setResults({});
+        await acceptProject(await upload<Project>("/import/ork", file), true);
+        clearResults();
         setWorkspace("design");
         setNotice(
           "OpenRocket project imported. Review import warnings and motor assignments.",
         );
       } else if (kind === "project") {
-        await acceptProject(await upload<Project>("/project/load", file));
-        setAnalysis(null);
-        setResults({});
+        await acceptProject(await upload<Project>("/project/load", file), true);
+        clearResults();
         setNotice("Project loaded.");
       } else if (kind === "cad") {
         const asset: any = await upload("/import/geometry", file, {
@@ -378,8 +426,7 @@ export default function App() {
         );
       } else if (kind === "polar") {
         await acceptProject(await upload<Project>("/import/polar", file));
-        setAnalysis(null);
-        setResults({});
+        clearResults();
         setNotice(
           "User-supplied aerodynamic polar imported for this exact geometry and configuration. Verify provenance and physical validity.",
         );
@@ -394,11 +441,13 @@ export default function App() {
   function startJob(kind: string, options: Record<string, unknown> = {}) {
     if (activeJob) return;
     operation(async () => {
+      assertValidNumberFields();
+      await settings.flush();
       const next = await post<Job>("/jobs", {
         kind,
         conditions,
         configuration_id: project?.active_configuration_id,
-        options,
+        options: kind === "fea" ? feaRequestOptions(options) : options,
       });
       setJobKind(kind);
       setJob(next);
@@ -406,6 +455,8 @@ export default function App() {
   }
   function runAnalysis() {
     operation(async () => {
+      assertValidNumberFields();
+      await settings.flush();
       setAnalysis(
         await post("/analyze", {
           conditions,
@@ -419,6 +470,8 @@ export default function App() {
   }
   function runCompare() {
     operation(async () => {
+      assertValidNumberFields();
+      await settings.flush();
       setComparison(
         await post("/compare", {
           conditions,
@@ -437,9 +490,20 @@ export default function App() {
         ),
       );
   }
+  function exportRunProject(kind: string) {
+    const id = resultJobs[kind];
+    if (id)
+      operation(async () =>
+        download(
+          `/jobs/${id}/project`,
+          `${project?.name || "rocket"}-${kind}-inputs.rocket.json`,
+        ),
+      );
+  }
   function applyComponent() {
     if (!draft || !project) return;
     operation(async () => {
+      assertValidNumberFields();
       await saveProject({
         ...project,
         components: project.components.map((c) =>
@@ -454,6 +518,7 @@ export default function App() {
   function applyMaterial() {
     if (!materialDraft || !project) return;
     operation(async () => {
+      assertValidNumberFields();
       await saveProject({
         ...project,
         materials: project.materials.map((m) =>
@@ -468,9 +533,13 @@ export default function App() {
   }
   const loadDemo = () =>
     operation(async () => {
-      await acceptProject(await post<Project>("/project/demo"));
-      setResults({});
-      setAnalysis(null);
+      if (activeJob)
+        throw new Error(
+          "Wait for or cancel the current simulation before creating a project.",
+        );
+      await settings.flush();
+      await acceptProject(await post<Project>("/project/demo"), true);
+      clearResults();
       setNotice(
         "Reference rocket created with a demonstration motor. Replace it with your measured motor data.",
       );
@@ -485,6 +554,8 @@ export default function App() {
           units={units}
           value={conditions.speed}
           onChange={(n) => setCondition("speed", n)}
+          min={0}
+          max={1000}
         />
         <NumberField
           label="Mach override"
@@ -502,6 +573,8 @@ export default function App() {
           units={units}
           value={conditions.altitude}
           onChange={(n) => setCondition("altitude", n)}
+          min={-500}
+          max={50000}
         />
         <NumberField
           label="Angle of attack"
@@ -519,6 +592,8 @@ export default function App() {
           units={units}
           value={conditions.wind_speed}
           onChange={(n) => setCondition("wind_speed", n)}
+          min={0}
+          max={150}
         />
         <NumberField
           label="Wind direction"
@@ -543,6 +618,8 @@ export default function App() {
           value={conditions.sideslip}
           onChange={(n) => setCondition("sideslip", n)}
           unit="°"
+          min={-45}
+          max={45}
         />
       </div>
       <NumberField
@@ -550,6 +627,8 @@ export default function App() {
         value={conditions.temperature_delta}
         onChange={(n) => setCondition("temperature_delta", n)}
         unit="K"
+        min={-80}
+        max={80}
       />
     </>
   );
@@ -621,6 +700,13 @@ export default function App() {
           <span>{project?.name || "Connecting to local engine…"}</span>
         </div>
         <div className="header-actions">
+          <button
+            className="quiet-btn"
+            onClick={() => setGuideOpen(true)}
+            title="Open bundled offline instructions"
+          >
+            <BookOpen size={15} /> User guide
+          </button>
           {previousProject && (
             <button
               className="quiet-btn"
@@ -657,28 +743,31 @@ export default function App() {
           <button
             className="quiet-btn"
             onClick={() =>
-              operation(async () =>
-                download(
+              operation(async () => {
+                await settings.flush();
+                await download(
                   "/project/download",
                   `${project?.name || "project"}.rocket.json`,
-                ),
-              )
+                );
+              })
             }
             disabled={!project || busy || activeJob}
             title="Save complete project, including imported geometry"
           >
             <Save size={15} /> Save project
           </button>
-          <div className="file-actions">
+          <div className="file-actions" ref={fileMenuRef}>
             <button
               className="primary muted"
               onClick={() => setFileMenu((x) => !x)}
-              disabled={busy}
+              disabled={busy || activeJob}
+              aria-expanded={fileMenu}
+              aria-controls="import-menu"
             >
               <Upload size={15} /> Import <ChevronDown size={12} />
             </button>
             {fileMenu && (
-              <div className="dropdown">
+              <div className="dropdown" id="import-menu">
                 <button
                   onClick={() => {
                     orkInput.current?.click();
@@ -741,7 +830,7 @@ export default function App() {
         </div>
       </nav>
       {error && (
-        <div className="error-banner">
+        <div className="error-banner" role="alert">
           <AlertTriangle size={16} />
           <span>{error}</span>
           <button aria-label="Dismiss error" onClick={() => setError("")}>
@@ -750,7 +839,7 @@ export default function App() {
         </div>
       )}
       {notice && (
-        <div className="notice-banner">
+        <div className="notice-banner" role="status">
           <Check size={15} />
           {notice}
           <button
@@ -791,9 +880,11 @@ export default function App() {
             </select>
             <div className="configuration-note">
               <span className="live-dot" />
-              {configuration?.deployment === "dual"
-                ? "Dual deployment"
-                : "Single deployment"}
+              {configuration?.recovery_defined === false
+                ? "Recovery settings missing"
+                : configuration?.deployment === "dual"
+                  ? "Dual deployment"
+                  : "Single deployment"}
               <button
                 title="Edit configuration"
                 onClick={() => {
@@ -837,7 +928,7 @@ export default function App() {
                 <button
                   className="quiet-btn"
                   onClick={loadDemo}
-                  disabled={busy}
+                  disabled={busy || activeJob}
                 >
                   <Plus size={14} /> Example rocket
                 </button>
@@ -867,7 +958,7 @@ export default function App() {
               <button
                 className="add-asset"
                 onClick={() => cadInput.current?.click()}
-                disabled={busy}
+                disabled={busy || activeJob}
               >
                 <Plus size={14} /> Import geometry
               </button>
@@ -943,7 +1034,7 @@ export default function App() {
                   label="Forces"
                   value={overlays.forces}
                   onChange={() => toggleOverlay("forces")}
-                  disabled={!aero}
+                  disabled={workspace === "flight" ? !row : !aero}
                 />
                 <Toggle
                   label="Wireframe"
@@ -1019,7 +1110,14 @@ export default function App() {
                   <Square size={12} /> Cancel
                 </button>
               </div>
-              <div className="progress-track">
+              <div
+                className="progress-track"
+                role="progressbar"
+                aria-label={`${jobKind.replaceAll("_", " ")} progress`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round((job?.progress || 0) * 100)}
+              >
                 <div
                   style={{
                     width: `${Math.max(0, Math.min(1, job?.progress || 0)) * 100}%`,
@@ -1401,62 +1499,21 @@ export default function App() {
                       {quantity(row?.mass, "mass", units)}
                     </span>
                   </div>
-                  <div className="flight-charts">
-                    {[
-                      {
-                        key: "altitude",
-                        label: `Altitude · ${unitLabel("length", units)}`,
-                        kind: "length",
-                        color: "#77c9c0",
-                      },
-                      {
-                        key: "velocity",
-                        label: `Velocity · ${unitLabel("speed", units)}`,
-                        kind: "speed",
-                        color: "#e0b176",
-                      },
-                      {
-                        key: "dynamic_pressure",
-                        label: `Dynamic pressure · ${unitLabel("pressure", units)}`,
-                        kind: "pressure",
-                        color: "#92aee4",
-                      },
-                      {
-                        key: "stress",
-                        label: `Beam stress estimate · ${unitLabel("stress", units)}`,
-                        kind: "stress",
-                        color: "#c498da",
-                      },
-                    ].map((s) => (
-                      <div className="chart-card" key={s.key}>
-                        <h4>{s.label}</h4>
-                        <Chart
-                          data={flight.trajectory.map((r: any) => ({
-                            ...r,
-                            [s.key]:
-                              r[s.key] === null
-                                ? null
-                                : displayValue(
-                                    r[s.key],
-                                    s.kind as Quantity,
-                                    units,
-                                  ),
-                          }))}
-                          series={[
-                            { key: s.key, label: s.label, color: s.color },
-                          ]}
-                          time={playTime}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <Fidelity data={flight} />
+                  <FlightCharts
+                    trajectory={flight.trajectory}
+                    units={units}
+                    time={playTime}
+                  />
+                  <Fidelity data={flight} currentConditions={conditions} />
                   <div className="export-row">
                     <button onClick={() => exportResult("flight", "csv")}>
                       <Download size={14} /> Flight data CSV
                     </button>
                     <button onClick={() => exportResult("flight", "html")}>
                       <Download size={14} /> Engineering report
+                    </button>
+                    <button onClick={() => exportRunProject("flight")}>
+                      <FileBox size={14} /> Run input project
                     </button>
                   </div>
                 </>
@@ -1499,13 +1556,22 @@ export default function App() {
                             onClick={() => setSelectedId(c.component_id)}
                           >
                             <td>{c.name}</td>
-                            <td>{c.supported === false ? "Unavailable" : quantity(c.stress_pa, "stress", units)}</td>
                             <td>
-                              {c.supported === false ? "Unavailable" : quantity(c.deflection_m, "length", units, 5)}
+                              {c.supported === false
+                                ? "Unavailable"
+                                : quantity(c.stress_pa, "stress", units)}
+                            </td>
+                            <td>
+                              {c.supported === false
+                                ? "Unavailable"
+                                : quantity(c.deflection_m, "length", units, 5)}
                             </td>
                             <td
                               className={
-                                typeof c.safety_factor === "number" && c.safety_factor < 1 ? "danger-text" : ""
+                                typeof c.safety_factor === "number" &&
+                                c.safety_factor < 1
+                                  ? "danger-text"
+                                  : ""
                               }
                             >
                               {fmt(c.safety_factor)}
@@ -1547,7 +1613,7 @@ export default function App() {
                     <Metric
                       label="Maximum displacement"
                       value={displayValue(
-                        fea.summary?.max_displacement_m ?? 0,
+                        fea.summary?.max_displacement_m,
                         "length",
                         units,
                       )}
@@ -1559,8 +1625,25 @@ export default function App() {
                       label="Safety factor"
                       value={fea.summary?.safety_factor}
                     />
+                    <Metric
+                      label="Strain energy"
+                      value={displayValue(
+                        fea.summary?.strain_energy_j,
+                        "energy",
+                        units,
+                      )}
+                      unit={unitLabel("energy", units)}
+                    />
+                    <Metric
+                      label="Equilibrium residual"
+                      value={fea.summary?.relative_equilibrium_residual}
+                    />
                   </div>
-                  <Fidelity data={fea} />
+                  <Fidelity
+                    data={fea}
+                    currentConditions={conditions}
+                    currentOptions={feaRequestOptions(feaOptions)}
+                  />
                   {fea.summary?.cfd_pressure_transfer && (
                     <div className="warning-list">
                       <Info size={15} />
@@ -1600,6 +1683,9 @@ export default function App() {
                     <button onClick={() => exportResult("fea", "html")}>
                       <Download size={14} /> FEA report
                     </button>
+                    <button onClick={() => exportRunProject("fea")}>
+                      <FileBox size={14} /> Run input project
+                    </button>
                   </div>
                 </>
               )}
@@ -1617,7 +1703,7 @@ export default function App() {
                     <Metric
                       label="Pressure drag"
                       value={displayValue(
-                        cfd.summary?.pressure_drag_n ?? 0,
+                        cfd.summary?.pressure_drag_n,
                         "force",
                         units,
                       )}
@@ -1646,17 +1732,57 @@ export default function App() {
                       color="#e0b176"
                     />
                   </div>
-                  <Fidelity data={cfd} />
+                  <Fidelity
+                    data={cfd}
+                    currentConditions={conditions}
+                    currentOptions={cfdOptions}
+                  />
+                  {cfd.summary?.aerodynamic_geometry_policy && (
+                    <div className="warning-list">
+                      <Info size={15} />
+                      <div>
+                        <strong>Exterior flow geometry</strong>
+                        <p>{cfd.summary.aerodynamic_geometry_policy}</p>
+                        <p>
+                          Exterior fluid cells:{" "}
+                          {fmt(cfd.summary.exterior_fluid_cells, 0)}
+                          {" · "}Enclosed nonflow cells:{" "}
+                          {fmt(cfd.summary.enclosed_nonflow_cells, 0)}
+                          {" · "}Source material mesh{" "}
+                          {cfd.summary.source_material_mesh_modified === false
+                            ? "preserved"
+                            : "see run inputs"}
+                          . Nonflow cells describe the flow mask, not material
+                          volume.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   <div className="chart-card">
-                    <h4>Conservation residual · iteration history</h4>
+                    <h4>Convergence residuals · iteration history</h4>
                     <Chart
                       data={cfd.history || []}
                       x="step"
                       series={[
                         {
                           key: "residual",
-                          label: "Residual",
+                          label: "Conservation",
                           color: "#76c6c2",
+                        },
+                        {
+                          key: "wall_pressure_residual",
+                          label: "Wall pressure",
+                          color: "#e0b176",
+                        },
+                        {
+                          key: "force_residual",
+                          label: "Force",
+                          color: "#92aee4",
+                        },
+                        {
+                          key: "moment_residual",
+                          label: "Moment",
+                          color: "#c498da",
                         },
                       ]}
                     />
@@ -1667,6 +1793,9 @@ export default function App() {
                     </button>
                     <button onClick={() => exportResult("cfd", "html")}>
                       <Download size={14} /> CFD report
+                    </button>
+                    <button onClick={() => exportRunProject("cfd")}>
+                      <FileBox size={14} /> Run input project
                     </button>
                   </div>
                 </>
@@ -1952,7 +2081,11 @@ export default function App() {
                 )
               ) : study ? (
                 <>
-                  <Fidelity data={study} />
+                  <Fidelity
+                    data={study}
+                    currentConditions={conditions}
+                    currentOptions={studyOptions}
+                  />
                   <label className="inline-select">
                     Plot metric
                     <select
@@ -2028,6 +2161,9 @@ export default function App() {
                     <button onClick={() => exportResult(studyMode, "html")}>
                       <Download size={14} /> Study report
                     </button>
+                    <button onClick={() => exportRunProject(studyMode)}>
+                      <FileBox size={14} /> Run input project
+                    </button>
                   </div>
                 </>
               ) : (
@@ -2045,6 +2181,7 @@ export default function App() {
         </main>
         <aside className="inspector">
           <fieldset
+            key={`${settings.restoreGeneration}:${workspace}:${workspace === "design" ? selectedId : ""}`}
             className="inspector-lock"
             disabled={busy || activeJob}
             aria-label="Project and simulation settings"
@@ -2413,8 +2550,14 @@ export default function App() {
                       disabled={!assetId || busy}
                       onClick={() =>
                         operation(async () => {
+                          await settings.flush();
                           setPreviousProject(
-                            project ? structuredClone(project) : null,
+                            project
+                              ? {
+                                  ...structuredClone(project),
+                                  analysis_settings: settings.getSettings(),
+                                }
+                              : null,
                           );
                           await download(
                             "/project/download",
@@ -2425,8 +2568,7 @@ export default function App() {
                               asset_id: assetId,
                             }),
                           );
-                          setAnalysis(null);
-                          setResults({});
+                          clearResults();
                           setNotice(
                             "New CAD-only project created. Previous project backup requested; Undo new project remains available this session. Assign a motor and import valid geometry-specific aerodynamic coefficients.",
                           );
@@ -2542,6 +2684,8 @@ export default function App() {
                           disabled={!assetId || busy}
                           onClick={() =>
                             operation(async () => {
+                              assertValidNumberFields();
+                              await settings.flush();
                               await acceptProject(
                                 await post<Project>("/geometry/attach", {
                                   component_id: draft.id,
@@ -2550,7 +2694,7 @@ export default function App() {
                                   geometry_mode: "replacement",
                                 }),
                               );
-                              setAnalysis(null);
+                              clearResults();
                               setNotice(
                                 "Detailed geometry attached. Inspect alignment and rerun analyses.",
                               );
@@ -2598,7 +2742,11 @@ export default function App() {
                         Empirical aerodynamic equations do not resolve arbitrary
                         CAD surface geometry. CP and drag remain scoped
                         estimates. The experimental CFD solver resolves the
-                        imported outer shape and exposes its own limitations.
+                        exposed outer shape without changing material geometry,
+                        mass, neighboring parts or FEA. Sealed cavities and
+                        enclosed internals add no pressure faces; open bores can
+                        admit exterior flow. Inspect small openings and fins at
+                        the chosen grid resolution.
                       </p>
                     </div>
                   </div>
@@ -2660,6 +2808,22 @@ export default function App() {
                       </>
                     )}
                     <div className="panel-divider" />
+                    <Toggle
+                      label="Recovery settings confirmed"
+                      value={configurationDraft?.recovery_defined ?? false}
+                      onChange={() =>
+                        changeConfig(
+                          "recovery_defined",
+                          !configurationDraft?.recovery_defined,
+                        )
+                      }
+                    />
+                    {configurationDraft?.recovery_defined === false && (
+                      <p className="field-error">
+                        Flight simulation is unavailable until you enter and
+                        confirm the actual chute and deployment settings below.
+                      </p>
+                    )}
                     <FieldSelect
                       label="Deployment mode"
                       value={configurationDraft?.deployment || "dual"}
@@ -2673,6 +2837,7 @@ export default function App() {
                       kind="area"
                       units={units}
                       value={configurationDraft?.main_cd_area ?? null}
+                      min={0.000001}
                       onChange={(n) =>
                         n !== null && changeConfig("main_cd_area", n)
                       }
@@ -2684,6 +2849,7 @@ export default function App() {
                           kind="area"
                           units={units}
                           value={configurationDraft?.drogue_cd_area ?? null}
+                          min={0.000001}
                           onChange={(n) =>
                             n !== null && changeConfig("drogue_cd_area", n)
                           }
@@ -2699,6 +2865,7 @@ export default function App() {
                             n !== null &&
                             changeConfig("main_deploy_altitude", n)
                           }
+                          min={0}
                         />
                       </>
                     )}
@@ -2731,6 +2898,7 @@ export default function App() {
                       label="Apogee deployment delay"
                       value={configurationDraft?.apogee_delay ?? null}
                       unit="s"
+                      min={0}
                       onChange={(n) =>
                         n !== null && changeConfig("apogee_delay", n)
                       }
@@ -2739,6 +2907,7 @@ export default function App() {
                       label="Ignition delay"
                       value={configurationDraft?.ignition_delay ?? null}
                       unit="s"
+                      min={0}
                       onChange={(n) =>
                         n !== null && changeConfig("ignition_delay", n)
                       }
@@ -2771,6 +2940,7 @@ export default function App() {
                         project &&
                         configurationDraft &&
                         operation(async () => {
+                          assertValidNumberFields();
                           await saveProject({
                             ...project,
                             configurations: project.configurations.map((c) =>
@@ -2815,6 +2985,7 @@ export default function App() {
                         units={units}
                         value={conditions.rail_length}
                         onChange={(n) => setCondition("rail_length", n)}
+                        min={0.01}
                       />
                       <div className="field-pair">
                         <NumberField
@@ -2822,12 +2993,16 @@ export default function App() {
                           value={conditions.launch_angle}
                           onChange={(n) => setCondition("launch_angle", n)}
                           unit="°"
+                          min={0}
+                          max={30}
                         />
                         <NumberField
                           label="Launch azimuth"
                           value={conditions.launch_azimuth}
                           onChange={(n) => setCondition("launch_azimuth", n)}
                           unit="°"
+                          min={0}
+                          max={360}
                         />
                       </div>
                       <div className="field-pair">
@@ -2836,12 +3011,16 @@ export default function App() {
                           value={conditions.dt}
                           onChange={(n) => setCondition("dt", n)}
                           unit="s"
+                          min={0.001}
+                          max={0.2}
                         />
                         <NumberField
                           label="Duration limit"
                           value={conditions.max_time}
                           onChange={(n) => setCondition("max_time", n)}
                           unit="s"
+                          min={0.001}
+                          max={1200}
                         />
                       </div>
                       <NumberField
@@ -2849,6 +3028,7 @@ export default function App() {
                         value={conditions.seed}
                         onChange={(n) => setCondition("seed", n)}
                         step={1}
+                        min={0}
                       />
                       <div className="configuration-card">
                         <Rocket size={15} />
@@ -2964,6 +3144,14 @@ export default function App() {
                           Converged CFD surface pressure
                         </option>
                       </FieldSelect>
+                      {feaOptions.load_mode === "cfd_pressure" &&
+                        !cfd?.summary?.converged && (
+                          <p className="field-error">
+                            Rerun and converge the source CFD job in this
+                            session before transferring its pressure. A saved
+                            setup does not include numerical result fields.
+                          </p>
+                        )}
                       {feaOptions.load_mode === "uniform_pressure" && (
                         <SIField
                           label="Applied pressure"
@@ -3139,6 +3327,18 @@ export default function App() {
                         />
                       </div>
                       <NumberField
+                        label="Farfield padding"
+                        value={cfdOptions.domain_padding}
+                        onChange={(n) =>
+                          n !== null &&
+                          setCfdOptions({ ...cfdOptions, domain_padding: n })
+                        }
+                        unit="× extent"
+                        min={0.15}
+                        max={3}
+                        hint="Padding on each side as a multiple of that axis's geometry extent. Nose-side padding is at least 0.35; tail-side padding is at least 0.65. Larger domains may require a larger cell budget."
+                      />
+                      <NumberField
                         label="Flow-through times"
                         value={cfdOptions.flow_through_times}
                         onChange={(n) =>
@@ -3180,6 +3380,12 @@ export default function App() {
                           solution.
                         </p>
                       </div>
+                      <p className="microcopy">
+                        Exterior-connected air only. Sealed cavities and
+                        internal parts are excluded from pressure loading. The
+                        aerodynamic flow mask does not modify CAD material, mass
+                        or FEA geometry.
+                      </p>
                     </>
                   )}
                   {workspace === "studies" && (
@@ -3249,9 +3455,27 @@ export default function App() {
                               "wind_speed",
                               "wind_direction",
                               "turbulence",
+                              "temperature_delta",
+                              "rail_length",
+                              "launch_angle",
+                              "launch_azimuth",
                             ].map((p) => (
-                              <option key={p} value={p}>
-                                {p.replaceAll("_", " ")}
+                              <option
+                                key={p}
+                                value={p}
+                                disabled={
+                                  studyOptions.flight
+                                    ? ["speed", "mach"].includes(p)
+                                    : [
+                                        "rail_length",
+                                        "launch_angle",
+                                        "launch_azimuth",
+                                      ].includes(p)
+                                }
+                              >
+                                {p === "angle_of_attack" && studyOptions.flight
+                                  ? "angle of attack · stress reference"
+                                  : p.replaceAll("_", " ")}
                               </option>
                             ))}
                           </FieldSelect>
@@ -3330,6 +3554,7 @@ export default function App() {
                                 setStudyOptions({ ...studyOptions, seed: n })
                               }
                               step={1}
+                              min={0}
                             />
                           </div>
                           <Toggle
@@ -3342,6 +3567,30 @@ export default function App() {
                               })
                             }
                           />
+                          {((studyOptions.flight &&
+                            ["speed", "mach"].includes(
+                              studyOptions.parameter,
+                            )) ||
+                            (!studyOptions.flight &&
+                              [
+                                "rail_length",
+                                "launch_angle",
+                                "launch_azimuth",
+                              ].includes(studyOptions.parameter))) && (
+                            <p className="field-error">
+                              Select a parameter used by this solver. Launch
+                              speed and Mach are calculated during flight;
+                              launch rail and angles apply to flight studies.
+                            </p>
+                          )}
+                          {studyOptions.flight &&
+                            studyOptions.parameter === "angle_of_attack" && (
+                              <p className="microcopy">
+                                This varies only the fixed structural-load
+                                reference angle. The point-mass trajectory does
+                                not integrate attitude or angle of attack.
+                              </p>
+                            )}
                           <div className="engineering-note">
                             <Info size={15} />
                             <p>
@@ -3395,7 +3644,12 @@ export default function App() {
                               : undefined,
                         })
                       }
-                      disabled={!canRun || !selectedId}
+                      disabled={
+                        !canRun ||
+                        !selectedId ||
+                        (feaOptions.load_mode === "cfd_pressure" &&
+                          !cfd?.summary?.converged)
+                      }
                     >
                       <Play size={15} /> Run finite element analysis
                     </button>
@@ -3413,7 +3667,16 @@ export default function App() {
                     <button
                       className="primary wide run-button"
                       onClick={() => startJob(studyMode, studyOptions)}
-                      disabled={!canRun}
+                      disabled={
+                        !canRun ||
+                        (studyOptions.flight
+                          ? ["speed", "mach"].includes(studyOptions.parameter)
+                          : [
+                              "rail_length",
+                              "launch_angle",
+                              "launch_azimuth",
+                            ].includes(studyOptions.parameter))
+                      }
                     >
                       <Play size={15} /> Run{" "}
                       {studyMode === "sweep"
@@ -3432,9 +3695,26 @@ export default function App() {
           <span className="live-dot" />{" "}
           {health ? "Engine connected" : "Engine unavailable"}
         </span>
-        <span>Local storage · SI calculations · Offline execution</span>
+        <span
+          className={settings.status === "error" ? "danger-text" : ""}
+          role="status"
+        >
+          {settings.status === "saving"
+            ? "Saving analysis setup…"
+            : settings.status === "pending"
+              ? "Analysis setup changed · saving shortly"
+              : settings.status === "error"
+                ? "Analysis setup not saved · review error"
+                : "Analysis setup saved locally"}
+        </span>
         <span>Engineering design tool · Review model assumptions</span>
       </footer>
+      {guideOpen && (
+        <UserGuide
+          onClose={() => setGuideOpen(false)}
+          onNavigate={setWorkspace}
+        />
+      )}
     </div>
   );
 }

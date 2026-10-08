@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from rocket_workbench.models import Component, Conditions, GeometryAsset, Material, Motor, Project, Transform
+from rocket_workbench.models import Component, Conditions, GeometryAsset, Material, Motor, Project, Transform, active_components
 from rocket_workbench.solvers import aero
 
 
@@ -232,3 +232,93 @@ def test_missing_cad_asset_raises_and_does_not_use_fake_mass():
     p.components[0].geometry_mode = "replacement"
     with pytest.raises(ValueError, match="asset.*missing"):
         aero.mass_properties(p)
+
+
+def test_combined_incidence_enforces_small_angle_limit():
+    # Separate 8-degree yaw/pitch components give an 11.30-degree resultant cone
+    # angle: acos(cos(8 deg)^2), independently of the Barrowman force model.
+    result = aero.analyze(rocket(), Conditions(speed=100, angle_of_attack=8, sideslip=8, wind_speed=0))
+    incidence = math.degrees(math.acos(math.cos(math.radians(8)) ** 2))
+    assert result["effective_total_incidence_deg"] == pytest.approx(incidence, abs=1e-12)
+    assert result["cp_valid"] is False
+    assert result["validity"]["within_small_angle_range"] is False
+    assert any("Resultant flow angle exceeds" in warning for warning in result["warnings"])
+
+
+def test_nonpositive_mach_dependent_slope_has_no_cp():
+    # A deliberately mismatched reference shape tests the mathematically defined
+    # limit: high-aspect fins lose supersonic slope while a contracting body has a
+    # negative contribution. A formerly positive subsonic CP cannot be retained.
+    p = Project(components=[
+        Component(kind="nosecone", length=.1, radius=.01, mass_override=1),
+        Component(kind="boattail", x=.5, length=.1, radius=.05, radius_end=0, mass_override=1),
+        Component(kind="finset", x=.4, span=.12, root_chord=.025, tip_chord=.012, radius=.05, mass_override=.1),
+    ])
+    assert aero.analyze(p, Conditions(mach=0, wind_speed=0))["cna_per_rad"] > 0
+    supersonic = aero.analyze(p, Conditions(mach=2, wind_speed=0))
+    assert supersonic["cna_per_rad"] < 0
+    assert supersonic["cp_m"] is supersonic["stability_calibers"] is None
+    assert any("nonpositive" in warning for warning in supersonic["warnings"])
+
+
+def test_disabling_an_assembly_excludes_its_entire_subtree():
+    stage = Component(id="stage", kind="stage", external=False, enabled=False)
+    payload = Component(id="payload", kind="masscomponent", parent_id="stage", mass_override=100)
+    p = Project(components=[stage, payload, Component(id="body", mass_override=2)])
+    assert [c.id for c in active_components(p)] == ["body"]
+    assert aero.mass_properties(p)["mass_kg"] == 2
+    stage.enabled = True
+    p.configurations[0].active_component_ids = ["payload", "body"]
+    assert [c.id for c in active_components(p)] == ["body"]
+    p.configurations[0].active_component_ids.append("stage")
+    assert aero.mass_properties(p)["mass_kg"] == 102
+
+
+def test_motor_mass_rejects_a_mount_inside_a_disabled_stage():
+    p = rocket()
+    p.components.extend([
+        Component(id="stage", kind="stage", external=False, enabled=False),
+        Component(id="mount", kind="innertube", parent_id="stage", external=False),
+    ])
+    p.motors = [Motor(id="motor", curve=[[0, 10], [1, 0]])]
+    p.configurations[0].motor_id = "motor"
+    p.configurations[0].motor_mount_id = "mount"
+    with pytest.raises(ValueError, match="motor mount.*inactive"):
+        aero.mass_properties(p)
+
+
+@pytest.mark.parametrize("defect", ["open", "winding"])
+def test_cad_mass_verifies_mesh_topology_instead_of_saved_flag(defect):
+    mesh = trimesh.creation.box(extents=[.1, .2, .3])
+    faces = mesh.faces.tolist()
+    if defect == "open":
+        faces.pop()
+    else:
+        faces[0] = list(reversed(faces[0]))
+    asset = GeometryAsset(id="cad", name="edited box", format="stl", vertices=mesh.vertices.tolist(), faces=faces, watertight=True)
+    p = rocket()
+    p.assets = [asset]
+    component = p.components[0]
+    component.geometry_mode = "replacement"
+    component.asset_id = "cad"
+    component.mass_override = None
+    result = aero.mass_properties(p)
+    assert result["components"][0]["mass_kg"] == 0
+    assert any("closure/winding" in warning for warning in result["warnings"])
+    component.mass_override = 2
+    measured = aero.mass_properties(p)
+    assert measured["components"][0]["mass_kg"] == 2
+    assert any("reliable CAD CG is unavailable" in warning for warning in measured["warnings"])
+
+
+def test_cad_solid_mass_is_invariant_under_large_world_translation():
+    mesh = trimesh.creation.box(extents=[.1, .2, .3])
+    asset = GeometryAsset(id="cad", name="box", format="stl", vertices=mesh.vertices.tolist(), faces=mesh.faces.tolist(), watertight=True)
+    p = Project(materials=[Material(id="known", density=1000)], assets=[asset], components=[
+        Component(material_id="known", asset_id="cad", geometry_mode="replacement", transform=Transform(translation=[1e6, 2e6, 3e6]))
+    ])
+    result = aero.mass_properties(p)
+    # Independent box volume rho*abc. Tolerances include floating-point spacing
+    # of stored coordinates at the deliberately remote world origin.
+    assert result["mass_kg"] == pytest.approx(6, rel=2e-8)
+    assert result["cg_m"] == pytest.approx(1e6, abs=1e-8)

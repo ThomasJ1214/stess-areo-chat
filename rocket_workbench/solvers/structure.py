@@ -41,16 +41,22 @@ def _check_cancel(cancelled):
 
 def tube_section(radius: float, thickness: float) -> tuple[float, float]:
     """Return annular cross-section area and diametral second moment (SI)."""
-    if radius <= 0 or thickness <= 0 or thickness > radius:
+    if (not math.isfinite(radius) or not math.isfinite(thickness) or
+            radius <= 0 or thickness <= 0 or thickness > radius):
         raise ValueError("Tube radius must be positive and thickness no greater than radius.")
-    inner = max(0.0, radius - thickness)
-    return math.pi * (radius**2 - inner**2), math.pi / 4 * (radius**4 - inner**4)
+    # Expanded differences avoid subtracting almost equal powers for thin walls.
+    area = math.pi * thickness * (2 * radius - thickness)
+    inertia = math.pi / 4 * thickness * (4 * radius**3 - 6 * radius**2 * thickness +
+                                        4 * radius * thickness**2 - thickness**3)
+    return area, inertia
 
 
 def cantilever_tip_load(force: float, length: float, youngs_modulus: float,
                         second_moment: float, surface_distance: float) -> dict:
     """Euler-Bernoulli beam, fixed root and force at free tip; signs retained."""
-    if min(length, youngs_modulus, second_moment, surface_distance) <= 0:
+    if (not all(math.isfinite(value) for value in
+                (force, length, youngs_modulus, second_moment, surface_distance)) or
+            min(length, youngs_modulus, second_moment, surface_distance) <= 0):
         raise ValueError("Beam dimensions, modulus and inertia must be positive.")
     return {"moment_nm": force * length,
             "stress_pa": abs(force * length * surface_distance / second_moment),
@@ -68,7 +74,6 @@ def analyze(project: Project, conditions: Conditions, configuration_id: str | No
     aero = analyze_aero(project, conditions, configuration_id)
     parts = active_components(project, configuration_id)
     loads = {p.get("component_id", p.get("id")): p for p in aero.get("components", [])}
-    tail = max((p.x + p.length for p in parts), default=0.0)
     result = []
     notes = ["Beam/fin estimates use tail-fixed cantilevers and small deflections; joints, local shell buckling, recovery shock, and attachment stress concentrations are excluded.",
              "Materials are homogeneous isotropic surrogates; a fiberglass/carbon laminate strength ratio is not a composite failure criterion."]
@@ -89,9 +94,13 @@ def analyze(project: Project, conditions: Conditions, configuration_id: str | No
             row["warnings"].append("Zero-thickness OpenRocket reference surface has no supported load-bearing cross-section; specify measured wall/fin thickness before structural analysis.")
             result.append(row)
             continue
+        if part.kind in _TUBES and part.thickness > part.radius:
+            row["warnings"].append("Wall thickness exceeds the outer radius; this part has no valid annular section. Correct its dimensions before structural analysis.")
+            result.append(row)
+            continue
         if part.kind in _TUBES and part.length > 0 and part.radius > 0:
             area, inertia = tube_section(part.radius, part.thickness)
-            # Evaluate a section at the noseward end of this tube. All noseward
+            # Evaluate a section at the aft end of this tube. All noseward
             # loads contribute to its moment in a tail-supported load path.
             moment_y = moment_z = axial = 0.0
             for other in parts:
@@ -204,7 +213,8 @@ def evaluate_flight_stress(model: dict, dynamic_pressure_pa: float,
 
 
 def elasticity_matrix(youngs_modulus: float, poisson_ratio: float) -> np.ndarray:
-    if youngs_modulus <= 0 or not -1 < poisson_ratio < 0.5:
+    if (not math.isfinite(youngs_modulus) or not math.isfinite(poisson_ratio) or
+            youngs_modulus <= 0 or not -1 < poisson_ratio < 0.5):
         raise ValueError("Elastic modulus must be positive; Poisson ratio must be between -1 and 0.5.")
     mu = youngs_modulus / (2 * (1 + poisson_ratio))
     lam = youngs_modulus * poisson_ratio / ((1 + poisson_ratio) * (1 - 2 * poisson_ratio))
@@ -216,11 +226,14 @@ def elasticity_matrix(youngs_modulus: float, poisson_ratio: float) -> np.ndarray
 
 
 def _element(vertices):
-    coord = np.column_stack((np.ones(4), vertices))
-    volume = abs(np.linalg.det(coord)) / 6
+    # Form shape-function gradients in element-local coordinates. Inverting
+    # [1, X, Y, Z] at a large imported CAD origin loses precision unnecessarily.
+    edges = (vertices[1:] - vertices[0]).T
+    volume = abs(np.linalg.det(edges)) / 6
     if volume <= max(float(np.ptp(vertices, axis=0).max())**3, 1e-30) * 1e-12:
         raise ValueError("FEA mesh contains a degenerate tetrahedron.")
-    grad = np.linalg.inv(coord)[1:, :].T
+    other_gradients = np.linalg.inv(edges)
+    grad = np.vstack((-other_gradients.sum(axis=0), other_gradients))
     b = np.zeros((6, 12), dtype=float)
     for i, (gx, gy, gz) in enumerate(grad):
         col = 3 * i
@@ -234,6 +247,23 @@ def _element(vertices):
     return b, volume
 
 
+def _integer_indices(values, label):
+    """Reject fractional/NaN indices instead of silently truncating connectivity."""
+    original = np.asarray(values)
+    if original.dtype.kind not in "iu":
+        try:
+            numeric = np.asarray(values, dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{label} must contain integer indices.") from error
+        if (not np.isfinite(numeric).all() or np.any(numeric != np.floor(numeric)) or
+                np.any(np.abs(numeric) >= 2**63)):
+            raise ValueError(f"{label} must contain finite integer indices.")
+    try:
+        return np.asarray(values, dtype=np.int64)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{label} must contain valid integer indices.") from error
+
+
 def solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson_ratio, forces,
                       fixed_dofs, *, density=0.0, acceleration=None,
                       backend="cpu", progress=None, cancelled=None) -> dict:
@@ -243,7 +273,7 @@ def solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson_ratio, force
     tests. Public component jobs use a fully fixed root surface.
     """
     xyz = np.asarray(vertices, dtype=float)
-    tets = np.asarray(tetrahedra, dtype=np.int64)
+    tets = _integer_indices(tetrahedra, "Tetrahedral connectivity")
     if xyz.ndim != 2 or xyz.shape[1] != 3 or len(xyz) < 4 or not np.isfinite(xyz).all():
         raise ValueError("FEA vertices must be finite 3D coordinates.")
     if tets.ndim != 2 or tets.shape[1] != 4 or not len(tets) or tets.min() < 0 or tets.max() >= len(xyz):
@@ -252,11 +282,11 @@ def solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson_ratio, force
     ndof = 3 * len(xyz)
     if len(f) != ndof or not np.isfinite(f).all():
         raise ValueError("Nodal force array must match the mesh and contain finite forces.")
-    fixed = np.unique(np.asarray(fixed_dofs, dtype=np.int64))
+    fixed = np.unique(_integer_indices(fixed_dofs, "Fixed DOFs"))
     if not len(fixed) or fixed.min() < 0 or fixed.max() >= ndof:
         raise ValueError("A valid root constraint is required for static FEA.")
     accel = np.asarray(acceleration if acceleration is not None else [0, 0, 0], dtype=float)
-    if accel.shape != (3,) or not np.isfinite(accel).all() or density < 0:
+    if accel.shape != (3,) or not np.isfinite(accel).all() or not math.isfinite(density) or density < 0:
         raise ValueError("Acceleration must be a finite three-vector and density nonnegative.")
     d = elasticity_matrix(youngs_modulus, poisson_ratio)
     row_indices = np.empty(len(tets) * 144, dtype=np.int64)
@@ -276,6 +306,9 @@ def solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson_ratio, force
         values[sl] = (b.T @ d @ b * vol).ravel()
         f[dof] += np.tile(density * vol / 4 * accel, 4)
     stiffness = sparse.coo_matrix((values, (row_indices, col_indices)), shape=(ndof, ndof)).tocsr()
+    # The COO assembly buffers are much larger than the compressed matrix.
+    # Release them before factorization rather than retaining them to return.
+    del row_indices, col_indices, values
     free = np.setdiff1d(np.arange(ndof), fixed)
     if not len(free):
         raise ValueError("All nodes are constrained; select a smaller root surface.")
@@ -355,14 +388,23 @@ def solve_tetrahedral(vertices, tetrahedra, youngs_modulus, poisson_ratio, force
     balance = np.linalg.norm(applied + reaction) / max(np.linalg.norm(applied), np.linalg.norm(f), 1e-12)
     applied_moment = np.cross(xyz, f.reshape(-1, 3)).sum(axis=0)
     reaction_moment = np.cross(xyz, reactions.reshape(-1, 3)).sum(axis=0)
-    moment_balance = np.linalg.norm(applied_moment + reaction_moment) / max(
-        np.linalg.norm(applied_moment), np.linalg.norm(f) * float(np.ptp(xyz, axis=0).max()), 1e-12)
+    # Check balance around the mesh centroid, avoiding cancellation of huge
+    # origin-dependent moments when a small imported solid is far from zero.
+    moment_reference = xyz.mean(axis=0)
+    local_applied_moment = np.cross(xyz - moment_reference, f.reshape(-1, 3)).sum(axis=0)
+    local_reaction_moment = np.cross(xyz - moment_reference, reactions.reshape(-1, 3)).sum(axis=0)
+    moment_balance = np.linalg.norm(local_applied_moment + local_reaction_moment) / max(
+        np.linalg.norm(local_applied_moment), np.linalg.norm(f) * float(np.ptp(xyz, axis=0).max()), 1e-12)
+    strain_energy = float(displacement @ (stiffness @ displacement) / 2)
+    external_work = float(displacement @ f)
     return {"displacements": displacement.reshape(-1, 3), "von_mises_pa": nodal_vm,
             "element_von_mises_pa": vm, "element_stress_pa": stress,
             "volume_m3": float(volumes.sum()), "backend": executed,
             "relative_equilibrium_residual": relative_residual,
             "force_balance_relative_error": float(balance),
             "moment_balance_relative_error": float(moment_balance),
+            "moment_balance_reference_m": moment_reference,
+            "strain_energy_j": strain_energy, "external_work_j": external_work,
             "applied_force_n": applied, "reaction_force_n": reaction,
             "applied_moment_nm": applied_moment, "reaction_moment_nm": reaction_moment}
 
@@ -375,12 +417,11 @@ def _boundary_faces(xyz, tets):
     boundary = faces[indices[counts == 1]].copy()
     # Outward orientation is obtained from the opposite node of its parent tet.
     owners = np.tile(np.arange(len(tets)), 4)[indices[counts == 1]]
-    for face, owner in zip(boundary, owners):
-        centroid = xyz[face].mean(axis=0)
-        outward = centroid - xyz[tets[owner]].mean(axis=0)
-        normal = np.cross(xyz[face[1]] - xyz[face[0]], xyz[face[2]] - xyz[face[0]])
-        if np.dot(normal, outward) < 0:
-            face[1], face[2] = face[2], face[1]
+    triangles = xyz[boundary]
+    outward = triangles.mean(axis=1) - xyz[tets[owners]].mean(axis=1)
+    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    reverse = np.einsum("ij,ij->i", normals, outward) < 0
+    boundary[reverse, 1], boundary[reverse, 2] = boundary[reverse, 2].copy(), boundary[reverse, 1].copy()
     return boundary
 
 
@@ -518,7 +559,7 @@ def _volume_mesh(surface, mesh_size, max_elements, progress, cancelled, timeout_
         receiving.close()
 
 
-def _transfer_cfd_pressure(xyz, faces, options):
+def _transfer_cfd_pressure(xyz, faces, options, cancelled=None):
     """Normal-compatible nearest-wall transfer of absolute CFD gauge pressure."""
     rows = options.get("cfd_surface", [])
     if not rows:
@@ -558,7 +599,9 @@ def _transfer_cfd_pressure(xyz, faces, options):
     # sized from their diagonal can wrongly transfer the opposite exterior wall
     # onto an inner bore face. Use cell-normalized ellipsoidal neighborhoods.
     metric_scale = spacing if explicit_distance is None and valid_spacing else np.ones(3)
-    metric_distance, nearest = cKDTree(positions / metric_scale).query(centroids / metric_scale, k=count)
+    tree = cKDTree(positions / metric_scale)
+    metric_centroids = centroids / metric_scale
+    metric_distance, nearest = tree.query(metric_centroids, k=count)
     if count == 1:
         metric_distance, nearest = metric_distance[:, None], nearest[:, None]
     distance = np.linalg.norm(positions[nearest] - centroids[:, None], axis=2)
@@ -570,7 +613,28 @@ def _transfer_cfd_pressure(xyz, faces, options):
     mapped = np.isfinite(chosen_distances)
     selected = nearest[np.arange(len(faces)), chosen]
     gauge = np.where(mapped, pressures[selected] - ambient, 0.0)
+    # Thin double-sided surfaces can have more than 16 nearby samples facing
+    # the wrong way. Search the full allowed neighborhood before declaring such
+    # a face unmapped, retaining the same geometric cutoff and normal criterion.
+    fallback_faces = np.flatnonzero(~mapped) if count < len(rows) else np.array([], dtype=int)
+    cutoff = 1.5 if explicit_distance is None else max_distance
+    for fallback_index, face_index in enumerate(fallback_faces):
+        if fallback_index % 256 == 0:
+            _check_cancel(cancelled)
+        neighborhood = np.asarray(tree.query_ball_point(metric_centroids[face_index], cutoff), dtype=int)
+        if not len(neighborhood):
+            continue
+        compatible_nodes = neighborhood[normals[neighborhood] @ face_normals[face_index] >= 0.25]
+        if not len(compatible_nodes):
+            continue
+        physical_distance = np.linalg.norm(positions[compatible_nodes] - centroids[face_index], axis=1)
+        best = int(np.argmin(physical_distance))
+        chosen_distances[face_index] = physical_distance[best]
+        selected[face_index] = compatible_nodes[best]
+        mapped[face_index] = True
+        gauge[face_index] = pressures[selected[face_index]] - ambient
     result = {"mapped_faces": int(mapped.sum()), "total_faces": len(faces),
+              "fallback_search_faces": len(fallback_faces),
               "mapped_surface_area_m2": float(area[mapped].sum()),
               "total_surface_area_m2": float(area.sum()),
               "mapped_surface_area_fraction": float(area[mapped].sum() / area.sum()),
@@ -600,8 +664,47 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
     material = _material(project, component)
     _check_cancel(cancelled)
     _notify(progress, 0.01, "Inspecting actual solid geometry and material")
+    # Validate declared loads/support/backend before a potentially expensive
+    # native mesh operation, so incorrect inputs fail promptly and predictably.
+    clamp_type = options.get("clamp_type", "plane")
+    if clamp_type not in {"plane", "radial_root"}:
+        raise ValueError("clamp_type must be plane or radial_root.")
+    if clamp_type == "radial_root" and (component.kind not in _FINS or
+            (component.asset_id and component.geometry_mode == "replacement")):
+        raise ValueError("radial_root is defined only for original procedural finsets; choose a plane for imported CAD.")
+    axis_name = options.get("clamp_axis", "x")
+    if axis_name not in {"x", "y", "z"}:
+        raise ValueError("clamp_axis must be x, y or z.")
+    axis = {"x": 0, "y": 1, "z": 2}[axis_name]
+    side = options.get("clamp_side", "min")
+    if side not in {"min", "max"}:
+        raise ValueError("clamp_side must be min or max.")
+    mode = options.get("load_mode", "aero_pressure")
+    if mode not in {"aero_pressure", "uniform_pressure", "traction", "cfd_pressure"}:
+        raise ValueError("load_mode must be aero_pressure, uniform_pressure, traction or cfd_pressure.")
+    backend = options.get("backend", "auto")
+    if backend not in {"cpu", "auto", "cuda"}:
+        raise ValueError("FEA backend must be cpu, auto, or cuda.")
+    air = atmosphere(conditions.altitude, conditions.temperature_delta)
+    flow_vector = freestream(conditions)
+    speed = float(np.linalg.norm(flow_vector))
+    dynamic_pressure = 0.5 * float(air["density_kg_m3"]) * speed**2
+    load_pressure = float(options.get("load_pressure_pa", dynamic_pressure))
+    if not math.isfinite(load_pressure) or load_pressure < 0:
+        raise ValueError("load_pressure_pa must be finite and nonnegative.")
+    traction = np.asarray(options.get("traction_pa", [load_pressure, 0, 0]), dtype=float)
+    if traction.shape != (3,) or not np.isfinite(traction).all():
+        raise ValueError("traction_pa must be a finite [x,y,z] vector.")
+    acceleration = np.asarray(options.get("acceleration_m_s2", [0, 0, 0]), dtype=float)
+    if acceleration.shape != (3,) or not np.isfinite(acceleration).all():
+        raise ValueError("acceleration_m_s2 must be a finite [x,y,z] vector.")
+    if component.geometry_mode == "replacement":
+        asset = next((asset for asset in project.assets if asset.id == component.asset_id), None)
+        if asset is not None and not asset.watertight:
+            raise ValueError("Solid FEA requires a replacement asset with verified enclosed material volume. Repair open/overlapping CAD geometry or provide a valid unioned solid before meshing.")
     surface = component_mesh(project, component)
-    if not len(surface.faces) or not surface.is_watertight or not surface.is_winding_consistent or surface.volume <= 0:
+    if (not len(surface.faces) or not surface.is_watertight or not surface.is_winding_consistent or
+            not math.isfinite(float(surface.volume)) or surface.volume <= 0 or surface.metadata.get("volume_ambiguous")):
         raise ValueError("Solid FEA requires watertight outward-oriented solid geometry; open STL surfaces and zero-thickness shells are unsupported.")
     scale = float(surface.extents.max())
     default_size = scale / 12
@@ -620,31 +723,23 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
     if not (component.asset_id and component.geometry_mode == "replacement") and mesh_size > component.thickness / 2 * 1.001:
         raise ValueError("Solid bending FEA requires mesh_size <= thickness/2 for this thin component; a coarse volume mesh would give misleading stiffness. Select a local region or shell solver for large thin structures.")
     # Budget check prevents multi-million-cell thin-tube jobs before meshing.
-    rough_elements = float(surface.volume) / mesh_size**3 * 6
-    if rough_elements > max_elements * 4:
-        raise ValueError(f"Estimated solid mesh is too large ({rough_elements:,.0f} tetrahedra vs budget {max_elements:,}). Analyze a local region; a thin-shell solver is required for a whole thin rocket body.")
+    minimum_budget_size = (float(surface.volume) * 6 / (max_elements * 4))**(1 / 3)
+    if mesh_size < minimum_budget_size:
+        raise ValueError(f"Estimated solid mesh is too large for the {max_elements:,}-element budget. Analyze a local region; a thin-shell solver is required for a whole thin rocket body.")
+    tolerance = float(options.get("clamp_tolerance", max(scale * 1e-7, mesh_size * 0.08)))
+    if not math.isfinite(tolerance) or tolerance <= 0:
+        raise ValueError("clamp_tolerance must be positive and finite.")
     xyz, tets = _volume_mesh(surface, mesh_size, max_elements, progress, cancelled,
                               float(options.get("mesh_timeout_seconds", 120)))
+    _check_cancel(cancelled)
     faces = _boundary_faces(xyz, tets)
+    _check_cancel(cancelled)
     boundary_nodes = np.unique(faces)
     links = np.vstack([tets[:, [0, 1]], tets[:, [0, 2]], tets[:, [0, 3]]])
     graph = sparse.coo_matrix((np.ones(len(links)), (links[:, 0], links[:, 1])),
                               shape=(len(xyz), len(xyz))).tocsr()
     solid_count, groups = sparse.csgraph.connected_components(graph, directed=False)
-    clamp_type = options.get("clamp_type", "plane")
-    axis_name = options.get("clamp_axis", "x")
-    if axis_name not in {"x", "y", "z"}:
-        raise ValueError("clamp_axis must be x, y or z.")
-    axis = {"x": 0, "y": 1, "z": 2}[axis_name]
-    side = options.get("clamp_side", "min")
-    if side not in {"min", "max"}:
-        raise ValueError("clamp_side must be min or max.")
-    tolerance = float(options.get("clamp_tolerance", max(scale * 1e-7, mesh_size * 0.08)))
-    if not math.isfinite(tolerance) or tolerance <= 0:
-        raise ValueError("clamp_tolerance must be positive and finite.")
     if clamp_type == "radial_root":
-        if component.kind not in _FINS or (component.asset_id and component.geometry_mode == "replacement"):
-            raise ValueError("radial_root is defined only for original procedural finsets; choose a plane for imported CAD.")
         # A finite-thickness root is a plane tangent to the body, not a circle:
         # sqrt(Y²+Z²)<=R would leave extrusion edges/canted root points free.
         rotation = float(component.metadata.get("angleoffset", component.metadata.get("rotation", 0)))
@@ -665,8 +760,6 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
         position = float(xyz[:, axis].min() if side == "min" else xyz[:, axis].max())
         fixed_nodes = boundary_nodes[np.abs(xyz[boundary_nodes, axis] - position) <= tolerance]
         clamp_description = f"{side}-{axis_name} boundary at {position:g} m; all displacement DOFs fixed"
-    else:
-        raise ValueError("clamp_type must be plane or radial_root.")
     if len(fixed_nodes) < 3:
         raise ValueError("Root selection contains fewer than three nodes. Choose another clamp plane or a justified tolerance.")
     fixed_dofs = (fixed_nodes[:, None] * 3 + np.arange(3)).ravel()
@@ -676,29 +769,20 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
                                                    tol=scale * 1e-10) < 2:
             raise ValueError("Each disconnected solid needs at least three noncollinear clamped nodes; choose radial fin roots or a suitable support plane. Contact/bonding between solids is not inferred.")
     forces = np.zeros_like(xyz)
-    air = atmosphere(conditions.altitude, conditions.temperature_delta)
-    density_air = float(air["density_kg_m3"])
-    flow_vector = freestream(conditions)
-    speed = float(np.linalg.norm(flow_vector))
-    dynamic_pressure = 0.5 * density_air * speed**2
-    load_pressure = float(options.get("load_pressure_pa", dynamic_pressure))
-    if not math.isfinite(load_pressure) or load_pressure < 0:
-        raise ValueError("load_pressure_pa must be finite and nonnegative.")
     flow = flow_vector / speed if speed > 0 else np.array([1.0, 0.0, 0.0])
-    mode = options.get("load_mode", "aero_pressure")
-    traction = np.asarray(options.get("traction_pa", [load_pressure, 0, 0]), dtype=float)
-    if traction.shape != (3,) or not np.isfinite(traction).all():
-        raise ValueError("traction_pa must be a finite [x,y,z] vector.")
     face_pressures = []
     cfd_pressures, transfer_summary = (None, None)
     if mode == "cfd_pressure":
-        cfd_pressures, transfer_summary = _transfer_cfd_pressure(xyz, faces, options)
+        cfd_pressures, transfer_summary = _transfer_cfd_pressure(xyz, faces, options, cancelled)
         notes.append("CFD pressure is mapped from nearby normal-compatible voxel wall samples as p minus ambient. Unmapped faces receive zero gauge pressure; inspect coverage and transfer distances, especially for hollow interior surfaces.")
         notes.append("This is one-way loading from experimental compressible inviscid Euler CFD; it inherits grid/convergence limitations and excludes viscous traction or deformation-to-flow feedback.")
         notes.append("Nearest pressure transfer is not force-conservative; compare integrated mapped forces and repeat both flow-grid and structural-mesh refinement.")
         notes.extend(transfer_summary["cfd_warnings"])
     free_end_position = xyz[:, axis].max() if side == "min" else xyz[:, axis].min()
+    traction_faces = 0
     for face_index, face in enumerate(faces):
+        if face_index % 512 == 0:
+            _check_cancel(cancelled)
         cross = np.cross(xyz[face[1]] - xyz[face[0]], xyz[face[2]] - xyz[face[0]])
         twice_area = float(np.linalg.norm(cross))
         if twice_area == 0:
@@ -715,6 +799,7 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
             force = -normal * pressure * area
         elif mode == "traction":
             on_end = np.all(np.abs(xyz[face, axis] - free_end_position) <= tolerance)
+            traction_faces += int(on_end)
             pressure = 0.0
             force = traction * area if on_end else np.zeros(3)
         elif mode == "cfd_pressure":
@@ -724,7 +809,11 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
             raise ValueError("load_mode must be aero_pressure, uniform_pressure, traction or cfd_pressure.")
         forces[face] += force / 3
         face_pressures.append(float(pressure))
-    acceleration = options.get("acceleration_m_s2", [0, 0, 0])
+    if mode == "traction" and np.any(traction) and not traction_faces:
+        raise ValueError("No boundary faces lie on the selected opposite end plane for prescribed traction. Choose another clamp axis/side or a justified tolerance.")
+    surface_force = forces.sum(axis=0)
+    if not np.any(forces) and not np.any(acceleration):
+        notes.append("No nonzero structural load was applied. Zero displacement/stress is an unloaded solution, not a demonstrated strength margin.")
     if mode == "aero_pressure":
         notes.append("FEA aerodynamic load is a windward projected Newtonian-style pressure surrogate (Cp=2 cos² incidence), not CFD or a validated Mach-2 pressure solution; import/derive reliable loads for design decisions.")
         if conditions.turbulence:
@@ -733,25 +822,40 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
         notes.append("Uniform pressure acts on every closed boundary face, including hollow-tube interior surfaces. It is not a differential internal/external vessel-pressure model.")
     solved = solve_tetrahedral(xyz, tets, material.youngs_modulus, material.poisson_ratio,
                               forces, fixed_dofs, density=material.density,
-                              acceleration=acceleration, backend=options.get("backend", "auto"),
+                              acceleration=acceleration, backend=backend,
                               progress=progress, cancelled=cancelled)
     displacement = solved["displacements"]
     maximum_displacement = float(np.linalg.norm(displacement, axis=1).max())
     maximum_stress = float(solved["element_von_mises_pa"].max())
+    source_volume = float(surface.volume)
+    volume_difference = abs(solved["volume_m3"] - source_volume) / source_volume
+    if volume_difference > .01:
+        notes.append(f"Tetrahedral material volume differs from the imported/procedural triangle surface by {volume_difference:.1%}. Inspect surface remeshing and demonstrate convergence before using this result.")
     if maximum_displacement > scale * 0.05:
         notes.append("Maximum displacement exceeds 5% of component scale; linear geometry is not reliable at this load.")
     if maximum_stress > material.yield_strength:
         notes.append("Predicted isotropic von Mises stress exceeds the supplied material strength. Plasticity/failure is not simulated.")
+    if component.mass_override is not None:
+        notes.append("FEA mass and body acceleration loads use the selected material density and actual tetrahedral volume. A component mass override is not distributed into this elastic solid model.")
     summary = {"nodes": len(xyz), "elements": len(tets), "volume_m3": solved["volume_m3"],
+               "source_surface_volume_m3": source_volume,
+               "relative_volume_difference": volume_difference,
                "mass_kg": solved["volume_m3"] * material.density,
                "max_displacement_m": maximum_displacement, "max_von_mises_pa": maximum_stress,
                "safety_factor": material.yield_strength / maximum_stress if maximum_stress > 0 else None,
                "material": material.model_dump(), "boundary_condition": clamp_description,
                "fixed_nodes": len(fixed_nodes), "mesh_size_m": mesh_size,
+               "clamp_tolerance_m": tolerance,
                "load_mode": mode, "load_pressure_pa": load_pressure if mode != "cfd_pressure" else None,
                "freestream_velocity_m_s": flow_vector.tolist(), "dynamic_pressure_pa": dynamic_pressure,
                "traction_pa": traction.tolist() if mode == "traction" else None,
-               "acceleration_m_s2": list(acceleration),
+               "acceleration_m_s2": acceleration.tolist(),
+               "surface_force_n": surface_force.tolist(),
+               "body_force_n": (solved["applied_force_n"] - surface_force).tolist(),
+               "traction_faces": traction_faces if mode == "traction" else None,
+               "strain_energy_j": solved["strain_energy_j"],
+               "external_work_j": solved["external_work_j"],
+               "moment_balance_reference_m": solved["moment_balance_reference_m"].tolist(),
                "applied_force_n": solved["applied_force_n"].tolist(),
                "reaction_force_n": solved["reaction_force_n"].tolist(),
                "applied_moment_nm": solved["applied_moment_nm"].tolist(),

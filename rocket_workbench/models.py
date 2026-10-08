@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 def uid() -> str:
@@ -77,7 +77,7 @@ class Component(Model):
     geometry_mode: Literal["original", "replacement"] = "original"
     enabled: bool = True
     external: bool = True
-    metadata: dict = Field(default_factory=dict)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class Motor(Model):
@@ -108,6 +108,7 @@ class FlightConfiguration(Model):
     motor_mount_id: str | None = None
     motor_position: float | None = None
     deployment: Literal["single", "dual"] = "dual"
+    recovery_defined: bool = True
     drogue_cd_area: float = Field(default=0.35, gt=0)
     main_cd_area: float = Field(default=3.5, gt=0)
     main_deploy_altitude: float = Field(default=250, ge=0)
@@ -115,27 +116,6 @@ class FlightConfiguration(Model):
     ignition_delay: float = Field(default=0, ge=0)
     primary_deploy_event: Literal["apogee", "motor_ejection"] = "apogee"
     motor_ejection_delay: float | None = Field(default=None, ge=0)
-
-
-class Project(Model):
-    schema_version: Literal[1] = 1
-    id: str = Field(default_factory=uid)
-    name: str = "Untitled rocket"
-    components: list[Component] = Field(default_factory=list)
-    configurations: list[FlightConfiguration] = Field(default_factory=lambda: [FlightConfiguration()])
-    active_configuration_id: str | None = None
-    materials: list[Material] = Field(default_factory=lambda: [Material(id="fiberglass")])
-    motors: list[Motor] = Field(default_factory=list)
-    assets: list[GeometryAsset] = Field(default_factory=list)
-    unit_system: Literal["metric", "us"] = "metric"
-    import_warnings: list[str] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def check_references(self):
-        if self.active_configuration_id is None and self.configurations:
-            object.__setattr__(self, "active_configuration_id", self.configurations[0].id)
-        return self
 
 
 class Conditions(Model):
@@ -153,7 +133,40 @@ class Conditions(Model):
     launch_azimuth: float = Field(default=0, ge=0, le=360)
     dt: float = Field(default=0.025, ge=0.001, le=0.2)
     max_time: float = Field(default=300, gt=0, le=1200)
-    seed: int = 42
+    seed: int = Field(default=42, ge=0)
+
+
+class AnalysisSettings(Model):
+    """Portable solver inputs; optional option dictionaries preserve solver extensibility."""
+    conditions: Conditions = Field(default_factory=Conditions)
+    cfd_options: dict[str, JsonValue] = Field(default_factory=dict)
+    fea_options: dict[str, JsonValue] = Field(default_factory=dict)
+    study_options: dict[str, JsonValue] = Field(default_factory=dict)
+    study_mode: Literal["sweep", "monte_carlo", "comparison"] = "sweep"
+
+
+class Project(Model):
+    schema_version: Literal[1] = 1
+    id: str = Field(default_factory=uid)
+    name: str = "Untitled rocket"
+    components: list[Component] = Field(default_factory=list)
+    configurations: list[FlightConfiguration] = Field(default_factory=lambda: [FlightConfiguration()])
+    active_configuration_id: str | None = None
+    materials: list[Material] = Field(default_factory=lambda: [Material(id="fiberglass")])
+    motors: list[Motor] = Field(default_factory=list)
+    assets: list[GeometryAsset] = Field(default_factory=list)
+    unit_system: Literal["metric", "us"] = "metric"
+    analysis_settings: AnalysisSettings = Field(default_factory=AnalysisSettings)
+    import_warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_references(self):
+        if self.active_configuration_id is None and self.configurations:
+            object.__setattr__(self, "active_configuration_id", self.configurations[0].id)
+        return self
+
+
 
 
 def active_components(project: Project, configuration_id: str | None = None) -> list[Component]:
@@ -161,7 +174,30 @@ def active_components(project: Project, configuration_id: str | None = None) -> 
     cfg = next((c for c in project.configurations if c.id == target), None)
     if cfg is None:
         raise ValueError("Select an existing flight configuration.")
-    return [c for c in project.components if c.enabled and (cfg.active_component_ids is None or c.id in cfg.active_component_ids)]
+    by_id = {c.id: c for c in project.components}
+    selected = None if cfg.active_component_ids is None else set(cfg.active_component_ids)
+    included: dict[str, bool] = {}
+    visiting: set[str] = set()
+
+    def is_included(component: Component) -> bool:
+        if component.id in included:
+            return included[component.id]
+        if component.id in visiting:
+            raise ValueError("Component parent links contain a cycle.")
+        visiting.add(component.id)
+        active = component.enabled and (selected is None or component.id in selected)
+        if active and component.parent_id is not None:
+            parent = by_id.get(component.parent_id)
+            if parent is None:
+                raise ValueError(f"Component {component.name} has a missing parent.")
+            active = is_included(parent)
+        visiting.remove(component.id)
+        included[component.id] = active
+        return active
+
+    # Enable/configuration selection applies to an entire subtree. A still-enabled
+    # payload inside a disabled stage must not survive as a detached mass/mesh.
+    return [component for component in project.components if is_included(component)]
 
 
 def configuration(project: Project, configuration_id: str | None = None) -> FlightConfiguration:
@@ -170,3 +206,47 @@ def configuration(project: Project, configuration_id: str | None = None) -> Flig
     if cfg is None:
         raise ValueError("Select an existing flight configuration.")
     return cfg
+
+
+def validate_project_references(value: Project) -> None:
+    """Validate complete project boundaries, without constraining incremental imports."""
+    if not value.id.strip():
+        raise ValueError("Project identifier must be nonempty.")
+    for collection in [value.components, value.configurations, value.materials, value.motors, value.assets]:
+        identities = [item.id for item in collection]
+        if any(not identity.strip() for identity in identities) or len(set(identities)) != len(identities):
+            raise ValueError("Project identifiers must be nonempty and unique within each collection.")
+    components = {item.id: item for item in value.components}
+    materials, motors, assets = ({item.id for item in collection} for collection in [value.materials, value.motors, value.assets])
+    if not value.configurations or value.active_configuration_id not in {cfg.id for cfg in value.configurations}:
+        raise ValueError("Project must contain the selected flight configuration.")
+    for item in value.components:
+        if item.parent_id is not None and item.parent_id not in components:
+            raise ValueError(f"{item.name}: parent component does not exist.")
+        if item.material_id is not None and item.material_id not in materials:
+            raise ValueError(f"{item.name}: material does not exist.")
+        if item.asset_id is not None and item.asset_id not in assets:
+            raise ValueError(f"{item.name}: imported geometry asset does not exist.")
+        if item.geometry_mode == "replacement" and not item.asset_id:
+            raise ValueError(f"{item.name}: replacement geometry requires an imported asset.")
+    # Check all immediate references first: an invalid grandparent must give a
+    # useful validation error rather than a KeyError dependent on component order.
+    checked = set()
+    for item in value.components:
+        seen, parent = set(), item.id
+        while parent and parent not in checked:
+            if parent in seen:
+                raise ValueError("Component hierarchy contains a cycle.")
+            seen.add(parent)
+            parent = components[parent].parent_id
+        checked.update(seen)
+    for cfg in value.configurations:
+        if cfg.motor_id is not None and cfg.motor_id not in motors:
+            raise ValueError(f"{cfg.name}: assigned motor does not exist.")
+        if cfg.motor_mount_id is not None and cfg.motor_mount_id not in components:
+            raise ValueError(f"{cfg.name}: motor mount does not exist.")
+        if cfg.active_component_ids is not None:
+            if any(identity not in components for identity in cfg.active_component_ids):
+                raise ValueError(f"{cfg.name}: enabled component does not exist.")
+            if len(set(cfg.active_component_ids)) != len(cfg.active_component_ids):
+                raise ValueError(f"{cfg.name}: enabled component identifiers must be unique.")

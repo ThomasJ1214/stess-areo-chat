@@ -38,6 +38,8 @@ to an equivalent strip. Individual fins do not receive independent wind loads.
 The front-end distinguishes unsupported parts with `supported:false`; a zero
 value on such a row does not mean the part is safe. Detailed CAD replacements
 are not reduced to a bounding-box beam. Use actual solid FEA for those parts.
+Zero-thickness or invalid annular wall dimensions are reported on the affected
+part without hiding structural estimates for the other physical components.
 
 The strength ratio is supplied material strength divided by predicted stress.
 For fiberglass/carbon, the material is an **isotropic engineering surrogate**;
@@ -74,7 +76,9 @@ mesh, after CAD scaling/alignment and OpenRocket component placement.
    a bounding box or convex hull. Curved imported CAD has already been tessellated;
    volume meshing retains that surface approximation, not the original CAD B-rep.
 3. Generate four-node, first-order tetrahedra. Each element uses affine shape
-   functions, constant strain, B from their physical-coordinate derivatives,
+   functions, constant strain, B from their physical-coordinate derivatives
+   evaluated relative to an element vertex (to avoid a distant CAD origin
+   degrading matrix precision),
    and Ke = volume × Bᵀ D B. D is the 3D isotropic elastic tensor with
    λ = Eν/((1+ν)(1−2ν)) and μ = E/(2(1+ν)). Assemble a sparse global stiffness
    matrix and impose zero displacement at the selected root nodes.
@@ -88,10 +92,24 @@ mesh, after CAD scaling/alignment and OpenRocket component placement.
    material, element count, actual mesh volume/mass, and displacements. Results
    with free-DOF residual above 10⁻⁵ are withheld.
 
+The summary also reports elastic `strain_energy_j` = ½uᵀKu and
+`external_work_j` = uᵀf. They satisfy 2U = uᵀf for these zero-displacement
+supports and linear static loads. Here `external_work_j` is the force/displacement
+dot product at full load; the work of a quasistatically ramped load is U.
+Surface and body force resultants are listed separately. Returned applied and
+reaction moments are about the project origin; the moment balance error is
+evaluated about the reported mesh-centroid `moment_balance_reference_m` to
+avoid cancellation for off-origin CAD. The original triangle-surface volume and
+tetrahedral material volume are compared, with a warning above 1% difference;
+this diagnostic is not an automated convergence study.
+
 Multiple disconnected solids are allowed only if each has at least three
 noncollinear fully fixed root nodes. Contact, adhesion, fillets, fasteners, and
 assembly connections are not inferred from touching surfaces. A finset can use
 its procedural radial roots to give each fin a real support.
+An imported asset flagged as open or as having ambiguous overlapping material
+volume is rejected before meshing, even if all of its separate shells are
+topologically closed. Repair or union the actual CAD solids first.
 
 ### Supported options
 
@@ -135,6 +153,12 @@ Use prescribed, benchmarked loading for an engineering structural decision.
 `uniform_pressure` loads every closed face, including hollow-tube interior
 faces. It is not a differential internal/external pressure-vessel model.
 `traction` is useful for analytical bar benchmarks and known end loads.
+Nonzero prescribed traction requires actual boundary faces at the selected
+opposite end; selecting a curved endpoint or only an edge fails explicitly.
+Loads and support options are validated before native meshing. An explicit zero
+pressure is preserved and an unloaded solution is labeled as such; zero stress
+is not a strength demonstration. FEA body loads use the chosen density and
+tetrahedral volume, rather than distributing a project component mass override.
 
 `cfd_pressure` connects a completed, pressure-force-converged CFD job to the
 selected actual component geometry. The job manager checks project/configuration
@@ -144,7 +168,9 @@ normal-compatible wall sample (outward normal dot product ≥ 0.25) is selected
 within a cell-scaled ellipsoid: √Σ(Δcoordinate/cell spacing)² ≤ 1.5.
 This keeps fine radial resolution separate from coarse axial resolution,
 preventing transfer from the opposite outside wall onto a hollow tube's inside
-wall. Its gauge pressure
+wall. If the initial 16 nearby samples all face the wrong way, the transfer
+searches the full permitted neighborhood for a compatible normal before marking
+the face as unmapped. This does not enlarge the transfer cutoff. Its gauge pressure
 is absolute wall pressure minus freestream pressure; negative suction is kept.
 Unmatched faces get zero gauge pressure, and the result reports mapped area
 fraction and mean/max transfer distances. Enclosed inner surfaces should not
@@ -172,7 +198,9 @@ an adequate mesh and demonstrate convergence, particularly for hollow parts.
 
 Gmsh runs in an isolated spawned worker process. The job checks cancellation
 while that worker runs and terminates it at its deadline, including native
-mesher failures. Assembly/stress recovery also check cancellation regularly.
+mesher failures. Assembly, surface-load integration, stress recovery and extended
+pressure-transfer searches also check cancellation regularly. Sparse assembly
+buffers are released before solving to reduce peak memory use.
 The CPU direct sparse solve is a bounded monolithic operation; cancellation
 during it takes effect after the solve returns. Packaged Windows entrypoints
 call `multiprocessing.freeze_support()` to support this worker.
@@ -200,13 +228,20 @@ exceedance also produce warnings, not simulated nonlinear failure.
 * A real six-tetrahedron uniaxial patch under exact face traction with minimal
   constraints allowing Poisson contraction: displacement and all element stresses
   match the affine analytical solution, and forces/reactions balance.
+* A hydrostatic-pressure patch matches exact isotropic compression, near-zero
+  von Mises stress, and analytical elastic energy; force work satisfies 2U = uᵀf.
+* A fully clamped elastic solid preserves displacement rotation, von Mises stress
+  and energy under a 3D rigid alignment with an off-origin CAD translation.
 * Body force proportional to actual tetrahedral volume, not surface area.
 * Positive elastic energy, invalid/degenerate mesh rejection, and cancellation.
+  Fractional connectivity indices and nonfinite constitutive data are rejected.
 * Gmsh tetrahedral volume of a non-cubical tetrahedral surface equals its actual
   solid volume, not its six-times-larger bounding box.
 * Full imported-solid FEA with a clamped end and end traction agrees with long-bar
   axial displacement within 6% (the full clamp intentionally constrains local
   Poisson contraction); mesh volume and applied face force are checked.
+  A second real mesh/solve verifies CAD scale, 90° rotation, local translation,
+  component placement, scaled mass and the applied moment about the project origin.
 * Quasi-static flight stress is zero unloaded, scales with pressure, and includes
   longitudinal specific acceleration loading.
 * CFD pressure transfer subtracts freestream pressure, preserves negative gauge
@@ -215,8 +250,12 @@ exceedance also produce warnings, not simulated nonlinear failure.
   the shared freestream dynamic pressure and declared Cp=2 crosswind-face force.
 * A finite-thickness canted finset clamps all procedural root-plane nodes;
   anisotropic CFD transfer rejects opposite-wall samples across a hollow bore.
+  A matching normal beyond 16 incompatible nearby samples still transfers pressure.
 * A zero-thickness OpenRocket reference part reports unsupported structural
   calculations while other physical parts continue to analyze.
+* Invalid support/load options, extremely small mesh requests and unverified
+  enclosed material volumes fail before invoking the native mesher. Deliberately
+  unloaded solid solves preserve zero pressure and an explicit warning.
 
 These establish implementation consistency for these cases, not validation of
 arbitrary rocket structures, CAD topology, aerodynamic pressure predictions,
