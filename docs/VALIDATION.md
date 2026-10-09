@@ -1,8 +1,41 @@
 # Validation checkpoint
 
+Recorded 2026-10-09 during the version 0.3.0 review in the Linux cloud workspace.
+The new source passed **330 Python tests**, **48 frontend tests**, and the
+production frontend build. The version 0.3.0 engine smoke passed with 3,409 synthetic flight samples and
+a real 731-element solid solve (equilibrium error 5.85e-15). Native Qt startup
+passed shell, WebGL, authenticated API and project-load checks. Native preference
+checks passed reload and two fresh-origin launches, including final-edit flushing;
+receipts are `build/native-preferences-smoke.json` and
+`build/production-preferences-smoke.json` (source executable, `frozen:false`).
+Final browser and Windows package checks are being completed before release. Physical NVIDIA execution
+and hardware performance remain unverified in this CPU cloud environment.
+
+The 0.3.0 change repairs frozen CUDA resource discovery and adds a hard packaging
+check: real CuPy native imports, ten shipped CUDA DLLs, header discovery and offline
+NVRTC PTX compilation. This check requires no GPU, and import failures cannot
+pass as CPU fallback. Both the frozen executable and silently installed executable
+must pass it. A physical-device check remains separate.
+
+Continuous streamlines use the actual exported velocity field, with conservative
+wall masks and no interpolation through solids or sealed cavities. Independent
+uniform/linear/circular flow references and thin-wall tests exercise the renderer.
+The camera uses actual trajectory coordinates, bounded velocity-aware framing and
+manual-control grace; flight attitude remains illustrative. Native preferences
+use a bounded UI-only file while the session profile stays in memory.
+
+## Historical version 0.2.0 checkpoint
+
+The [0.2.0 cross-platform workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37857090831)
+and [Windows packaging workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37857090849)
+passed for source `7ebf0fd4ac891b19726ac7c2378a323c469ea07a`.
+Its CPU-based packaging smoke did not catch a frozen CuPy import failure reported
+on an RTX 4070 Super. That installer is superseded by the CUDA packaging repair;
+it must not be described as GPU-verified. The prior evidence is retained below.
+
 Recorded 2026-10-08 during the version 0.2.0 review in the Linux cloud workspace.
 The current source passed its local test, engine and native-desktop checks.
-Version 0.2.0 Windows packaging is pending; the final browser check passed;
+Version 0.2.0 Windows packaging and the final browser check passed;
 historical version 0.1.1 runner/installer evidence is retained below. All checks
 use Python 3.12 and the pinned dependency specifications. Passing these
 checks establishes tested implementation behavior, not certification or agreement
@@ -21,7 +54,7 @@ with a real rocket's flight/wind-tunnel measurements.
 | Final expanded browser workflow | **23 workflows passed** | Actual mouse/keyboard resizing, small-window containment/map dialog, default/explicit CAD placement and saved manual alignment, neighbor/source invariants, automatic/manual/recommended FEA meshes, genuine CFD/pressure-transfer FEA, GPU diagnostics, unlimited progress and retained/exported cancelled CFD |
 | Actual online motor lookup | Passed on Linux against ThrustCurve.org | Real J350W search and curve download/parse with file digest/provenance; no project mutation or synthetic fallback; provider certification/applicability remains unverified |
 | Tutorial assets | Passed through actual readers/API | Saved project, synthetic ENG, STL and STEP dimensions/volume, coefficient CSV import and interpolation |
-| Windows installer | **Version 0.2.0 pending**; version 0.1.1 historically passed | The new source needs its own locked build, tests, frozen smoke, installer, silent installation and installed engine/native API/WebGL checks |
+| Windows installer | **Version 0.2.0 CPU checks passed**; native CuPy import failure reported | Locked build, frozen/installed CPU engine and native API/WebGL checks passed; the old checks did not require a successful CUDA import |
 | NVIDIA numerical backend | **Unverified on physical hardware** | CuPy/CUDA packaging and fallback logic do not establish GPU execution, numerical agreement or performance on a user's driver/device |
 
 The Python suite includes independent analytical cases and conservation/positivity

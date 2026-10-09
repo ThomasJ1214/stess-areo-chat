@@ -15,10 +15,10 @@ Mach setting does not establish validated supersonic accuracy.
 ## Install on Windows
 
 Open the [Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml)
-and choose a successful version **0.2.0** run,
+and choose a successful version **0.3.0** run,
 sign in to GitHub, and download **RocketWorkbench-windows-x64-installer**
 (approximately 1.5 GB). Unzip it, open `release/` if present, and run
-`RocketWorkbench-0.2.0-windows-x64-setup.exe`. No Python, Node.js, separate CAD
+`RocketWorkbench-0.3.0-windows-x64-setup.exe`. No Python, Node.js, separate CAD
 program, Gmsh installation, or CUDA Toolkit installation is required for use.
 
 Artifacts are retained for 30 days. If the download has expired, run the

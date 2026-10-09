@@ -73,16 +73,23 @@ binaries += gmsh_dlls
 hiddenimports.append("gmsh")
 
 gpu_requested = os.environ.get("ROCKET_BUNDLE_GPU", "1") == "1"
+excluded_modules = ["tkinter", "matplotlib", "IPython", "pytest", "vtk"]
+if not gpu_requested:
+    # Static optional imports can otherwise pull CuPy back into a CPU-only build
+    # when the developer's environment also has the GPU extra installed.
+    excluded_modules += ["cupy", "cupyx", "cupy_backends", "cuda", "nvidia"]
 if gpu_requested:
     if util.find_spec("cupy") is None:
         raise RuntimeError("GPU bundle requires: uv sync --locked --extra desktop --extra dev --extra gpu")
-    for module in ("cupy", "cupyx", "cuda"):
+    for module in ("cupy", "cupyx", "cupy_backends", "cuda"):
         package_datas, package_binaries, package_imports = collect_all(module)
         datas += package_datas
         binaries += package_binaries
         hiddenimports += package_imports
     # CUDA Toolkit wheels use a namespace package and platform native libraries.
-    # Their original layout lets cuda-pathfinder locate runtime/NVRTC libraries.
+    # Keep DLLs AND headers in their wheel layout. The runtime hook exposes the
+    # frozen resource root to cuda-pathfinder and registers native directories
+    # before CuPy imports extension modules linked against these CUDA DLLs.
     for distribution in metadata.distributions():
         name = (distribution.metadata.get("Name") or "").lower()
         if name.startswith("nvidia-") or name.startswith("cuda-"):
@@ -114,8 +121,9 @@ a = Analysis(
     [str(root / "scripts" / "desktop_entry.py")],
     pathex=[str(root)], binaries=binaries, datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[], hooksconfig={}, runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "IPython", "pytest", "vtk"],
+    hookspath=[], hooksconfig={},
+    runtime_hooks=[str(root / "scripts" / "pyi_rth_bundled_cuda.py")],
+    excludes=excluded_modules,
     noarchive=False,
 )
 pyz = PYZ(a.pure)

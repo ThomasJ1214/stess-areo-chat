@@ -1410,3 +1410,24 @@ select {
   align-items: center;
   gap: 8px;
 }
+.cfd-display-settings {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #344651;
+  border-radius: 8px;
+  background: #12212b;
+}
+.cfd-display-settings > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 12px;
+  color: #c4dbe5;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cfd-display-settings:not([open]) > summary { margin-bottom: 0; }
+.cfd-display-settings > summary::after { content: "−"; margin-left: auto; }
+.cfd-display-settings:not([open]) > summary::after { content: "+"; }
+.gpu-diagnostics dd { min-width: 0; overflow-wrap: anywhere; }

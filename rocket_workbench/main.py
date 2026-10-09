@@ -157,7 +157,12 @@ def main(argv=None) -> int:
     parser.add_argument("--smoke-test", "--bundle-smoke-test", dest="smoke", action="store_true")
     parser.add_argument("--smoke-output", type=Path, help="Write the engineering smoke receipt to a JSON file")
     parser.add_argument("--desktop-smoke-test", action="store_true", help="Launch the actual desktop and verify its UI/WebGL, then exit")
+    parser.add_argument("--desktop-preferences-smoke-test", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--preferences-smoke-phase", type=int, choices=(1, 2), help=argparse.SUPPRESS)
+    parser.add_argument("--preferences-smoke-output", type=Path, help=argparse.SUPPRESS)
     options = parser.parse_args(argv)
+    if options.desktop_preferences_smoke_test and (not options.preferences_smoke_phase or not options.preferences_smoke_output):
+        parser.error("Desktop preferences smoke requires its phase and output path")
     if options.smoke_output and not options.smoke:
         parser.error("--smoke-output requires --smoke-test")
     if options.smoke:
@@ -187,7 +192,7 @@ def main(argv=None) -> int:
     resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     application.setWindowIcon(QIcon(str(resource_root / "assets" / "rocket-workbench.ico")))
     smoke_directory = None
-    if options.desktop_smoke_test and options.data_dir is None:
+    if (options.desktop_smoke_test or options.desktop_preferences_smoke_test) and options.data_dir is None:
         import tempfile
         smoke_directory = tempfile.TemporaryDirectory(prefix="rocket-desktop-smoke-")
     data_dir = options.data_dir or (Path(smoke_directory.name) if smoke_directory else Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "RocketWorkbench")
@@ -206,7 +211,7 @@ def main(argv=None) -> int:
         server, worker, listener, port = _start_local_service(create_app(token=token, data_dir=data_dir))
     except Exception:
         logging.getLogger(__name__).exception("Desktop startup failed")
-        if not options.desktop_smoke_test:
+        if not (options.desktop_smoke_test or options.desktop_preferences_smoke_test):
             QMessageBox.critical(None, "Rocket Workbench startup failed", f"The local application service could not start. Details: {log_path}")
         else:
             logging.getLogger(__name__).error("Desktop smoke: local service startup failed")
@@ -226,6 +231,8 @@ def main(argv=None) -> int:
     profile = QWebEngineProfile(application)
     view.setPage(QWebEnginePage(profile, view))
     _connect_external_links(view.page(), token)
+    from .desktop_preferences import install_desktop_preferences
+    desktop_preferences = install_desktop_preferences(window, view, data_dir, f"http://127.0.0.1:{port}")
     view.settings().setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
     view.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
     # Native save dialogs make browser downloads work in the embedded desktop.
@@ -243,6 +250,11 @@ def main(argv=None) -> int:
     view.setUrl(QUrl(f"http://127.0.0.1:{port}/?token={token}"))
     window.setCentralWidget(view)
     window.show()
+    preferences_smoke_finish = None
+    if options.desktop_preferences_smoke_test:
+        from .desktop_preferences_smoke import start_preferences_smoke
+        preferences_smoke_finish = start_preferences_smoke(application, window, view, data_dir,
+            options.preferences_smoke_phase, options.preferences_smoke_output, port)
     if options.desktop_smoke_test:
         smoke_done = False
         def check_ui():
@@ -288,7 +300,10 @@ def main(argv=None) -> int:
         QTimer.singleShot(30000, timed_out)
     try:
         exit_code = application.exec()
+        if preferences_smoke_finish:
+            exit_code = preferences_smoke_finish(exit_code)
     finally:
+        desktop_preferences.timer.stop()
         _stop_local_service(server, worker, listener)
         view.close()
         logging.getLogger().removeHandler(handler)

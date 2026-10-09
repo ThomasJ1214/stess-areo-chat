@@ -27,6 +27,25 @@ def run(arguments: list[str], *, cwd: Path = ROOT, env: dict | None = None,
     subprocess.run(arguments, cwd=cwd, env=env, check=True, timeout=timeout_seconds)
 
 
+def check_frozen_cuda_bundle(executable: Path, output: Path) -> None:
+    """Keep a windowed native import failure visible in unattended CI."""
+    output.unlink(missing_ok=True)
+    try:
+        run([str(executable), "--cuda-bundle-smoke-test", "--smoke-output", str(output)], timeout_seconds=180)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if output.is_file():
+            receipt = json.loads(output.read_text("utf8"))
+            message = str(receipt.get("error", "Bundled CUDA packaging check failed."))
+            if len(message) > 3500:
+                message = message[:1000] + "\n... beginning and final cause retained ...\n" + message[-2400:]
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::error title=Bundled CUDA import and compiler check::{escaped}", flush=True)
+            else:
+                print(message, file=sys.stderr, flush=True)
+        raise
+
+
 def file_record(path: Path, relative_path: str) -> dict:
     with path.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -143,6 +162,8 @@ def main() -> None:
          str(ROOT / "scripts" / "rocket-workbench.spec")], env=bundle_env)
     executable = ROOT / "dist" / "RocketWorkbench" / "RocketWorkbench.exe"
     run([str(executable), "--smoke-test", "--smoke-output", str(ROOT / "build" / "frozen-smoke.json")], timeout_seconds=360)
+    if not args.cpu_only:
+        check_frozen_cuda_bundle(executable, ROOT / "build" / "frozen-cuda-bundle-smoke.json")
     if args.skip_installer:
         print(f"Portable application directory: {executable.parent}")
         return

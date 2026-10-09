@@ -203,11 +203,11 @@ const cfdSteps: TutorialStep[] = [
   {
     title: "Inspect solved flow and pressure",
     instruction:
-      "Enable Flow and Pressure in the 3D controls. Read pressure drag and the conservation, wall-pressure, force, and moment residual histories. These overlays come from the numerical solution.",
+      "Enable Streamlines and Pressure in the 3D controls. In Flow display, adjust Streamline density and Streamline length, select solved-speed colors and toggle Direction tracers. Lines follow the actual velocity snapshot and stop at walls. Read pressure force and the conservation, wall-pressure, force, and moment residual histories.",
     check:
       "All convergence measures settle and the pressure/force values are finite. Review the result warnings, actual backend, and exterior-flow diagnostics.",
     workspace: "cfd",
-    note: "This experimental compressible Euler solver is inviscid. It excludes skin friction, boundary layers, and physical turbulence; a converged solution alone is not validated drag accuracy.",
+    note: "Direction tracers use visual timing on a frozen snapshot, not unsteady particle histories. This experimental Euler solver excludes skin friction, boundary layers and physical turbulence; smooth lines and numerical convergence do not validate drag accuracy.",
   },
   {
     title: "Test grid and domain sensitivity",

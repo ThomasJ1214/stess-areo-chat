@@ -1,0 +1,43 @@
+.cfd-field-status {
+  position: absolute;
+  z-index: 2;
+  top: 40px;
+  left: 16px;
+  max-width: min(340px, calc(100% - 78px));
+  display: grid;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid #49707766;
+  border-left: 3px solid #71bcb4;
+  border-radius: 6px;
+  color: #b9ceda;
+  background: #11212acb;
+  backdrop-filter: blur(5px);
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.cfd-field-status strong { font-weight: 650; color: #d7efec; }
+.cfd-field-status small { font-size: 9px; color: #a0b4c1; }
+.cfd-field-status.partial { border-left-color: #e2ac62; }
+.cfd-field-status.partial strong { color: #f1c98f; }
+.cfd-speed-legend {
+  position: absolute;
+  right: 16px;
+  bottom: 36px;
+  width: min(170px, calc(100% - 200px));
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: #11212ace;
+  color: #c0d4df;
+  font-size: 10px;
+  pointer-events: none;
+}
+.cfd-speed-legend > div {
+  margin: 5px 0 4px;
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #344df1, #35ddd8, #dce631, #ed3939);
+}
+.cfd-speed-legend small { display: block; font-size: 9px; white-space: nowrap; }
+.cfd-speed-legend small span { float: right; }

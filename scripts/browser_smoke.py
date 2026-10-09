@@ -494,6 +494,50 @@ def main():
             page.get_by_role("button", name="Follow", exact=True).click()
             expect(viewport).to_have_attribute("data-camera-mode", "follow")
             expect(viewport).to_have_attribute("data-auto-follow", "true")
+            camera_mesh = context.request.get(base + "/api/mesh").json()
+            camera_vertices = [vertex for part in camera_mesh["components"] for vertex in part["vertices"]]
+            rocket_size = max(max(v[axis] for v in camera_vertices) - min(v[axis] for v in camera_vertices) for axis in range(3))
+            camera_distance_limit = max(rocket_size, flight["inputs"]["conditions"]["rail_length"], 1) * 30
+            camera_receipts = []
+
+            def seek_camera(time_s):
+                selected_time = timeline.evaluate("(el, time) => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,String(time));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return Number(el.value);}", time_s)
+                target_row = min(flight["trajectory"], key=lambda sample: abs(sample["time"] - selected_time))
+                page.wait_for_function("time => Math.abs(Number(document.querySelector('.viewport').dataset.cameraSampleTime) - time) < 1e-6", arg=target_row["time"], timeout=3000)
+
+            def camera_snapshot():
+                return viewport.evaluate("el => ({time: Number(el.dataset.cameraSampleTime), position: el.dataset.cameraPosition.split(',').map(Number), ndc: el.dataset.cameraRocketNdc.split(',').map(Number), distance: Number(el.dataset.cameraDistance), automatic: el.dataset.autoFollow === 'true'})")
+
+            def expect_follow_framing():
+                page.wait_for_function("limit => {const d=document.querySelector('.viewport').dataset; const p=(d.cameraRocketNdc || '').split(',').map(Number);return d.autoFollow === 'true' && p.length === 3 && p.every(Number.isFinite) && Math.abs(p[0]) < 0.85 && Math.abs(p[1]) < 0.85 && p[2] > -1 && p[2] < 1 && Number(d.cameraDistance) > 0 && Number(d.cameraDistance) < limit;}", arg=camera_distance_limit, timeout=4000)
+                snapshot = camera_snapshot()
+                assert snapshot["automatic"]
+                camera_receipts.append(snapshot)
+
+            # An abrupt timeline seek must frame the selected solved moment,
+            # rather than slowly fly through the earlier path or lose the rocket.
+            seek_camera(0)
+            expect_follow_framing()
+            seek_camera(apogee["time"])
+            expect_follow_framing()
+            seek_camera(0)
+            page.get_by_label("Playback speed", exact=True).select_option("10")
+            page.get_by_role("button", name="Play flight playback", exact=True).click()
+            previous_camera_time = 0.0
+            for _ in range(8):
+                page.wait_for_function("time => Number(document.querySelector('.viewport').dataset.cameraSampleTime) > time + 0.15", arg=previous_camera_time, timeout=3000)
+                snapshot = camera_snapshot()
+                assert snapshot["automatic"] and abs(snapshot["ndc"][0]) < 0.85 and abs(snapshot["ndc"][1]) < 0.85, "Actual rocket projection must remain visible during accelerated flight playback"
+                assert -1 < snapshot["ndc"][2] < 1
+                assert 0 < snapshot["distance"] < camera_distance_limit, "Follow view must retain a usable local rocket scale"
+                camera_receipts.append(snapshot)
+                previous_camera_time = snapshot["time"]
+            assert previous_camera_time > 1
+            page.get_by_role("button", name="Pause flight playback", exact=True).click()
+            page.get_by_label("Playback speed", exact=True).select_option("1")
+            seek_camera(apogee["time"])
+            expect_follow_framing()
+            receipt.append("Actual camera projection keeps the solved rocket in frame after discontinuous scrubbing and throughout 10× playback with bounded local framing")
             canvas = page.locator("canvas")
             canvas.scroll_into_view_if_needed()
             camera_before = viewport.get_attribute("data-camera-position")
@@ -507,7 +551,19 @@ def main():
             assert float(viewport.get_attribute("data-manual-until")) > page.evaluate("performance.now()")
             page.wait_for_function("before => document.querySelector('.viewport').dataset.cameraPosition !== before", arg=camera_before, timeout=3000)
             expect(page.get_by_role("button", name="Resume follow", exact=True)).to_be_visible()
+            # A paused timeline seek must preserve a user's manual camera during
+            # the grace period, even though the displayed rocket moves far away.
+            page.wait_for_timeout(350)
+            manual_camera = camera_snapshot()
+            manual_until = viewport.get_attribute("data-manual-until")
+            seek_camera(0)
+            expect(viewport).to_have_attribute("data-auto-follow", "false")
+            assert viewport.get_attribute("data-manual-until") == manual_until
+            after_manual_seek = camera_snapshot()
+            camera_shift = sum((a - b) ** 2 for a, b in zip(manual_camera["position"], after_manual_seek["position"])) ** 0.5
+            assert camera_shift < max(0.5, manual_camera["distance"] * 0.15), "Timeline scrubbing must not snap an active manual camera to the rocket"
             expect(viewport).to_have_attribute("data-auto-follow", "true", timeout=8000)
+            expect_follow_framing()
             page.mouse.move(*drag_start)
             page.mouse.wheel(0, 90)
             expect(viewport).to_have_attribute("data-auto-follow", "false")
@@ -516,6 +572,8 @@ def main():
             page.get_by_role("button", name="Overview", exact=True).click()
             expect(viewport).to_have_attribute("data-camera-mode", "overview")
             page.get_by_role("button", name="Follow", exact=True).click()
+            expect_follow_framing()
+            (args.artifacts / "launch-camera.json").write_text(json.dumps({"actual_rendered_camera": True, "playback_speed_tested": 10, "distance_limit_m": camera_distance_limit, "samples": camera_receipts, "manual_seek_camera_shift_m": camera_shift}, indent=2, allow_nan=False), "utf8")
             receipt.append("Actual camera responds to manual orbit/zoom, pauses follow for a grace period, resumes automatically and supports explicit resume/overview")
             with page.expect_download() as exported:
                 page.get_by_role("button", name="Flight data CSV", exact=True).click()
@@ -730,11 +788,71 @@ def main():
             expect(page.get_by_label("Lengthwise grid cells", exact=True)).to_have_value("12")
             expect(page.get_by_label("Maximum steps", exact=True)).to_have_value("1500")
             expect(page.get_by_label("Convergence tolerance", exact=True)).to_have_value("0.001")
-            flow = job("Solve flow field", timeout=240)
+            with page.expect_response(lambda r: r.url.endswith("/api/jobs") and r.request.method == "POST") as flow_started:
+                flow = job("Solve flow field", timeout=240)
             assert flow["summary"]["converged"] and flow["samples"] and flow["summary"]["min_pressure_pa"] > 0
             (args.artifacts / "cfd-result.json").write_text(json.dumps(flow, indent=2, allow_nan=False), "utf8")
+            # Actual structured velocities drive the continuous renderer. Display
+            # controls change integrated line geometry, never the solver output.
+            assert flow["flow_grid"]["node_count"] > 0
+            assert flow["flow_grid"]["visualization_only"] is True
+            field_status = page.locator(".cfd-field-status")
+            expect(field_status).to_have_attribute("data-flow-renderer", "structured-streamlines")
+            expect(field_status).to_have_attribute("data-flow-grid-nodes", str(flow["flow_grid"]["node_count"]))
+            expect(field_status).to_contain_text("Numerically converged snapshot")
+            expect(field_status).to_contain_text(flow["backend"])
+            expect(field_status).to_contain_text("unvalidated")
+            initial_paths = int(field_status.get_attribute("data-flow-paths"))
+            initial_segments = int(field_status.get_attribute("data-flow-segments"))
+            assert initial_paths > 0 and initial_segments > initial_paths * 2
+            display_changed_at = time.monotonic()
+            page.get_by_label("Streamline density", exact=True).fill("64")
+            expect(field_status).to_have_attribute("data-flow-paths", "64")
+            assert int(field_status.get_attribute("data-flow-segments")) < initial_segments
+            full_length_segments = int(field_status.get_attribute("data-flow-segments"))
+            page.get_by_label("Streamline length", exact=True).fill("0.25")
+            page.wait_for_function("previous => Number(document.querySelector('.cfd-field-status').dataset.flowSegments) < previous", arg=full_length_segments)
+            short_segments = int(field_status.get_attribute("data-flow-segments"))
+            display_change_seconds = time.monotonic() - display_changed_at
+            page.get_by_label("Streamline color", exact=True).select_option("uniform")
+            expect(field_status).to_have_attribute("data-flow-color", "uniform")
+            expect(page.get_by_label("CFD velocity magnitude legend", exact=True)).to_have_count(0)
+            page.get_by_role("button", name="Direction tracers", exact=True).click()
+            expect(field_status).to_have_attribute("data-flow-tracers", "false")
+            expect(field_status).to_contain_text("Frozen field")
+            page.get_by_label("Streamline density", exact=True).fill("160")
+            page.get_by_label("Streamline length", exact=True).fill("1.3")
+            page.get_by_label("Streamline color", exact=True).select_option("speed")
+            page.get_by_role("button", name="Direction tracers", exact=True).click()
+            expect(field_status).to_have_attribute("data-flow-paths", "160")
+            expect(field_status).to_have_attribute("data-flow-tracers", "true")
+            expect(page.get_by_label("CFD velocity magnitude legend", exact=True)).to_be_visible()
+            expect(field_status).to_contain_text("Direction tracers · visual timing")
+            frame_intervals = page.evaluate("""async () => {
+                const intervals = []; let previous;
+                await new Promise(resolve => { const frame = timestamp => {
+                    if (previous !== undefined) intervals.push(timestamp - previous);
+                    previous = timestamp;
+                    if (intervals.length >= 30) resolve(); else requestAnimationFrame(frame);
+                }; requestAnimationFrame(frame); });
+                return intervals;
+            }""")
+            (args.artifacts / "cfd-display-receipt.json").write_text(json.dumps({
+                "grid_nodes": flow["flow_grid"]["node_count"],
+                "source_backend": flow["backend"], "converged": flow["summary"]["converged"],
+                "initial_paths": initial_paths, "initial_segments": initial_segments,
+                "density_64_segments": full_length_segments, "short_length_segments": short_segments,
+                "display_change_seconds": display_change_seconds,
+                "frame_intervals_ms": frame_intervals,
+                "mean_frame_interval_ms": sum(frame_intervals) / len(frame_intervals),
+                "graphics": "Chromium software WebGL; not a physical GPU benchmark",
+                "solver_result_modified_by_display": False,
+            }, indent=2), encoding="utf8")
+            assert context.request.get(base + "/api/jobs/" + flow_started.value.json()["id"]).json()["result"]["summary"] == flow["summary"]
+            no_errors()
             page.screenshot(path=str(args.artifacts / "cfd.png"), full_page=True)
             receipt.append("Standalone STL geometry, portable solver settings and genuinely converged nonzero CFD")
+            receipt.append("Continuous actual-field CFD streamlines honor the structured grid, density/extent/color/tracer controls change the display and preserve the solved result; render timing recorded")
 
             navigate("Structures")
             cube_check = context.request.post(base + "/api/fea/preflight", data={"component_id": standalone["components"][0]["id"], "options": {"mesh_size": 0.035, "max_elements": 30000}}).json()
@@ -771,13 +889,79 @@ def main():
             expect(diagnostics_dialog).to_be_visible()
             gpu = health["capabilities"]["gpu_diagnostics"]
             expect(diagnostics_dialog).to_contain_text(gpu["reason"])
-            expect(diagnostics_dialog).to_contain_text("compiled float64 reduction")
+            expect(diagnostics_dialog).to_contain_text("small allocation and a compiled numerical calculation")
             expect(diagnostics_dialog).to_contain_text("CUDA calculation available" if gpu["available"] else "CUDA calculation unavailable")
+            expect(diagnostics_dialog.get_by_text("Numerical check" if gpu["available"] else "Failed check", exact=True)).to_be_visible()
+            if gpu.get("root_cause"):
+                expect(diagnostics_dialog.locator("dd code")).to_have_text(gpu["root_cause"])
+            # Dependency banners and installation paths remain available, but
+            # do not fill the dialog before the user opens technical details.
+            technical = diagnostics_dialog.locator("details").filter(has=page.locator("summary", has_text=re.compile(r"^Technical error details$")))
+            if gpu.get("error_details"):
+                assert technical.evaluate("element => element.open") is False
+                expect(technical.locator("pre")).to_be_hidden()
+                technical.locator("summary").click()
+                expect(technical.locator("pre")).to_be_visible()
+                assert technical.locator("pre").text_content() == gpu["error_details"]
+                technical.locator("summary").click()
+                expect(technical.locator("pre")).to_be_hidden()
+            else:
+                expect(technical).to_have_count(0)
+            runtime_details = diagnostics_dialog.locator("details").filter(has=page.locator("summary", has_text=re.compile(r"^Bundled CUDA runtime$")))
+            assert runtime_details.evaluate("element => element.open") is False
+            expect(runtime_details.locator("pre")).to_be_hidden()
+            runtime_details.locator("summary").click()
+            assert json.loads(runtime_details.locator("pre").text_content()) == gpu["bundled_runtime"]
+            runtime_details.locator("summary").click()
+            expect(diagnostics_dialog).to_contain_text("local installation paths; review them before sharing")
+            context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+            page.wait_for_load_state("networkidle")
+            copy_requests = []
+            def capture_copy_request(request):
+                if not request.url.startswith("blob:" + base + "/"):
+                    copy_requests.append({"method": request.method, "url": request.url})
+            page.on("request", capture_copy_request)
+            try:
+                diagnostics_dialog.get_by_role("button", name="Copy diagnostics", exact=True).click()
+                expect(diagnostics_dialog.get_by_role("status")).to_have_text("Diagnostics copied. Nothing was sent online.")
+                clipboard_report = json.loads(page.evaluate("() => navigator.clipboard.readText()"))
+                assert clipboard_report == gpu, "Copy must preserve the complete actual CUDA report"
+                (args.artifacts / "gpu-diagnostics-clipboard.json").write_text(json.dumps(clipboard_report, indent=2), encoding="utf8")
+                # Exercise the real clipboard-unavailable branch without changing
+                # the report or replacing the application's copy/download code.
+                page.evaluate("""() => {
+                    window.__rocketQAClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+                    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+                }""")
+                try:
+                    with page.expect_download() as diagnostic_download:
+                        diagnostics_dialog.get_by_role("button", name="Copy diagnostics", exact=True).click()
+                    assert diagnostic_download.value.suggested_filename == "RocketWorkbench-GPU-diagnostics.json"
+                    diagnostic_download.value.save_as(args.artifacts / "gpu-diagnostics-download.json")
+                    downloaded_report = json.loads((args.artifacts / "gpu-diagnostics-download.json").read_text("utf8"))
+                    assert downloaded_report == gpu, "Clipboard fallback must save the complete actual report locally"
+                    expect(diagnostics_dialog.get_by_role("status")).to_have_text("Clipboard unavailable. A local diagnostic JSON download was requested.")
+                finally:
+                    page.evaluate("""() => {
+                        const descriptor = window.__rocketQAClipboardDescriptor;
+                        if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+                        else delete navigator.clipboard;
+                        delete window.__rocketQAClipboardDescriptor;
+                    }""")
+                assert not copy_requests, f"Copying local diagnostics unexpectedly made network requests: {copy_requests}"
+                (args.artifacts / "gpu-diagnostics-copy-receipt.json").write_text(json.dumps({
+                    "probe_stage": gpu["probe_stage"], "available": gpu["available"],
+                    "clipboard_matches_actual_report": True, "local_download_matches_actual_report": True,
+                    "network_requests_during_copy": copy_requests, "technical_details_collapsed_by_default": True,
+                    "graphics": "Chromium software WebGL; physical CUDA execution is not established",
+                }, indent=2), encoding="utf8")
+            finally:
+                page.remove_listener("request", capture_copy_request)
             page.screenshot(path=str(args.artifacts / "gpu-diagnostics.png"), full_page=True)
             page.keyboard.press("Escape")
             expect(diagnostics_dialog).to_have_count(0)
             expect(diagnostics_button).to_be_focused()
-            receipt.append("GPU diagnostics displays the actual device/kernel probe and CPU fallback reason without claiming hardware acceleration")
+            receipt.append("GPU diagnostics preserves the actual probe/root cause, keeps technical details collapsed and copies the exact report to local clipboard or JSON fallback without network requests")
 
             page.get_by_label("Maximum steps", exact=True).fill("1")
             page.get_by_label("Flow-through times", exact=True).fill("0.1")

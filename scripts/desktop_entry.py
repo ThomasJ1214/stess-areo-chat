@@ -1,9 +1,14 @@
 """Minimal PyInstaller entry point; the normal CLI owns startup and smoke checks."""
+import sys
+
+if "--cuda-bundle-smoke-test" in sys.argv:
+    from rocket_workbench.cuda_bundle_smoke import main as cuda_bundle_main
+    raise SystemExit(cuda_bundle_main())
+
 from rocket_workbench.main import main
 
 if __name__ == "__main__":
-    import sys
-    if any(flag in sys.argv for flag in ("--smoke-test", "--bundle-smoke-test", "--desktop-smoke-test")):
+    if any(flag in sys.argv for flag in ("--smoke-test", "--bundle-smoke-test", "--desktop-smoke-test", "--desktop-preferences-smoke-test")):
         # A windowed PyInstaller exception dialog can stall unattended builds.
         # Keep a diagnostic and fail with an exit code instead for this mode.
         try:

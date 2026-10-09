@@ -10,6 +10,15 @@ export interface GlossaryEntry {
 
 export const engineeringGlossary: GlossaryEntry[] = [
   {
+    term: "Streamlines",
+    aliases: ["Streamline density", "Streamline length", "Streamline color"],
+    definition: "Continuous lines tangent to the computed velocity in a CFD snapshot. They use the actual exported field and stop at walls or its boundary. Density, length and color change only the display. They are not unsteady particle trajectories, and smoother lines do not improve the solver's accuracy.",
+  },
+  {
+    term: "Direction tracers",
+    definition: "Moving markers showing direction along the computed snapshot streamlines. Their timing is slowed for viewing. They are not time-accurate CFD particles or a reconstruction of unsteady flow.",
+  },
+  {
     term: "Automatic alignment",
     aliases: ["Source axis", "Placement anchor", "Reverse direction"],
     definition:

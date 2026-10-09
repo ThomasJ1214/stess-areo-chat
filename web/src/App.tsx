@@ -45,6 +45,8 @@ import {
 } from "lucide-react";
 
 import Viewport from "./Viewport";
+import { defaultCfdFlowSettings } from "./flowFieldMath";
+import type { CfdFlowSettings } from "./flowFieldMath";
 import FlightCharts from "./FlightCharts";
 import UserGuide from "./UserGuide";
 import Tutorials from "./Tutorial";
@@ -52,6 +54,7 @@ import HelpTip from "./HelpTip";
 import MotorSearch from "./MotorSearch";
 import FlightMap from "./FlightMap";
 import WindowDialog from "./WindowDialog";
+import GpuDiagnostics from "./GpuDiagnostics";
 import { PanelDivider, useWorkspaceLayout } from "./WorkspaceLayout";
 import {
   NumberField,
@@ -141,6 +144,7 @@ export default function App() {
   );
   const [mapVisible, setMapVisible] = useState(true);
   const [mapExpanded, setMapExpanded] = useState(false);
+  const [flowSettings, setFlowSettings] = useState<CfdFlowSettings>(defaultCfdFlowSettings);
   const [gpuDiagnosticsOpen, setGpuDiagnosticsOpen] = useState(false);
   const [automaticAlignment, setAutomaticAlignment] = useState(true);
   const [alignmentOptions, setAlignmentOptions] = useState({
@@ -898,7 +902,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.2.0</span>
+          <span className="version">0.3.0</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -1378,6 +1382,7 @@ export default function App() {
               flightRow={workspace === "flight" ? row : null}
               fea={workspace === "structure" ? fea : null}
               cfd={workspace === "cfd" ? cfd : null}
+              flowSettings={flowSettings}
               deformationScale={deformationScale}
               workspace={workspace}
               trajectory={flight?.trajectory || []}
@@ -1480,7 +1485,7 @@ export default function App() {
                     disabled={!cfd}
                   />
                   <Toggle
-                    label="Velocity"
+                    label="Streamlines"
                     value={overlays.flow}
                     onChange={() => toggleOverlay("flow")}
                     disabled={!cfd}
@@ -2300,8 +2305,9 @@ export default function App() {
                     title="Explore flow around actual geometry."
                   >
                     The Cartesian Euler solver computes inviscid compressible
-                    flow on a voxel grid. Display arrows and pressure samples
-                    from computed fields. This solver does not predict skin
+                    flow on a voxel grid. Inspect continuous streamlines,
+                    solved speed colors and pressure samples from computed fields.
+                    This solver does not predict skin
                     friction, turbulence, or validated transonic drag.
                   </Empty>
                 )}
@@ -4218,6 +4224,42 @@ export default function App() {
                       >
                         <Gauge size={14} /> GPU diagnostics
                       </button>
+                      <details className="cfd-display-settings" open>
+                        <summary><SlidersHorizontal size={14} /> Flow display</summary>
+                        <NumberField
+                          label="Streamline density"
+                          value={flowSettings.density}
+                          min={16}
+                          max={512}
+                          step={16}
+                          hint="Number of lines seeded through the solved velocity field. This changes the display only."
+                          onChange={(n) => n !== null && setFlowSettings((s) => ({ ...s, density: Math.round(Math.max(16, Math.min(512, n))) }))}
+                        />
+                        <NumberField
+                          label="Streamline length"
+                          value={flowSettings.length}
+                          min={0.1}
+                          max={3}
+                          step={0.1}
+                          unit="× domain"
+                          hint="Maximum integration length within the actual exported flow domain. Lines stop at walls or the domain boundary."
+                          onChange={(n) => n !== null && setFlowSettings((s) => ({ ...s, length: Math.max(0.1, Math.min(3, n)) }))}
+                        />
+                        <FieldSelect
+                          label="Streamline color"
+                          value={flowSettings.colorBy}
+                          onChange={(v) => setFlowSettings((s) => ({ ...s, colorBy: v === "speed" ? "speed" : "uniform" }))}
+                        >
+                          <option value="speed">Solved velocity magnitude</option>
+                          <option value="uniform">Uniform teal</option>
+                        </FieldSelect>
+                        <Toggle
+                          label="Direction tracers"
+                          value={flowSettings.animate}
+                          onChange={() => setFlowSettings((s) => ({ ...s, animate: !s.animate }))}
+                        />
+                        <p className="microcopy">Tracers show flow direction on a frozen snapshot at a visual speed. They are not time-accurate unsteady flow playback. Display controls do not change the solution.</p>
+                      </details>
                       <div className="engineering-note">
                         <AlertTriangle size={15} />
                         <p>
@@ -4639,49 +4681,7 @@ export default function App() {
           title="GPU diagnostics"
           onClose={() => setGpuDiagnosticsOpen(false)}
         >
-          <div className="gpu-diagnostics">
-            <p>
-              Numerical CUDA acceleration requires an NVIDIA GPU. This checks
-              allocation and a real compiled calculation; 3D rendering uses a
-              separate graphics path.
-            </p>
-            <h3>
-              {health?.capabilities?.gpu_compute
-                ? "CUDA calculation available"
-                : "CUDA calculation unavailable"}
-            </h3>
-            {health?.capabilities?.gpu_diagnostics?.devices?.map(
-              (device: any) => (
-                <p key={device.index}>
-                  <strong>{device.name}</strong> ·{" "}
-                  {fmt(device.memory_total_bytes / 1024 ** 3, 1)} GiB · compute
-                  capability {device.compute_capability}
-                </p>
-              ),
-            )}
-            {health?.capabilities?.gpu_diagnostics && (
-              <dl>
-                {Object.entries(health.capabilities.gpu_diagnostics)
-                  .filter(([key]) => !["available", "devices"].includes(key))
-                  .map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{key.replaceAll("_", " ")}</dt>
-                      <dd>
-                        {typeof value === "object"
-                          ? JSON.stringify(value)
-                          : String(value ?? "Unknown")}
-                      </dd>
-                    </div>
-                  ))}
-              </dl>
-            )}
-            <p>
-              Automatic backend falls back to CPU and records the reason.
-              Explicit GPU selection reports a failure instead. Restart the
-              application after changing a driver so diagnostics are checked
-              again.
-            </p>
-          </div>
+          <GpuDiagnostics diagnostics={health?.capabilities?.gpu_diagnostics} />
         </WindowDialog>
       )}
     </div>

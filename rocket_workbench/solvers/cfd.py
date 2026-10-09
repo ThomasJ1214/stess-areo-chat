@@ -372,6 +372,50 @@ def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_i
     return rows, total_force, total_moment, count, int(np.sum(pressures <= 0))
 
 
+def _flow_grid(velocity, solid, spacing, origin, max_nodes=100_000):
+    """Bounded, regular samples of actual solved velocity for streamlines.
+
+    Values lie on solver cell centers, not cell faces. Every source nonflow cell
+    blocks all corners of the output interpolation cube containing it. Therefore
+    a trilinear renderer accepting only all-fluid support cannot reconstruct a
+    fictitious passage through a thin wall or an enclosed cavity after striding.
+    This conservative display mask never changes the solver or source geometry.
+    """
+    solver_shape = np.asarray(solid.shape, dtype=int)
+    stride = max(1, math.ceil((int(solid.size) / max_nodes) ** (1 / 3)))
+    while math.prod(((solver_shape - 1) // stride + 1).tolist()) > max_nodes:
+        stride += 1
+    sampled = np.array(velocity[::stride, ::stride, ::stride], copy=True, order="C")
+    shape = np.asarray(sampled.shape[:-1], dtype=int)
+    fluid = np.ones(tuple(shape), dtype=bool)
+    if stride == 1:
+        fluid[:] = ~solid
+    else:
+        # A solid may fall between sampled nodes. Mark both bounding nodes in
+        # each direction, including original occupied nodes themselves. Clipping
+        # only affects the unsampled remainder beyond the final output node.
+        blocked = np.argwhere(solid) // stride
+        for i in (0, 1):
+            for j in (0, 1):
+                for k in (0, 1):
+                    corners = np.minimum(blocked + [i, j, k], shape - 1)
+                    fluid[tuple(corners.T)] = False
+    sampled[~fluid] = 0.0
+    return dict(
+        shape=shape.tolist(), origin_m=np.asarray(origin).tolist(),
+        spacing_m=(np.asarray(spacing) * stride).tolist(),
+        velocity_m_s=sampled.reshape(-1).tolist(),
+        fluid_mask=fluid.reshape(-1).astype(np.uint8).tolist(),
+        layout="C order: node=(i*ny+j)*nz+k; velocity[node*3+axis]",
+        solver_shape=solver_shape.tolist(),
+        solver_origin_m=np.asarray(origin).tolist(),
+        solver_spacing_m=np.asarray(spacing).tolist(),
+        stride=stride, node_count=int(fluid.size), visualization_only=True,
+        interpolation="Trilinear only where every nonzero-weight support node is fluid; terminate at nonflow or the exported center bounds",
+        sampling_policy="Actual solver cell-center velocities at a regular integer stride; every nonflow source cell blocks its enclosing output interpolation cube. Unsampled domain-edge remainder is omitted. No reconstructed boundary layer or turbulence.",
+    )
+
+
 def solve(project, conditions, configuration_id: str | None = None,
           options: dict | None = None, progress=None, cancelled=None) -> dict[str, Any]:
     """Run real Euler flow on current/original combined project geometry.
@@ -569,6 +613,9 @@ def solve(project, conditions, configuration_id: str | None = None,
         samples.append(dict(position=position.tolist(), pressure_pa=float(pressure[index]),
                             velocity=vel[index].tolist(), density_kg_m3=float(rho[index]),
                             mach=float(np.linalg.norm(vel[index]) / sound[index])))
+    flow_grid = _flow_grid(vel, solid_cpu, spacing, origin)
+    if flow_grid["stride"] > 1:
+        warnings.append(f"Streamline visualization samples the solved velocity at stride {flow_grid['stride']}, capped at 100,000 display nodes. A conservative display mask stops lines near unresolved thin walls; it changes neither the solved field nor integrated pressure loads. Inspect solver-grid refinement separately.")
     surface, force, moment, face_count, negative_wall_faces = _surface(
         state_cpu, solid_cpu, spacing, origin, farfield_cpu, pressure_inf,
         speed, rho_inf, surface_limit)
@@ -620,6 +667,8 @@ def solve(project, conditions, configuration_id: str | None = None,
                    cp_fit_moment_residual_nm=cp_fit_residual,
                    cell_count=int(solid_cpu.size), solid_cells=int(solid_cpu.sum()),
                    fluid_cells=fluid_count, grid_shape=list(solid_cpu.shape), spacing_m=float(spacing[0]),
+                   flow_visualization_nodes=flow_grid["node_count"],
+                   flow_visualization_stride=flow_grid["stride"],
                    cell_spacing_m=spacing.tolist(),
                    grid_origin_m=origin.tolist(), freestream_velocity_m_s=velocity.tolist(),
                    freestream_mach=actual_mach, freestream_pressure_pa=pressure_inf,
@@ -638,5 +687,5 @@ def solve(project, conditions, configuration_id: str | None = None,
     summary.update(geometry_diagnostics)
     if progress:
         progress(1.0, f"Euler solve finished: {status}; {steps} conservative steps")
-    return dict(samples=samples, surface=surface, history=history, summary=summary,
+    return dict(samples=samples, flow_grid=flow_grid, surface=surface, history=history, summary=summary,
                 fidelity=FIDELITY, warnings=warnings, backend=backend)

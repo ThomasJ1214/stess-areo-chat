@@ -86,6 +86,14 @@ startup check. The hosted Windows VM uses software WebGL for that check and
 normally has no NVIDIA GPU. It does not validate workstation graphics/CUDA
 performance or every interaction.
 
+CUDA-enabled packages must additionally pass `--cuda-bundle-smoke-test
+--smoke-output build/cuda-bundle-smoke.json` inside both the frozen and installed
+Windows executable. It imports native CuPy, loads the shipped CUDA libraries,
+discovers headers and compiles an offline PTX kernel without requesting a GPU.
+Missing imports, DLLs or headers are build failures, never successful CPU fallback.
+Physical GPU allocation, numerical agreement and performance still need a real
+supported NVIDIA device.
+
 See [VALIDATION.md](VALIDATION.md) for the recorded checks and remaining Windows,
 hardware and physical-model validation gaps.
 
@@ -103,6 +111,13 @@ HTTPS, local and rejected source links, checks the actual new-window signal, and
 confirms the application page stays open. The final system-browser call is
 intercepted; no browser launches or external network requests occur. This is
 separate from the desktop startup/WebGL check.
+
+`uv run --no-sync python scripts/desktop_preferences_smoke.py --output
+build/native-preferences-smoke.json` starts two fresh desktop sessions on different
+loopback ports. It verifies panel layout, tutorial progress and a named map point,
+including the last change before close. Add `--executable
+"C:\\path\\to\\RocketWorkbench.exe"` to test an installed Windows build. These UI
+preferences are separate from engineering projects and session credentials.
 
 The desktop keeps its loopback listener bound while the API starts, so launching
 two application instances cannot select the same released port. Startup logs

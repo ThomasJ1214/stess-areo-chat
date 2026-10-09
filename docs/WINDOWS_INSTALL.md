@@ -18,7 +18,7 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-Choose a successful **0.2.0** run from the
+Choose a successful **0.3.0** run from the
 [Windows installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml).
 The approximately 1.5 GB package includes guided tutorials, a resizable workspace,
 live motor search, launch playback, a local flight map, CAD automatic placement,
@@ -37,9 +37,9 @@ checks; require a successful run before using its installer.
    includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
    **User guide**, **Getting started**, and per-page **Tutorial** buttons.
 5. Optionally check the installer in PowerShell with
-   `Get-FileHash .\RocketWorkbench-0.2.0-windows-x64-setup.exe -Algorithm SHA256`
+   `Get-FileHash .\RocketWorkbench-0.3.0-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
-6. Double-click `RocketWorkbench-0.2.0-windows-x64-setup.exe`. Select a user-local
+6. Double-click `RocketWorkbench-0.3.0-windows-x64-setup.exe`. Select a user-local
    install location and optionally enable the desktop shortcut. No administrator
    privileges are required for the default location.
 7. Open **Rocket Workbench** from Start or the desktop shortcut.
@@ -155,13 +155,20 @@ restart; the app opens its demonstration project. Reload your saved project
 through the interface. Uninstalling leaves this session directory and separately
 saved projects available.
 
-**CUDA unavailable.** Update the manufacturer's compatible NVIDIA driver and
-restart Windows. The app displays the execution backend. GPU memory, compatibility
-and library initialization can prevent CUDA use even if Windows recognizes the
-GPU; choose CPU or automatic mode to continue. Bundled CUDA cannot replace a driver.
-Open **GPU diagnostics** for the failing check and driver/runtime/device details
-when available. A working 3D viewport does not establish numerical CUDA support.
-The capability probe is cached; restart the app after changing a driver.
+**CUDA unavailable.** Open **GPU diagnostics** first. It identifies the failing
+check, original error, bundled-library paths, and driver/device details when
+available. If the failure is importing CuPy or loading a bundled DLL, reinstall
+the latest application build; installing a separate CUDA Toolkit is not required.
+An unset `CUDA_PATH` is expected for the bundled split CUDA wheels and does not
+prove that the runtime is missing.
+
+If the diagnostic identifies an NVIDIA driver problem, install the manufacturer's
+compatible NVIDIA driver and restart Windows. If no supported NVIDIA device is
+present, use CPU or automatic mode. If allocation fails because VRAM is full,
+close other GPU workloads or use a smaller grid. Automatic mode records its CPU
+fallback; explicit GPU mode reports the failure. A working 3D viewport does not
+establish numerical CUDA support. The capability probe is cached; restart the app
+after changing the driver or application installation.
 
 **CFD stopped at “wall clock budget.”** This is an elapsed-computation limit,
 not a converged solution. Returned pressure/forces remain partial. Inspect actual

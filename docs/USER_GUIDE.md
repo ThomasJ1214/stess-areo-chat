@@ -239,7 +239,14 @@ not transient FEA or a resolved parachute-opening load.
 5. Click **Solve flow field**. Pressure/velocity fields are actual numerical
    outputs. Check stopping reason, convergence history, wall/force convergence,
    grid spacing and geometry/flow diagnostics before using loads.
-6. Refine the grid and increase **Farfield padding**, then compare loads. Padding
+6. Enable **Streamlines** and **Pressure** in the 3D overlays. In **Flow display**,
+   adjust **Streamline density**, **Streamline length** and **Streamline color**.
+   The speed legend comes from the solved field. **Direction tracers** use visual
+   timing on the frozen field, not unsteady particle histories. Lines stop at the
+   exported domain and conservative wall mask; they do not enter sealed cavities.
+   Older saved results show sparse solved vectors until rerun. Display settings
+   do not change forces, geometry or the solution.
+7. Refine the grid and increase **Farfield padding**, then compare loads. Padding
    is a fraction of each geometry extent; it is not a distance in metres. A numerically
    steady answer alone does not establish resolution independence or physical
    accuracy. Export the full **Flow solution JSON** to preserve fields.

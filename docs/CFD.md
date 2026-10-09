@@ -10,8 +10,10 @@ This capability supports studying how a detailed CAD replacement changes the
 discretized external flow, including pressure waves and shock formation up to an
 actual incoming Mach number of 2. It does **not** predict viscous drag, boundary
 layers, transition, turbulent fluctuations, viscous separation, heating, or
-wall shear. Airflow arrows show the local solved velocity. There is no fabricated
-streamline/turbulence animation. Euler pressure is not a structural stress field.
+wall shear. Airflow arrows and continuous streamlines use the local solved
+velocity. Streamlines trace the stored instantaneous numerical field; they are
+not particle trajectories or a turbulence model. Euler pressure is not a
+structural stress field.
 
 ## Equations and discretization
 
@@ -205,6 +207,38 @@ the free stream, moment about project coordinate origin, resource usage and
 the stopping reason. Surface force signs use pressure acting inward onto the
 solid; skin-friction force is absent. JSON exports include fidelity and warnings.
 
+### Structured velocity field for visualization
+
+`flow_grid` contains a bounded, regular sampling of the actual final numerical
+velocity state, including a partial state when a run stops before convergence.
+It supplements the existing scattered `samples`; it does not change force
+integration or numerical discretization. Its fields are:
+
+| Field | Meaning |
+| --- | --- |
+| `shape` | Exported node counts `[nx, ny, nz]` |
+| `origin_m` | Physical position of the first exported **cell center**, in body axes |
+| `spacing_m` | Three spacings between exported centers, in metres |
+| `velocity_m_s` | Flat numeric array: node `(i*ny+j)*nz+k`, velocity component `node*3+axis` |
+| `fluid_mask` | Flat C-order array with 1 for permitted flow support and 0 for blocked display support |
+| `solver_shape`, `solver_origin_m`, `solver_spacing_m` | Original numerical-grid resolution and coordinates |
+| `stride`, `node_count` | Integer sampling stride and actual display node count, at most 100,000 |
+| `visualization_only`, `sampling_policy`, `interpolation` | Explicit display sampling and reconstruction limits |
+
+Stride 1 preserves each solver fluid node. Larger grids use an equal integer
+stride in all axes, retaining the original spacing anisotropy. Every original
+nonflow cell conservatively blocks the sampled interpolation cube containing it.
+This may terminate lines outside a physical wall, but cannot invent a passage
+through an unsampled thin wall or sealed interior. A viewer must use trilinear
+interpolation only when every nonzero-weight support node is fluid and stop at
+the exported center bounds. The unsampled remainder near a farfield edge is
+omitted; extrapolating through it would fabricate velocity data. Masked entries
+store zero and are not physical zero-speed measurements.
+
+Display coarsening can lose narrow resolved flow passages and near-wall detail.
+It is reported separately from solver resolution, has no effect on saved CAD,
+pressure loads or FEA, and is not a substitute for numerical grid refinement.
+
 Pressure forces remain visible during transient or budget-limited runs as
 actual numerical outputs; `pressure_force_steady` explicitly distinguishes a
 converged result and `pressure_force_validated` is false in this release.
@@ -235,6 +269,13 @@ a tiny **actual float64 allocation, compiled multiplication and reduction**.
 `gpu_diagnostics` in health capabilities and `cuda_diagnostics` in automatic/GPU
 CFD results report the selected device, compute capability, VRAM, CuPy version,
 CUDA driver/runtime versions, failed check stage and the actual exception reason.
+The concise reason uses the original chained error, rather than the beginning of
+CuPy's DLL inventory. `root_cause` and bounded `error_details` retain the cause
+and traceback, while `bundled_runtime` records the registered library directories
+and packaged DLL files. Long details retain both their beginning and final cause.
+Import/runtime-library failures are distinguished from driver, device-discovery,
+memory-allocation and compiled-kernel failures. `CUDA_PATH` being unset is normal
+for the bundled split CUDA wheels and does not itself indicate a failure.
 The check is cached until application restart to keep health polling inexpensive;
 restart after changing a driver. Enumeration alone is not counted as working
 numerical execution.
@@ -294,6 +335,11 @@ colors; inspect progressively refined grids before interpreting its loading.
   substitute for physical NVIDIA hardware validation.
 - Rejection of apparent whole-domain convergence while wall pressure/loads
   continue to change, and an explicit low-Mach dissipation warning.
+
+`tests/test_cfd_field_export.py` additionally checks continuous reconstruction
+against uniform Euler flow and an analytic affine velocity field in anisotropic
+physical coordinates, safe ray termination at an unsampled one-cell barrier,
+blocked sealed interiors, bounded payload size and unchanged source arrays.
 
 These verify kernel behavior and bounded execution. They do not validate
 rocket drag, transonic shocks, CP or pressure accuracy. This release has no

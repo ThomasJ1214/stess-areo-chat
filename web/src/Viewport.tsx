@@ -21,15 +21,19 @@ import type { Conditions, MeshResponse, Overlays, Units } from "./types";
 import { defaultConditions } from "./types";
 import { fmt, quantity, fitSphereDistance } from "./units";
 import { flightDragDirection, fieldRange } from "./viewerData";
+import CfdFlowView, { CfdFlowLegend, getCfdFlowGrid } from "./CfdFlowView";
+import type { CfdFlowSettings } from "./flowFieldMath";
 import {
   ambientWind,
   flightLocalDrag,
   flightPose,
+  inertialToScene,
   followCameraDistance,
   railDirection,
   trajectoryPoints,
 } from "./launchScene";
 import type { FlightEvent } from "./launchScene";
+import FollowCamera from "./FollowCamera";
 
 interface Props {
   meshes: MeshResponse | null;
@@ -42,6 +46,7 @@ interface Props {
   flightRow: any;
   fea: any;
   cfd: any;
+  flowSettings?: CfdFlowSettings;
   deformationScale: number;
   workspace: string;
   trajectory: any[];
@@ -273,72 +278,6 @@ function Arrow({
   );
   return <primitive object={arrow} />;
 }
-function CFD({
-  data,
-  flow,
-  pressure,
-  size,
-}: {
-  data: any;
-  flow: boolean;
-  pressure: boolean;
-  size: number;
-}) {
-  const samples: any[] = data?.samples || [];
-  const surface: any[] = data?.surface || [];
-  const pressures = (surface.length ? surface : samples).map(
-    (s: any) => s.pressure_pa,
-  );
-  const [min, max] = fieldRange(pressures);
-  const stride = Math.max(1, Math.ceil(samples.length / 120));
-  const points = useMemo(() => {
-    const source = surface.length ? surface : samples;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(
-        source.flatMap((s: any) => s.position),
-        3,
-      ),
-    );
-    g.setAttribute(
-      "color",
-      new THREE.Float32BufferAttribute(
-        source.flatMap((s: any) => heat(s.pressure_pa, min, max).toArray()),
-        3,
-      ),
-    );
-    return g;
-  }, [data]);
-  useEffect(() => () => points.dispose(), [points]);
-  return (
-    <>
-      {pressure && (
-        <points geometry={points}>
-          <pointsMaterial vertexColors size={size * 0.011} sizeAttenuation />
-        </points>
-      )}
-      {flow &&
-        samples
-          .filter((_, i) => i % stride === 0)
-          .map((s: any, i: number) => (
-            <Arrow
-              key={i}
-              start={s.position}
-              direction={s.velocity}
-              length={Math.min(
-                size * 0.15,
-                Math.max(
-                  size * 0.025,
-                  (Math.hypot(...s.velocity) / 500) * size * 0.2,
-                ),
-              )}
-              color="#51c5ce"
-            />
-          ))}
-    </>
-  );
-}
 function Framing({
   center,
   size,
@@ -518,129 +457,6 @@ function LaunchEnvironment({
   );
 }
 
-function LaunchCamera({
-  target,
-  box,
-  rocketSize,
-  railLength,
-  extent,
-  mode,
-  resetKey,
-  manualUntil,
-  interacting,
-  receipt,
-  onAutomaticChange,
-}: {
-  target: THREE.Vector3;
-  box: THREE.Box3;
-  rocketSize: number;
-  railLength: number;
-  extent: number;
-  mode: "follow" | "overview" | "inspect";
-  resetKey: number;
-  manualUntil: React.MutableRefObject<number>;
-  interacting: React.MutableRefObject<boolean>;
-  receipt: React.RefObject<HTMLElement | null>;
-  onAutomaticChange: (value: boolean) => void;
-}) {
-  const { camera, size: viewport } = useThree();
-  const controls = useRef<any>(null);
-  const initialized = useRef(false);
-  const automaticState = useRef(true);
-  const lastReceipt = useRef(0);
-  useEffect(() => {
-    initialized.current = false;
-  }, [
-    resetKey,
-    mode,
-    box.min.x,
-    box.min.y,
-    box.min.z,
-    box.max.x,
-    box.max.y,
-    box.max.z,
-  ]);
-  useFrame((_, delta) => {
-    if (!controls.current) return;
-    const now = performance.now();
-    const manual = interacting.current || now < manualUntil.current;
-    const automatic = mode === "follow" && !manual;
-    if (automaticState.current !== automatic) {
-      automaticState.current = automatic;
-      onAutomaticChange(automatic);
-    }
-    const perspective = camera as THREE.PerspectiveCamera;
-    const overview = mode === "overview";
-    const focus =
-      overview && !box.isEmpty() ? box.getCenter(new THREE.Vector3()) : target;
-    const distance =
-      overview && !box.isEmpty()
-        ? fitSphereDistance(
-            Math.max(
-              box.getBoundingSphere(new THREE.Sphere()).radius,
-              rocketSize * 2,
-            ),
-            perspective.getEffectiveFOV(),
-            viewport.width / Math.max(1, viewport.height),
-          )
-        : followCameraDistance(rocketSize, target.y, railLength);
-    const direction = new THREE.Vector3(
-      0.9,
-      overview ? 0.65 : 0.32,
-      1.2,
-    ).normalize();
-    const desired = focus.clone().addScaledVector(direction, distance);
-    if (!initialized.current) {
-      camera.position.copy(desired);
-      controls.current.target.copy(focus);
-      initialized.current = true;
-    } else if (automatic) {
-      // A user-controlled view is left alone for the entire interaction and grace
-      // period. Automatic following resumes gently instead of snapping back.
-      const smoothing = 1 - Math.exp(-Math.min(delta, 0.1) * 4);
-      camera.position.lerp(desired, smoothing);
-      controls.current.target.lerp(focus, smoothing);
-    }
-    camera.near = Math.max(rocketSize / 2000, 0.001);
-    camera.far = Math.max(10000, extent * 6, target.length() * 4);
-    perspective.updateProjectionMatrix();
-    controls.current.update();
-    if (receipt.current && now - lastReceipt.current > 150) {
-      receipt.current.dataset.cameraPosition = camera.position
-        .toArray()
-        .map((v) => v.toFixed(5))
-        .join(",");
-      receipt.current.dataset.cameraTarget = controls.current.target
-        .toArray()
-        .map((v: number) => v.toFixed(5))
-        .join(",");
-      receipt.current.dataset.autoFollow = String(automatic);
-      receipt.current.dataset.manualUntil = String(manualUntil.current);
-      lastReceipt.current = now;
-    }
-  });
-  return (
-    <OrbitControls
-      ref={controls}
-      makeDefault
-      minDistance={Math.max(0.2, rocketSize * 0.3)}
-      maxDistance={Math.max(300, extent * 5)}
-      maxPolarAngle={Math.PI * 0.495}
-      enableDamping
-      dampingFactor={0.1}
-      onStart={() => {
-        interacting.current = true;
-        manualUntil.current = performance.now() + 5000;
-        automaticState.current = false;
-        onAutomaticChange(false);
-      }}
-      onEnd={() => {
-        interacting.current = false;
-        manualUntil.current = performance.now() + 5000;
-      }}
-    />
-  );
-}
 function Scene({
   p,
   resetKey,
@@ -702,6 +518,12 @@ function Scene({
   const center = box.getCenter(new THREE.Vector3()).toArray();
   const dimensions = box.getSize(new THREE.Vector3());
   const size = Math.max(dimensions.x, dimensions.y, dimensions.z, 0.1);
+  const cfdFlowBox = useMemo(() => {
+    if (p.workspace !== "cfd" || !p.overlays.flow) return null;
+    const grid = getCfdFlowGrid(p.cfd);
+    if (!grid) return null;
+    return new THREE.Box3(new THREE.Vector3(...grid.origin), new THREE.Vector3(...grid.upper)).union(box);
+  }, [p.workspace, p.overlays.flow, p.cfd, box]);
   const min = box.min.x;
   const cg = p.flightRow?.cg ?? p.aero?.cg_m;
   const cp = p.flightRow?.cp ?? p.aero?.cp_m;
@@ -739,8 +561,8 @@ function Scene({
     ? flightBox.getCenter(new THREE.Vector3()).toArray()
     : tracking
       ? rocketPoint
-      : center;
-  const frameSize = overview ? extent : tracking ? size * 1.3 : size;
+      : cfdFlowBox ? cfdFlowBox.getCenter(new THREE.Vector3()).toArray() : center;
+  const frameSize = overview ? extent : tracking ? size * 1.3 : cfdFlowBox ? Math.max(...cfdFlowBox.getSize(new THREE.Vector3()).toArray()) : size;
   const followDistance = followCameraDistance(
     size,
     rocketPoint[1],
@@ -776,8 +598,13 @@ function Scene({
       />
       {tracking ? (
         <>
-          <LaunchCamera
+          <FollowCamera
             target={pose.position}
+            velocity={inertialToScene(p.flightRow?.velocity_vector || [0, 0, 0])}
+            railDirection={railDirection(conditions)}
+            onRail={pose.onRail}
+            flightTime={p.flightRow?.time ?? null}
+            playing={Boolean(p.playing)}
             box={flightBox}
             rocketSize={size}
             railLength={conditions.rail_length}
@@ -803,7 +630,7 @@ function Scene({
           <Framing
             center={frameCenter}
             size={frameSize}
-            radius={box.getBoundingSphere(new THREE.Sphere()).radius}
+            radius={(cfdFlowBox || box).getBoundingSphere(new THREE.Sphere()).radius}
             resetKey={resetKey}
             far={extent * 4}
           />
@@ -921,10 +748,11 @@ function Scene({
               />
             )}
             {p.cfd && (
-              <CFD
+              <CfdFlowView
                 data={p.cfd}
                 flow={p.overlays.flow}
                 pressure={p.overlays.pressure}
+                settings={p.flowSettings}
                 size={size}
               />
             )}
@@ -1316,6 +1144,9 @@ export default function Viewport(p: Props) {
             : "Drag to orbit · scroll to zoom"}
         </span>
       </div>
+      {p.workspace === "cfd" && p.cfd && p.overlays.flow && (
+        <CfdFlowLegend data={p.cfd} settings={p.flowSettings} units={p.units} />
+      )}
       {flightScene && (
         <div className="flight-scene-note">
           Actual trajectory · rail / velocity orientation is illustrative · wind

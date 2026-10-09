@@ -152,6 +152,8 @@ export function followCameraDistance(
   railLength: number,
 ) {
   const padSize = Math.max(rocketSize, railLength, 1);
-  // Gradually zoom out from the pad as the measured trajectory gains height.
-  return padSize * 3.8 + Math.sqrt(Math.max(0, altitude) * padSize) * 1.4;
+  // Reveal a local segment of the path without reducing the rocket to a pixel.
+  // Full-path framing is available separately through the Overview camera.
+  const zoom = Math.sqrt(Math.max(0, altitude) * padSize) * 0.65;
+  return padSize * 3.2 + Math.min(zoom, Math.max(rocketSize, 0.1) * 16);
 }

@@ -199,6 +199,16 @@ export default function UserGuide({
             validated aerodynamic accuracy.
           </p>
           <p>
+            Enable <strong>Streamlines</strong> to see continuous lines through
+            the computed velocity field. <strong>Flow display</strong> adjusts
+            density, length, solved-speed colors and direction tracers. Lines
+            stop at solid walls and the exported domain. Tracers use visual
+            timing on a frozen snapshot, rather than unsteady flow playback.
+            Older results without a structured field show sparse solved vectors;
+            rerun them for streamlines. These display settings do not change
+            the simulation.
+          </p>
+          <p>
             An unconverged result displays{" "}
             <strong>Partial pressure force</strong>. To continue without step or
             flow-time ceilings, enable <strong>Run until converged</strong>. Set{" "}
