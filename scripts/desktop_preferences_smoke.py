@@ -10,13 +10,43 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def phase(data_dir: Path, index: int, avoid_port: int | None):
+def preserve_diagnostics(output: Path, data_dir: Path, phase: int, result=None) -> Path:
+    """Keep the native receipt/log after isolated session storage is removed."""
+    destination = output.with_name(output.stem + "-diagnostics")
+    destination.mkdir(parents=True, exist_ok=True)
+    for source in (data_dir / f"phase-{phase}.json", data_dir / "application.log", data_dir / "desktop-preferences.json"):
+        if source.is_file():
+            shutil.copyfile(source, destination / (f"phase-{phase}-" + source.name))
+    if result is not None:
+        for name in ("stdout", "stderr"):
+            content = getattr(result, name, "") or ""
+            if isinstance(content, bytes):
+                content = content.decode("utf8", errors="replace")
+            (destination / f"phase-{phase}-{name}.txt").write_text(content[:16384] + content[-16384:] if len(content) > 32768 else content, "utf8")
+    return destination
+
+
+def record_failure(output: Path, phase: int, reason: str, *, exit_code=None, native_receipt=None):
+    failure = {"status": "failed", "phase": phase, "error": reason, "exit_code": exit_code}
+    if native_receipt:
+        failure["native_receipt"] = native_receipt
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(failure, indent=2) + "\n", "utf8")
+    native = native_receipt or {}
+    detail = (f"Phase {phase}, exit {exit_code}, stage {native.get('stage', 'unknown')}, "
+              f"viewport {native.get('viewport', 'unknown')}: {native.get('error', reason)}")[:1400]
+    escaped = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title=Desktop preferences verification::{escaped}", flush=True)
+
+
+def phase(data_dir: Path, index: int, avoid_port: int | None, window_width: int | None = None):
     import secrets
     import socket
     import time
@@ -45,7 +75,7 @@ def phase(data_dir: Path, index: int, avoid_port: int | None):
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
     window = QMainWindow()
-    window.resize(1440, 960)
+    window.resize(window_width or 1440, 760 if window_width else 960)
     view = QWebEngineView(window)
     profile = QWebEngineProfile(app)
     page = QWebEnginePage(profile, view)
@@ -79,7 +109,16 @@ def phase(data_dir: Path, index: int, avoid_port: int | None):
         app.processEvents()
 
     until(lambda: js("!!document.querySelector('.app-shell') && !!document.querySelector('.workspace-nav')"))
+    # The shell can precede the authenticated project request. A map point
+    # created before project initialization has no persistent project key.
+    until(lambda: js("Number(document.querySelector('.project-sidebar .count')?.textContent)>0"))
     if index == 1:
+        if js("!!document.querySelector('button[aria-label=\"Show assembly\"]')"):
+            click(aria="Show assembly")
+        js("(() => {const d=document.querySelector('[role=separator][aria-label=\"Resize assembly panel\"]'); d.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));return true;})()")
+        QTest.qWait(140)
+        js("(() => {const d=document.querySelector('[role=separator][aria-label=\"Resize assembly panel\"]'); d.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));return true;})()")
+        until(lambda: js("parseFloat(document.querySelector('.main-layout').style.getPropertyValue('--assembly-width'))===210"))
         click(aria="Hide assembly")
         click(text="Getting started")
         click(text="Next step")
@@ -96,11 +135,13 @@ def phase(data_dir: Path, index: int, avoid_port: int | None):
         assert loaded[-1]
         until(lambda: js("!!document.querySelector('.workspace-nav')"))
         assert js("!!document.querySelector('button[aria-label=\"Show assembly\"]')"), "Reload restored stale layout"
+        assert js("parseFloat(document.querySelector('.main-layout').style.getPropertyValue('--assembly-width'))===210"), "Reload restored stale divider width"
         click(text="Getting started")
         assert js("document.getElementById('tutorial-step-title').textContent") == tutorial_title, "Reload restored stale tutorial progress"
         click(aria="Close tutorial")
     else:
         assert js("!!document.querySelector('button[aria-label=\"Show assembly\"]')"), "Saved layout was not applied by frontend initialization"
+        assert js("parseFloat(document.querySelector('.main-layout').style.getPropertyValue('--assembly-width'))===210"), "Nondefault divider width was not restored"
         click(text="Getting started")
         tutorial_title = js("document.getElementById('tutorial-step-title').textContent")
         click(aria="Close tutorial")
@@ -121,6 +162,7 @@ def phase(data_dir: Path, index: int, avoid_port: int | None):
     # A session key must never be copied to the preferences file.
     js("(() => {localStorage.setItem('X-Rocket-Session','forbidden-secret-sentinel'); return true;})()")
     receipt = {"phase": index, "port": port, "qt_version": qVersion(),
+               "viewport": js("({width:innerWidth,height:innerHeight})"), "assembly_width":210,
                "tutorial_title": tutorial_title, "layout_restored": index == 2,
                "in_session_reload_preserved_latest_preferences": index == 1,
                "map_point_visible": True, "profile_off_the_record": profile.isOffTheRecord()}
@@ -145,9 +187,10 @@ def main():
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--avoid-port", type=int)
     parser.add_argument("--executable", type=Path, help="Verify an installed/frozen executable instead of the source Qt host")
+    parser.add_argument("--window-width", type=int, choices=range(640, 1921), metavar="WIDTH", help="Exercise a narrow or wide desktop viewport")
     options = parser.parse_args()
     if options.phase:
-        return phase(options.data_dir, options.phase, options.avoid_port)
+        return phase(options.data_dir, options.phase, options.avoid_port, options.window_width)
     options.output.unlink(missing_ok=True)
     from rocket_workbench.demo import demo_project
     with tempfile.TemporaryDirectory(prefix="rocket-native-preferences-") as directory:
@@ -160,6 +203,8 @@ def main():
                 phase_output = data_dir / f"phase-{index}.json"
                 command = [str(options.executable.resolve()), "--desktop-preferences-smoke-test", "--preferences-smoke-phase", str(index),
                            "--preferences-smoke-output", str(phase_output), "--data-dir", directory]
+                if options.window_width:
+                    command += ["--preferences-smoke-window-width", str(options.window_width)]
                 if phases:
                     import socket
                     reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -172,22 +217,38 @@ def main():
                             raise
             else:
                 command = [sys.executable, str(Path(__file__).resolve()), "--phase", str(index), "--data-dir", directory]
+                if options.window_width:
+                    command += ["--window-width", str(options.window_width)]
                 if phases:
                     command += ["--avoid-port", str(phases[0]["port"])]
             try:
                 result = subprocess.run(command, capture_output=True, text=True, timeout=90, env=os.environ.copy())
+            except subprocess.TimeoutExpired as exc:
+                preserve_diagnostics(options.output, data_dir, index, exc)
+                record_failure(options.output, index, "Native process exceeded its 90 second deadline")
+                raise RuntimeError("Native preferences process timed out") from exc
             finally:
                 if reservation:
                     reservation.close()
+            preserve_diagnostics(options.output, data_dir, index, result)
             if result.returncode:
-                failure = {"status": "failed", "phase": index, "exit_code": result.returncode}
+                native_receipt = None
                 if options.executable and phase_output.exists():
-                    failure["native_receipt"] = json.loads(phase_output.read_text("utf8"))
-                options.output.parent.mkdir(parents=True, exist_ok=True)
-                options.output.write_text(json.dumps(failure, indent=2) + "\n", "utf8")
-                raise RuntimeError(f"Native preferences phase {index} failed:\n{result.stderr}\n{result.stdout}")
-            phases.append(json.loads(phase_output.read_text("utf8")) if options.executable else json.loads(result.stdout.strip().splitlines()[-1]))
-            assert phases[-1].get("status", "ok") == "ok"
+                    try:
+                        native_receipt = json.loads(phase_output.read_text("utf8"))
+                    except (OSError, ValueError):
+                        pass
+                reason = (result.stderr or result.stdout or "Windowed executable failed; see preserved native receipt and application log")[-1000:]
+                record_failure(options.output, index, reason, exit_code=result.returncode, native_receipt=native_receipt)
+                raise RuntimeError(f"Native preferences phase {index} failed: {(native_receipt or {}).get('error', reason)}")
+            try:
+                phases.append(json.loads(phase_output.read_text("utf8")) if options.executable else json.loads(result.stdout.strip().splitlines()[-1]))
+            except (OSError, ValueError, IndexError) as exc:
+                record_failure(options.output, index, f"Native receipt could not be read: {type(exc).__name__}", exit_code=result.returncode)
+                raise RuntimeError("Native preferences verification produced no readable receipt") from exc
+            if phases[-1].get("status", "ok") != "ok":
+                record_failure(options.output, index, "Native receipt reported failure", exit_code=result.returncode, native_receipt=phases[-1])
+                raise RuntimeError("Native preferences verification failed")
         assert phases[0]["port"] != phases[1]["port"]
         assert phases[0]["tutorial_title"] == phases[1]["tutorial_title"]
         saved = json.loads((data_dir / "desktop-preferences.json").read_text("utf8"))

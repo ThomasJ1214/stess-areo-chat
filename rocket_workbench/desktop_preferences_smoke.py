@@ -14,26 +14,47 @@ def start_preferences_smoke(application, window, view, data_dir: Path, phase: in
         # Exercise the final close flush independently of the regular polling.
         window._rocket_preferences.timer.stop()
     output.unlink(missing_ok=True)
-    state = {"status": "pending"}
+    state = {"status": "pending", "stage": "document_load"}
     started = time.monotonic()
     script = """(() => {
-      window.__rocketPreferencesSmoke={status:'pending'};
+      window.__rocketPreferencesSmoke={status:'pending',stage:'frontend_ready',viewport:{width:innerWidth,height:innerHeight}};
+      const mark=stage=>{window.__rocketPreferencesSmoke.stage=stage;};
       const pause=ms=>new Promise(r=>setTimeout(r,ms));
-      async function wait(predicate) {
+      async function wait(predicate,label='UI control or state') {
         const deadline=Date.now()+18000;
         while(Date.now()<deadline) { const value=predicate(); if(value) return value; await pause(40); }
-        throw new Error('UI control or state did not become available');
+        throw new Error(label+' did not become available');
       }
       function button(text,aria,selector='button') {
         return [...document.querySelectorAll(selector)].find(b=>aria?b.getAttribute('aria-label')===aria:b.textContent.trim()===text);
       }
       async function click(text,aria,selector) {
-        const b=await wait(()=>button(text,aria,selector)); b.click(); await pause(140);
+        const label=aria||text;
+        mark('click:'+label);
+        const b=await wait(()=>button(text,aria,selector),'Control '+label); b.click(); await pause(140);
       }
       (async()=>{
         await wait(()=>document.querySelector('.app-shell') && document.querySelector('.workspace-nav'));
-        if (PHASE===1) await click(null,'Hide assembly');
-        else if(!button(null,'Show assembly')) throw new Error('Layout not restored at frontend initialization');
+        // React renders the shell before its authenticated project request finishes.
+        // Map points belong to that project, so never edit an uninitialized map.
+        mark('project_ready');
+        await wait(()=>Number(document.querySelector('.project-sidebar .count')?.textContent)>0,
+          'Seeded project components');
+        if (PHASE===1) {
+          // Hosted desktops may start with this responsive panel collapsed.
+          if(button(null,'Show assembly')) await click(null,'Show assembly');
+          mark('change_assembly_width');
+          const divider=await wait(()=>document.querySelector('[role=separator][aria-label="Resize assembly panel"]'),'Assembly divider');
+          divider.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true})); await pause(140);
+          divider.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})); await pause(140);
+          await wait(()=>parseFloat(document.querySelector('.main-layout').style.getPropertyValue('--assembly-width'))===210,'Nondefault assembly width 210');
+          await click(null,'Hide assembly');
+        } else {
+          mark('verify_restored_layout');
+          if(!button(null,'Show assembly')) throw new Error('Hidden layout not restored at frontend initialization');
+          if(parseFloat(document.querySelector('.main-layout').style.getPropertyValue('--assembly-width'))!==210)
+            throw new Error('Nondefault assembly width not restored at frontend initialization');
+        }
         await click('Getting started');
         if(PHASE===1) { await click('Next step'); await click('Next step'); }
         const title=(await wait(()=>document.getElementById('tutorial-step-title'))).textContent;
@@ -47,10 +68,12 @@ def start_preferences_smoke(application, window, view, data_dir: Path, phase: in
           await wait(()=>document.querySelector('dialog [data-testid=map-point-name]'));
           await click('Save point',null,'dialog button');
         }
-        await wait(()=>[...document.querySelectorAll('dialog .flight-map-landmarks li span')].some(e=>e.textContent==='Point 1'));
+        mark('verify_map_point');
+        await wait(()=>[...document.querySelectorAll('dialog .flight-map-landmarks li span')].some(e=>e.textContent==='Point 1'),'Saved map point Point 1');
         localStorage.setItem('X-Rocket-Session','forbidden-secret-sentinel');
-        window.__rocketPreferencesSmoke={status:'ok',tutorial_title:title,layout_restored:PHASE===2,map_point_visible:true};
-      })().catch(error=>{window.__rocketPreferencesSmoke={status:'failed',error:String(error.message)};});
+        window.__rocketPreferencesSmoke={...window.__rocketPreferencesSmoke,status:'ok',stage:'completed',tutorial_title:title,
+          layout_restored:PHASE===2,assembly_width:210,map_point_visible:true};
+      })().catch(error=>{window.__rocketPreferencesSmoke={...window.__rocketPreferencesSmoke,status:'failed',error:String(error.message)};});
     })()""".replace("PHASE", str(phase))
     timer = QTimer(window)
     timer.setInterval(100)
@@ -75,6 +98,9 @@ def start_preferences_smoke(application, window, view, data_dir: Path, phase: in
                 current = {}
             if current:
                 state["last_ui_status"] = current.get("status")
+                for key in ("stage", "viewport"):
+                    if key in current:
+                        state[key] = current[key]
             if current and current.get("status") in {"ok", "failed"}:
                 state.update(current)
                 timer.stop()

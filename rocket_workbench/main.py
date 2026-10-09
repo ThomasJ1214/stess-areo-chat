@@ -160,6 +160,7 @@ def main(argv=None) -> int:
     parser.add_argument("--desktop-preferences-smoke-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--preferences-smoke-phase", type=int, choices=(1, 2), help=argparse.SUPPRESS)
     parser.add_argument("--preferences-smoke-output", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--preferences-smoke-window-width", type=int, choices=range(640, 1921), help=argparse.SUPPRESS)
     options = parser.parse_args(argv)
     if options.desktop_preferences_smoke_test and (not options.preferences_smoke_phase or not options.preferences_smoke_output):
         parser.error("Desktop preferences smoke requires its phase and output path")
@@ -225,6 +226,8 @@ def main(argv=None) -> int:
     window.setWindowIcon(application.windowIcon())
     window.setWindowTitle("Rocket Workbench — aerodynamic, flight and structural analysis")
     window.resize(1440, 960)
+    if options.desktop_preferences_smoke_test and options.preferences_smoke_window_width:
+        window.resize(options.preferences_smoke_window_width, 760)
     view = QWebEngineView(window)
     # Project/session state lives in the backend. Keep the browser profile in
     # memory, so packaging and restricted development hosts need no browser cache.
@@ -247,14 +250,15 @@ def main(argv=None) -> int:
         else:
             item.cancel()
     view.page().profile().downloadRequested.connect(download_requested)
-    view.setUrl(QUrl(f"http://127.0.0.1:{port}/?token={token}"))
-    window.setCentralWidget(view)
-    window.show()
     preferences_smoke_finish = None
     if options.desktop_preferences_smoke_test:
         from .desktop_preferences_smoke import start_preferences_smoke
         preferences_smoke_finish = start_preferences_smoke(application, window, view, data_dir,
             options.preferences_smoke_phase, options.preferences_smoke_output, port)
+    # Register the smoke document callback before navigation can finish.
+    view.setUrl(QUrl(f"http://127.0.0.1:{port}/?token={token}"))
+    window.setCentralWidget(view)
+    window.show()
     if options.desktop_smoke_test:
         smoke_done = False
         def check_ui():

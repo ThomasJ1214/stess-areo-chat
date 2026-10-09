@@ -98,7 +98,7 @@ jobs:
           QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu-compositing --ignore-gpu-blocklist --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader'
         run: |
           $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
-          uv run --no-sync python scripts/desktop_preferences_smoke.py --executable (Join-Path $installed 'RocketWorkbench.exe') --output build/installed-preferences-smoke.json
+          uv run --no-sync python scripts/desktop_preferences_smoke.py --executable (Join-Path $installed 'RocketWorkbench.exe') --window-width 900 --output build/installed-preferences-smoke.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content build/installed-preferences-smoke.json
       - name: Preserve packaging diagnostics on failure
@@ -112,6 +112,7 @@ jobs:
             build/frozen-cuda-bundle-smoke.json
             build/installed-cuda-bundle-smoke.json
             build/installed-preferences-smoke.json
+            build/installed-preferences-smoke-diagnostics/*
             ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
             ${{ runner.temp }}/RocketWorkbench-install.log
             ${{ runner.temp }}/rocket-workbench-smoke-error-*.log
@@ -131,6 +132,7 @@ jobs:
             build/installed-cuda-bundle-smoke.json
             build/installed-desktop-smoke.log
             build/installed-preferences-smoke.json
+            build/installed-preferences-smoke-diagnostics/*
             build/live-motor-smoke.json
           if-no-files-found: error
           retention-days: 30
