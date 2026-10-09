@@ -80,7 +80,8 @@ jobs:
               'status', 'phase', 'stage', 'last_ui_status', 'close_flush_verified', 'layout_restored', 'map_point_visible')}
           cause = safe(native.get('error') or receipt.get('error') or 'No error text was included; inspect native status fields.')
           print(json.dumps(summary, sort_keys=True))
-          escaped = cause.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          report = json.dumps(summary, sort_keys=True) + '\nCause: ' + cause
+          escaped = report.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
           print('::error title=Recorded installed preferences failure::' + escaped)
           print('Diagnostic retrieval completed; this job does not rerun or validate the application.')
           PY
