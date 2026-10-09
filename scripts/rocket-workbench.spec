@@ -81,6 +81,10 @@ if not gpu_requested:
 if gpu_requested:
     if util.find_spec("cupy") is None:
         raise RuntimeError("GPU bundle requires: uv sync --locked --extra desktop --extra dev --extra gpu")
+    # CuPy 14's Cython extensions import graphlib dynamically. PyInstaller cannot
+    # see that stdlib dependency in extension bytecode; the native smoke caught
+    # the missing module after the bundled CUDA DLLs had loaded successfully.
+    hiddenimports.append("graphlib")
     for module in ("cupy", "cupyx", "cupy_backends", "cuda"):
         package_datas, package_binaries, package_imports = collect_all(module)
         datas += package_datas
