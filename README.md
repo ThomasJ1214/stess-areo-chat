@@ -33,6 +33,12 @@ checks. Physical NVIDIA execution and performance need a real-device check.
 Close an earlier app version before running the new installer, then open
 **CFD → GPU diagnostics** to check your device.
 
+The [independent download/reinstall check](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37948824649)
+also passed: it downloaded the original package, verified the EXE checksum,
+installed it on a fresh Windows runner, and tested its engine, CUDA packaging
+and native UI. If a direct artifact link returns 404, sign in and click
+**RocketWorkbench-windows-x64-installer** under the original run's **Artifacts**.
+
 See [step-by-step Windows installation](docs/WINDOWS_INSTALL.md). The normal build
 includes CUDA runtime libraries for supported NVIDIA GPU calculations. An NVIDIA
 driver must already be installed. Other GPUs still render the viewport; numerical

@@ -57,6 +57,28 @@ is `11619041385`, approximately 1.5 GB. Its **ZIP archive** SHA-256 is
 `6d2f6a8852696570ae4d25889aa414c3185cb94448cba9a8615f407881d9172b`;
 this is distinct from the setup EXE's checksum in `release/*.exe.sha256`.
 
+### Independent download and fresh installation
+
+On 2026-10-09 the [download verification workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37948824649)
+downloaded that existing 1.5 GB artifact through authenticated GitHub Actions.
+It verified the actual EXE SHA-256 against the shipped checksum, Windows PE
+headers, version/source manifest and archived successful receipts. It then
+silently installed the downloaded EXE in a fresh Windows runner and passed real
+flight/solid-FEA, bundled CUDA import/header/offline compiler, and native
+desktop/authenticated API/project/WebGL checks. No application was rebuilt.
+The setup EXE SHA-256 is
+`41c1bbfb139dc3f9489d9c6a74c97fa4703158b98ec3c6afc42f5f5b94ffdeaa`.
+Compact proof artifact `11624444614` contains `verification.json`, native logs
+and fresh engine/CUDA receipts (200 KB ZIP; archive SHA-256
+`cc4906e4bc97718274d95fb8e72e57e94af46aa3eda3d972bb1890beba03fe4a`).
+The verification helper/workflow is source `a72764e`; the downloaded app remains
+the original clean `893c727` binary. Physical NVIDIA execution remains separate.
+
+GitHub requires sign-in for artifact downloads, including public repository
+artifacts. A signed-out direct artifact URL can return 404. Use the original
+installer run's **Artifacts** section after signing in; the verification run's
+small artifact contains evidence, not the installer.
+
 Continuous streamlines use the actual exported velocity field, with conservative
 wall masks and no interpolation through solids or sealed cavities. Independent
 uniform/linear/circular flow references and thin-wall tests exercise the renderer.

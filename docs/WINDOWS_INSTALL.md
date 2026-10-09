@@ -24,12 +24,13 @@ live motor search, launch playback, a local flight map, CAD automatic placement,
 and CFD/FEA setup guidance. See the [validation record](VALIDATION.md) for recorded
 checks; require a successful run before using its installer.
 
-1. Open the linked installer run above and confirm its status is **Success**.
+1. Sign in to GitHub, then open the linked installer run above and confirm its
+   status is **Success**.
 2. Scroll down to **Artifacts**. If the download has expired, open the repository's
    **Actions → Windows offline installer**, then use **Run workflow** with `main`.
    A repository owner or collaborator must have permission to run workflows.
 3. Download the **RocketWorkbench-windows-x64-installer** artifact at the bottom
-   of that run. GitHub may ask you to sign in for a private repository artifact.
+   of that run. Use an account with access to the repository if it is private.
 4. Right-click the downloaded ZIP and choose **Extract All**. The extracted files
    include the installer, a SHA-256 checksum and a dependency manifest. Open the
    `release` folder if the download contains that folder. The package
@@ -51,6 +52,9 @@ is the one external GPU runtime prerequisite.
 
 GitHub may require sign-in even for a public repository's artifact. Artifacts
 expire after 30 days; request a new workflow run if the download has expired.
+If a direct artifact link shows **404**, sign in first, reopen the installer run
+above and click the artifact name under **Artifacts**. A signed-out 404 does not
+mean the installer build failed.
 
 ## Upgrade an existing installation
 
@@ -246,3 +250,10 @@ no physical NVIDIA GPU. Workstation graphics, numerical GPU execution and a
 fresh consumer PC need separate hardware checks. See [VALIDATION.md](VALIDATION.md)
 for receipts and artifact identity. Documentation-only commits after the binary's
 source revision do not rebuild it; generated binaries are kept out of Git history.
+
+The [independent download/reinstall workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37948824649)
+also passed. It downloaded the existing package, checked its actual EXE checksum,
+installed it on a fresh Windows runner, and ran the engineering, CUDA packaging,
+and native desktop/API/WebGL checks again. Download the installer from the
+original installer run linked above; this separate verification run contains
+only small evidence files.
