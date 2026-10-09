@@ -30,7 +30,13 @@ def _exception_details(exc: Exception) -> tuple[str, str, bool]:
     """Separate a short root cause from a bounded traceback without locals."""
     root = exc
     seen = {id(root)}
+    compiler_log = None
     while True:
+        message = str(root).strip()
+        # CuPy wraps NVRTC's numeric status in CompileException with the actual
+        # compiler log. Following its context alone loses the missing-DLL name.
+        if compiler_log is None and message.lower().startswith("nvrtc:"):
+            compiler_log = (type(root).__name__, message)
         next_cause = root.__cause__
         if next_cause is None and not root.__suppress_context__:
             next_cause = root.__context__
@@ -39,6 +45,9 @@ def _exception_details(exc: Exception) -> tuple[str, str, bool]:
         seen.add(id(next_cause))
         root = next_cause
     message = str(root).strip()
+    label = type(root).__name__
+    if compiler_log is not None:
+        label, message = compiler_log
     # Some CuPy releases place the original exception at the end of the banner
     # without preserving an exception chain. Its DLL inventory is not the cause.
     for marker in ("Original error:", "Original error was:"):
@@ -46,7 +55,7 @@ def _exception_details(exc: Exception) -> tuple[str, str, bool]:
             index = message.lower().rfind(marker.lower())
             message = message[index + len(marker):].strip()
             break
-    cause, _ = _bounded_details(f"{type(root).__name__}: {message}", 900)
+    cause, _ = _bounded_details(f"{label}: {message}", 900)
     details = "".join(traceback.TracebackException.from_exception(exc, capture_locals=False).format())
     details, truncated = _bounded_details(details, _ERROR_DETAIL_LIMIT)
     return cause, details, truncated
@@ -64,6 +73,9 @@ def _failure_reason(stage: str, cause: str, exc: Exception, runtime_setup: dict)
         "dll load failed", "could not be found", "could not be loaded", "cannot open shared object",
         "library not found", "failed to load", "specified module",
     ))
+    missing_library = missing_library or (
+        "failed to open" in lowered and (".dll" in lowered or ".so" in lowered)
+    )
     missing_cupy = isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None) == "cupy"
     source_environment = runtime_setup.get("status") in {"not_frozen", "not_windows"}
     omitted_runtime = runtime_setup.get("status") == "unavailable" and not runtime_setup.get("runtime_files")
@@ -126,6 +138,9 @@ def _cuda_probe() -> dict:
     try:
         from .bundled_cuda import configure_bundled_cuda
         result["bundled_runtime"] = configure_bundled_cuda()
+        setup = result["bundled_runtime"]
+        if setup.get("status") == "unavailable" and setup.get("runtime_files") and setup.get("errors"):
+            raise OSError("Bundled CUDA initialization failed: " + "; ".join(setup["errors"]))
         import cupy as cp
         result["cupy_version"] = str(cp.__version__)
         result["probe_stage"] = "driver"

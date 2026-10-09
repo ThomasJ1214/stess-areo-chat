@@ -75,6 +75,11 @@ jobs:
           & ./scripts/windows_process_check.ps1 -FilePath (Join-Path $installed 'RocketWorkbench.exe') -ProcessArguments @('--cuda-bundle-smoke-test','--smoke-output',('"' + $receipt + '"')) -TimeoutSeconds 180
           $evidence = Get-Content $receipt -Raw | ConvertFrom-Json
           if ($evidence.status -ne 'ok' -or $evidence.compiler.ptx_bytes -le 0 -or $evidence.libraries.Count -lt 10) { throw 'Installed CUDA import/compiler receipt is incomplete' }
+          if ($evidence.compiler.startup_path_verified -isnot [bool] -or $evidence.compiler.startup_path_verified -ne $true) { throw 'Installed CUDA compiler did not verify the normal application startup path' }
+          if ($evidence.compiler.test_only_preloads_before_compilation -isnot [bool] -or $evidence.compiler.test_only_preloads_before_compilation -ne $false) { throw 'Installed CUDA compiler used test-only library preloads' }
+          foreach ($target in @('compute_75', 'compute_89')) {
+            if ($evidence.compiler.targets -notcontains $target) { throw "Installed CUDA compiler did not verify $target" }
+          }
           Get-Content $receipt
       - name: Test installed native desktop, API session and WebGL viewport
         shell: pwsh

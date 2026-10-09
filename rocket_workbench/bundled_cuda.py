@@ -3,6 +3,9 @@
 CUDA 12 toolkit wheels deliberately have separate ``nvidia/*`` roots. They do
 not require a machine-wide CUDA_PATH, but their DLL directories must be visible
 to Windows, and cuda-pathfinder must see the frozen site-package resource root.
+NVRTC loads its builtins lazily by name while compiling. AddDllDirectory alone
+does not guarantee that legacy load uses the registered directories, so matching
+bundled builtins must be loaded by absolute path before the first compilation.
 Only resources inside PyInstaller's trusted bundle root are registered. This
 module never imports CuPy, queries a driver, downloads files, or changes a user's
 CUDA_PATH/PATH. It therefore also works on a machine without an NVIDIA GPU.
@@ -10,6 +13,7 @@ CUDA_PATH/PATH. It therefore also works on a machine without an NVIDIA GPU.
 from __future__ import annotations
 
 from copy import deepcopy
+import ctypes
 import os
 from pathlib import Path
 import site
@@ -20,6 +24,19 @@ _lock = RLock()
 _configuration: dict | None = None
 # Do not close directory registrations while lazy native imports may need them.
 _dll_directory_handles: list[object] = []
+# Retain native library objects too: NVRTC's later name-based load must find the
+# same builtins still loaded. These are resources, never a GPU success receipt.
+_native_library_handles: list[object] = []
+
+# The locked nvidia-cuda-nvrtc-cu12 wheel is 12.9.86. NVRTC's compiler basename
+# stays nvrtc64_120_0.dll across CUDA 12 minors, while its builtins are minor-
+# specific; the native version query below prevents accidentally mixing them.
+_NVRTC_VERSION = (12, 9)
+_NVRTC_DLL = "nvrtc64_120_0.dll"
+_NVRTC_BUILTINS_DLL = "nvrtc-builtins64_129.dll"
+# LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: no cwd
+# or PATH search is added, and dependencies can resolve beside the trusted DLL.
+_BUNDLED_LOAD_FLAGS = 0x00001100
 
 
 def _bundle_dlls(root: Path) -> list[Path]:
@@ -59,6 +76,60 @@ def _expose_frozen_site_packages(root: Path) -> None:
     site.getsitepackages = frozen_site_packages
 
 
+def _preload_nvrtc(dlls: list[Path], result: dict) -> None:
+    """Load the locked compiler/builtins pair before any CuPy/JIT operation.
+
+    An absolute load puts the builtins in Windows' loaded-module list, which
+    NVRTC's subsequent LoadLibrary-by-name can find without changing global
+    DLL search policy. The DLL inventory already rejects paths outside the
+    frozen root. Require one compiler and its adjacent, minor-matched builtins
+    instead of choosing an arbitrary duplicate or a machine-wide toolkit.
+    """
+    expected_version = ".".join(map(str, _NVRTC_VERSION))
+    pairing = {"expected_version": expected_version, "version": None,
+               "library_path": None, "builtins_path": None}
+    result["nvrtc"] = pairing
+    compilers = [path for path in dlls if path.name.casefold() == _NVRTC_DLL]
+    if len(compilers) != 1:
+        raise RuntimeError(f"Expected one bundled {_NVRTC_DLL}; found {len(compilers)}. "
+                           "The CUDA runtime bundle is incomplete or ambiguous.")
+    compiler_path = compilers[0]
+    pairing["library_path"] = str(compiler_path)
+    builtins = [path for path in dlls
+                if path.name.casefold() == _NVRTC_BUILTINS_DLL and path.parent == compiler_path.parent]
+    if len(builtins) != 1:
+        raise RuntimeError(f"Bundled NVRTC {expected_version} requires {_NVRTC_BUILTINS_DLL} "
+                           f"beside {compiler_path}; the matching builtins DLL is missing.")
+    builtins_path = builtins[0]
+    pairing["builtins_path"] = str(builtins_path)
+    # Builtins MUST precede NVRTC/CuPy. Do not replace these explicit absolute
+    # loads with PATH mutation, SetDllDirectory or a bare-name LoadLibrary.
+    compiler = None
+    for role, path in (("nvrtc_builtins", builtins_path), ("nvrtc", compiler_path)):
+        try:
+            library = ctypes.CDLL(str(path), winmode=_BUNDLED_LOAD_FLAGS)
+        except (OSError, AttributeError) as error:
+            raise RuntimeError(f"Could not preload bundled {role} DLL {path}: "
+                               f"{type(error).__name__}: {error}") from error
+        _native_library_handles.append(library)
+        result["native_preloads"].append({"role": role, "path": str(path)})
+        if role == "nvrtc":
+            compiler = library
+    major, minor = ctypes.c_int(), ctypes.c_int()
+    try:
+        compiler.nvrtcVersion.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+        compiler.nvrtcVersion.restype = ctypes.c_int
+        status = compiler.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor))
+    except (OSError, AttributeError) as error:
+        raise RuntimeError(f"Could not query bundled NVRTC version: {type(error).__name__}: {error}") from error
+    if status != 0:
+        raise RuntimeError(f"Bundled nvrtcVersion failed with status {status}.")
+    pairing["version"] = f"{major.value}.{minor.value}"
+    if (major.value, minor.value) != _NVRTC_VERSION:
+        raise RuntimeError(f"Bundled NVRTC version {pairing['version']} does not match "
+                           f"the locked {expected_version} builtins {_NVRTC_BUILTINS_DLL}.")
+
+
 def configure_bundled_cuda() -> dict:
     """Return an idempotent, JSON-safe registration receipt, never GPU success.
 
@@ -71,9 +142,9 @@ def configure_bundled_cuda() -> dict:
         if _configuration is not None:
             return deepcopy(_configuration)
         result = {"status": "not_frozen", "bundled_root": None,
-                  "dll_directories": [], "runtime_files": [], "errors": [],
+                  "dll_directories": [], "runtime_files": [], "native_preloads": [], "errors": [],
                   "cuda_path": os.environ.get("CUDA_PATH"),
-                  "search_strategy": "Frozen wheel resources and Windows AddDllDirectory; CUDA_PATH is preserved."}
+                  "search_strategy": "Frozen wheel resources, Windows AddDllDirectory and absolute matched NVRTC/builtins preloads; PATH and CUDA_PATH are preserved."}
         if not getattr(sys, "frozen", False):
             _configuration = result
             return deepcopy(result)
@@ -105,6 +176,11 @@ def configure_bundled_cuda() -> dict:
             else:
                 _dll_directory_handles.append(handle)
                 result["dll_directories"].append(str(directory))
+        if not result["errors"]:
+            try:
+                _preload_nvrtc(dlls, result)
+            except RuntimeError as error:
+                result["errors"].append(str(error))
         result["status"] = "configured" if not result["errors"] else "unavailable"
         _configuration = result
         return deepcopy(result)

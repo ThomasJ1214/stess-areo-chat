@@ -230,6 +230,63 @@ def test_nvrtc_compilation_error_is_not_mistaken_for_a_missing_library(monkeypat
     assert "reinstall" not in diagnostic["reason"]
 
 
+def test_nvrtc_wrapper_preserves_missing_builtins_log_instead_of_numeric_status(monkeypatch):
+    class CompileException(RuntimeError):
+        pass
+
+    class KernelFailure:
+        def __mul__(self, other):
+            try:
+                raise RuntimeError("NVRTC_ERROR_BUILTIN_OPERATION_FAILURE (7)")
+            except RuntimeError:
+                raise CompileException(
+                    "nvrtc: error: failed to open nvrtc-builtins64_129.dll.\n"
+                    "Make sure that nvrtc-builtins64_129.dll is installed correctly."
+                )
+
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy(asarray=lambda *args, **kwargs: KernelFailure()))
+    diagnostic = backenddiagnostics.cuda_diagnostics()
+    assert diagnostic["probe_stage"] == "kernel"
+    assert diagnostic["failure_kind"] == "bundled_runtime"
+    assert "failed to open nvrtc-builtins64_129.dll" in diagnostic["root_cause"]
+    assert "nvrtc-builtins64_129.dll" in diagnostic["reason"]
+    assert "compatible NVIDIA driver" not in diagnostic["reason"]
+    assert "NVRTC_ERROR_BUILTIN_OPERATION_FAILURE" in diagnostic["error_details"]
+
+
+def test_compiler_log_keeps_architecture_failure_distinct_from_missing_dll(monkeypatch):
+    class CompileFailure:
+        def __mul__(self, other):
+            try:
+                raise RuntimeError("NVRTC_ERROR_COMPILATION (6)")
+            except RuntimeError:
+                raise RuntimeError("nvrtc: error: invalid value for --gpu-architecture")
+
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy(asarray=lambda *args, **kwargs: CompileFailure()))
+    diagnostic = backenddiagnostics.cuda_diagnostics()
+    assert diagnostic["failure_kind"] == "kernel"
+    assert "invalid value for --gpu-architecture" in diagnostic["root_cause"]
+    assert "reinstall" not in diagnostic["reason"]
+
+
+def test_failed_bundled_preload_stops_before_driver_or_kernel(monkeypatch):
+    calls = []
+    cp = _fake_cupy()
+    cp.cuda.runtime.driverGetVersion = lambda: calls.append("driver")
+    monkeypatch.setitem(sys.modules, "cupy", cp)
+    monkeypatch.setitem(sys.modules, "rocket_workbench.bundled_cuda", SimpleNamespace(
+        configure_bundled_cuda=lambda: {
+            "status": "unavailable", "runtime_files": ["nvrtc64_120_0.dll"],
+            "errors": ["Missing bundled nvrtc-builtins64_129.dll"],
+        },
+    ))
+    diagnostic = backenddiagnostics.cuda_diagnostics()
+    assert diagnostic["probe_stage"] == "import"
+    assert diagnostic["failure_kind"] == "bundled_runtime"
+    assert "nvrtc-builtins64_129.dll" in diagnostic["root_cause"]
+    assert not calls
+
+
 def test_bundled_runtime_file_report_is_retained_and_cached_without_caller_mutation(monkeypatch):
     calls = []
     files = [{"path": "_internal/nvidia/cuda_runtime/bin/cudart64_12.dll", "exists": True}]

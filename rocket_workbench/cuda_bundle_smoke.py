@@ -10,6 +10,7 @@ import argparse
 import ctypes
 import hashlib
 import importlib
+import io
 import json
 from pathlib import Path
 import sys
@@ -25,52 +26,66 @@ _REQUIRED_DLLS = (
 )
 
 
-def _compile_offline_ptx(nvrtc, include_directory: Path, cupy_include: Path) -> dict:
-    """Compile a CUDA-runtime-header kernel using NVRTC, without a CUDA context."""
-    program = ctypes.c_void_p()
-    nvrtc.nvrtcCreateProgram.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_char_p,
-                                       ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
-    nvrtc.nvrtcCompileProgram.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
-    nvrtc.nvrtcGetProgramLogSize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
-    nvrtc.nvrtcGetProgramLog.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    nvrtc.nvrtcGetPTXSize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
-    nvrtc.nvrtcGetPTX.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    nvrtc.nvrtcDestroyProgram.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
-    nvrtc.nvrtcVersion.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
-    source = (b'#include <cuda_runtime.h>\n#include <cupy/carray.cuh>\n#include <cuda/std/limits>\n'
-              b'extern "C" __global__ void bundled_check(double* x) { '
-              b'x[threadIdx.x] *= cuda::std::numeric_limits<double>::digits > 0 ? 2.0 : 0.0; }\n')
-    if nvrtc.nvrtcCreateProgram(ctypes.byref(program), source, b"bundled_check.cu", 0, None, None) != 0:
-        raise RuntimeError("Bundled NVRTC could not create an offline compilation program.")
-    try:
-        include_paths = (include_directory, cupy_include,
-                         cupy_include / "cupy" / "_cccl" / "libcudacxx")
-        arguments = [b"--gpu-architecture=compute_75", b"--std=c++17"]
-        arguments += [("--include-path=" + str(path)).encode("utf8") for path in include_paths]
-        options = (ctypes.c_char_p * len(arguments))(*arguments)
-        compilation_status = nvrtc.nvrtcCompileProgram(program, len(options), options)
-        log_size = ctypes.c_size_t()
-        nvrtc.nvrtcGetProgramLogSize(program, ctypes.byref(log_size))
-        log = ctypes.create_string_buffer(max(1, log_size.value))
-        nvrtc.nvrtcGetProgramLog(program, log)
-        if compilation_status != 0:
-            raise RuntimeError(f"Bundled offline NVRTC compilation failed ({compilation_status}): {log.value.decode('utf8', 'replace')}")
-        ptx_size = ctypes.c_size_t()
-        if nvrtc.nvrtcGetPTXSize(program, ctypes.byref(ptx_size)) != 0 or ptx_size.value <= 1:
-            raise RuntimeError("NVRTC reported success but returned no compiled PTX.")
-        ptx = ctypes.create_string_buffer(ptx_size.value)
-        if nvrtc.nvrtcGetPTX(program, ptx) != 0 or b"bundled_check" not in ptx.value:
+def _compile_offline_ptx(compiler, include_directory: Path, cupy_include: Path) -> dict:
+    """Exercise CuPy's real compiler path before the gate loads any extra DLLs.
+
+    These private APIs are from the locked CuPy version. ``_preprocess`` is the
+    very first NVRTC compilation made by normal CuPy elementwise kernels. Using
+    it here catches a compiler that imports successfully but cannot load its
+    builtins. Neither it nor ``_NVRTCProgram`` requests a device or CUDA context.
+    Direct compilation bypasses the on-disk kernel cache, so a cached success
+    cannot hide missing native resources in a newly installed application.
+    """
+    source = ('#include <cuda_runtime.h>\n#include <cupy/carray.cuh>\n#include <cuda/std/limits>\n'
+              'extern "C" __global__ void bundled_check(double* x) { '
+              'x[threadIdx.x] *= cuda::std::numeric_limits<double>::digits > 0 ? 2.0 : 0.0; }\n')
+    include_paths = (include_directory, cupy_include,
+                     cupy_include / "cupy" / "_cccl" / "libcudacxx")
+    common_options = ("--std=c++17",) + tuple("--include-path=" + str(path) for path in include_paths)
+    compilations = []
+    for architecture in ("75", "89"):
+        # Match compiler.py::_compile_with_cache_cuda -> _preprocess ->
+        # _NVRTCProgram.compile, without invoking the GPU-dependent cache API.
+        compiler._preprocess("", common_options, architecture, "nvrtc")
+        log = io.StringIO()
+        options = common_options + ("--gpu-architecture=compute_" + architecture,)
+        program = compiler._NVRTCProgram(source, "bundled_check.cu")
+        try:
+            ptx, _ = program.compile(options, log_stream=log)
+        finally:
+            # CuPy's program destructor releases NVRTC resources. Retaining it
+            # would unnecessarily keep compiler programs alive for later checks.
+            del program
+        if not isinstance(ptx, bytes) or b"bundled_check" not in ptx:
             raise RuntimeError("NVRTC did not return the compiled reference kernel.")
-        major, minor = ctypes.c_int(), ctypes.c_int()
-        if nvrtc.nvrtcVersion(ctypes.byref(major), ctypes.byref(minor)) != 0:
-            raise RuntimeError("Bundled NVRTC version query failed.")
-        return {"nvrtc_version": f"{major.value}.{minor.value}", "ptx_bytes": len(ptx.value),
-                "ptx_sha256": hashlib.sha256(ptx.value).hexdigest(),
-                "compile_log": log.value.decode("utf8", "replace"),
-                "compiled_headers": ["cuda_runtime.h", "cupy/carray.cuh", "cuda/std/limits"],
-                "target": "compute_75 (offline compilation target; no device requested)"}
-    finally:
-        nvrtc.nvrtcDestroyProgram(ctypes.byref(program))
+        compilations.append({"target": "compute_" + architecture, "ptx_bytes": len(ptx),
+                             "ptx_sha256": hashlib.sha256(ptx).hexdigest(),
+                             "compile_log": log.getvalue()})
+    major, minor = compiler.nvrtc.getVersion()
+    return {"nvrtc_version": f"{major}.{minor}",
+            "ptx_bytes": sum(row["ptx_bytes"] for row in compilations),
+            "ptx_bytes_scope": "Sum of freshly compiled PTX bytes for both offline targets.",
+            "compiled_headers": ["cuda_runtime.h", "cupy/carray.cuh", "cuda/std/limits"],
+            "targets": [row["target"] for row in compilations],
+            "compilations": compilations,
+            "compiler_path": "cupy.cuda.compiler._preprocess and _NVRTCProgram.compile",
+            "cache": "Bypassed; both targets compile freshly through CuPy's NVRTC binding.",
+            "startup_path_verified": True,
+            "test_only_preloads_before_compilation": False,
+            "device_execution": "Not tested; these offline targets do not request a device or context."}
+
+
+def _kernel_header_paths(root: Path) -> tuple[Path, Path]:
+    """Inspect shipped headers without invoking a native library loader."""
+    include_directory = root / "nvidia" / "cuda_runtime" / "include"
+    cupy_include = root / "cupy" / "_core" / "include"
+    expected = [include_directory / "cuda_runtime.h"] + [cupy_include / relative for relative in (
+        "cupy/carray.cuh", "cupy/_cccl/libcudacxx/cuda/std/limits",
+        "cupy/_cccl/cub/cub/cub.cuh", "cupy/_cccl/thrust/thrust/tuple.h")]
+    for path in expected:
+        if not path.is_file() or not path.resolve().is_relative_to(root):
+            raise RuntimeError(f"Bundled CUDA/CuPy kernel header is missing or outside the bundle: {path}")
+    return include_directory, cupy_include
 
 
 def check_bundle() -> dict:
@@ -93,6 +108,12 @@ def check_bundle() -> dict:
         cp = importlib.import_module("cupy")
     except Exception as error:
         raise RuntimeError(f"CuPy native import failed after Qt native loading: {type(error).__name__}: {error}") from error
+    # First compile through normal CuPy, in this fresh executable process. Do
+    # not move the explicit inventory loads above this: loading builtins only
+    # inside a test made 0.3.0 falsely pass while normal application use failed.
+    include_directory, cupy_include = _kernel_header_paths(root)
+    native_compiler = importlib.import_module("cupy.cuda.compiler")
+    compiler = _compile_offline_ptx(native_compiler, include_directory, cupy_include)
     for module in ("cupy_backends.cuda.libs.cublas", "cupy.cuda.cufft",
                    "cupy_backends.cuda.libs.curand", "cupy_backends.cuda.libs.cusolver",
                    "cupy_backends.cuda.libs.cusparse", "cupy_backends.cuda.libs.nvrtc",
@@ -124,15 +145,9 @@ def check_bundle() -> dict:
         if path is None or not path.is_relative_to(root) or not (path / filename).is_file():
             raise RuntimeError(f"Bundled {name} compilation headers could not be discovered: {value}")
         headers[name] = str(path)
-    cupy_include = root / "cupy" / "_core" / "include"
-    for relative in ("cupy/carray.cuh", "cupy/_cccl/libcudacxx/cuda/std/limits",
-                     "cupy/_cccl/cub/cub/cub.cuh", "cupy/_cccl/thrust/thrust/tuple.h"):
-        if not (cupy_include / relative).is_file():
-            raise RuntimeError(f"Bundled CuPy kernel headers are missing: {relative}")
-    compiler = _compile_offline_ptx(loaded["nvrtc64_120_0.dll"], Path(headers["cudart"]), cupy_include)
     from . import __version__
     return {"status": "ok", "application_version": __version__, "cupy_version": cp.__version__,
-            "scope": "Frozen native imports, bundled CUDA DLL loading, header discovery and offline NVRTC PTX compilation.",
+            "scope": "Fresh normal startup, CuPy offline NVRTC compilation for compute_75/89 before test-only DLL loads, then bundled resource verification.",
             "device_execution": "Not tested; no NVIDIA device or driver is required for this packaging check.",
             "native_import_order": "PySide6.QtWebEngineWidgets before CuPy, as in desktop startup.",
             "registration": registration, "libraries": records, "pathfinder_libraries": located_libraries,
