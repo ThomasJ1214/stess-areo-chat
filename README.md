@@ -14,8 +14,7 @@ Mach setting does not establish validated supersonic accuracy.
 
 ## Install on Windows
 
-Open the [Windows offline installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml)
-and choose a successful version **0.3.0** run,
+Open the [verified version 0.3.0 installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882324#artifacts),
 sign in to GitHub, and download **RocketWorkbench-windows-x64-installer**
 (approximately 1.5 GB). Unzip it, open `release/` if present, and run
 `RocketWorkbench-0.3.0-windows-x64-setup.exe`. No Python, Node.js, separate CAD
@@ -26,6 +25,13 @@ Artifacts are retained for 30 days. If the download has expired, run the
 again. The artifact's manifest identifies the exact source commit and dependency
 versions. Review [validation evidence](docs/VALIDATION.md); download-documentation
 updates do not change an existing binary's identity.
+
+This installer was built from `893c7274b1932d6496aa2aa509601075a6f66eb0`.
+Frozen and installed CuPy/CUDA imports and offline kernel compilation passed,
+along with installed engineering, native desktop/WebGL and preference-restart
+checks. Physical NVIDIA execution and performance need a real-device check.
+Close an earlier app version before running the new installer, then open
+**CFD → GPU diagnostics** to check your device.
 
 See [step-by-step Windows installation](docs/WINDOWS_INSTALL.md). The normal build
 includes CUDA runtime libraries for supported NVIDIA GPU calculations. An NVIDIA

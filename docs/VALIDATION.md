@@ -1,21 +1,61 @@
 # Validation checkpoint
 
-Recorded 2026-10-09 during the version 0.3.0 review in the Linux cloud workspace.
-The new source passed **330 Python tests**, **48 frontend tests**, and the
-production frontend build. The version 0.3.0 engine smoke passed with 3,409 synthetic flight samples and
+Recorded 2026-10-09 during the version 0.3.0 review, using the Linux cloud
+workspace and GitHub-hosted Linux/Windows runners.
+The final clean source passed **332 Python tests**, **48 frontend tests**, and the
+production frontend build. The version 0.3.0 engine smoke passed with 3,409
+synthetic flight samples and
 a real 731-element solid solve (equilibrium error 5.85e-15). Native Qt startup
 passed shell, WebGL, authenticated API and project-load checks. Native preference
 checks passed reload and two fresh-origin launches, including final-edit flushing;
 receipts are `build/native-preferences-smoke.json` and
 `build/production-preferences-smoke.json` (source executable, `frozen:false`).
-Final browser and Windows package checks are being completed before release. Physical NVIDIA execution
-and hardware performance remain unverified in this CPU cloud environment.
+The final local browser check passed all **25 workflows** with zero JavaScript
+errors or external page requests. Its receipt,
+`build/browser-smoke-03-final/receipt.json`, records the precommit 0.3.0 working
+tree. Windows package checks passed as detailed below. Physical NVIDIA
+execution and hardware performance remain unverified in this CPU cloud environment.
+
+The [0.3.0 cross-platform workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882373)
+passed all four Linux/Windows engineering, frontend and browser jobs for source
+`893c7274b1932d6496aa2aa509601075a6f66eb0`. Its browser evidence artifact is
+`11618071492` (8.05 MB; ZIP SHA-256
+`62a51dc09eed8369b49433359c3a3754fb55e9b40199ad42c9cd47f00ccb95da`).
+This clean-source run separately verifies the final integrated browser workflows.
 
 The 0.3.0 change repairs frozen CUDA resource discovery and adds a hard packaging
 check: real CuPy native imports, ten shipped CUDA DLLs, header discovery and offline
 NVRTC PTX compilation. This check requires no GPU, and import failures cannot
 pass as CPU fallback. Both the frozen executable and silently installed executable
-must pass it. A physical-device check remains separate.
+must pass it. The first strict Windows check caught a missing `graphlib` import
+in a compiled CuPy extension; the corrected source explicitly includes that
+module. This was a packaging failure, and no installer from that failed run was
+accepted. A physical-device check remains separate.
+
+A later Windows candidate passed frozen and installed CUDA, engineering and
+native desktop/WebGL checks, then failed the preference smoke test. Reproduction
+with the original hook at 900 pixels identified its wait for **Hide assembly**:
+responsive layout had already collapsed that panel. The corrected test opens it,
+sets a nondefault 210-pixel width, hides it and verifies restoration across two
+fresh ports. Tutorial progress, map points and final-close flushing remain
+required. Source Qt and the production CLI hook both passed these stronger
+checks, followed by the actual installed Windows executable. The final Windows
+run passed all release gates.
+
+The [0.3.0 Windows installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882324)
+passed frozen engineering and strict CuPy/CUDA import, DLL/header and offline
+kernel compilation checks, silent installation, installed engineering and CUDA
+checks, native desktop/authenticated API/WebGL, and two-session preference
+restoration at a 900-pixel window width. It built from the same clean source
+`893c7274b1932d6496aa2aa509601075a6f66eb0`. The artifact contains its dependency/source
+manifest, EXE SHA-256, engine/CUDA/native/preference receipts and beginner guides.
+The hosted runner used software WebGL and no physical NVIDIA GPU: this verifies
+package behavior, not RTX 4070 Super numerical performance or a fresh consumer PC.
+Documentation-only commits after this source do not change the binary's identity.
+The [installer artifact](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882324/artifacts/11619041385)
+is `11619041385`, approximately 1.5 GB. Its **ZIP archive** SHA-256 is
+`6d2f6a8852696570ae4d25889aa414c3185cb94448cba9a8615f407881d9172b`;
+this is distinct from the setup EXE's checksum in `release/*.exe.sha256`.
 
 Continuous streamlines use the actual exported velocity field, with conservative
 wall masks and no interpolation through solids or sealed cavities. Independent

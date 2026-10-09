@@ -18,17 +18,16 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-Choose a successful **0.3.0** run from the
-[Windows installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/workflows/windows-build.yml).
+Open the [verified **0.3.0** installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882324#artifacts).
 The approximately 1.5 GB package includes guided tutorials, a resizable workspace,
 live motor search, launch playback, a local flight map, CAD automatic placement,
 and CFD/FEA setup guidance. See the [validation record](VALIDATION.md) for recorded
 checks; require a successful run before using its installer.
 
-1. Open the repository's **Actions** tab and choose **Windows offline installer**.
-2. Choose a successful run for the version you want. If there is no successful
-   run, use **Run workflow** with `main` to request one. A repository owner or
-   collaborator must have permission to run workflows.
+1. Open the linked installer run above and confirm its status is **Success**.
+2. Scroll down to **Artifacts**. If the download has expired, open the repository's
+   **Actions → Windows offline installer**, then use **Run workflow** with `main`.
+   A repository owner or collaborator must have permission to run workflows.
 3. Download the **RocketWorkbench-windows-x64-installer** artifact at the bottom
    of that run. GitHub may ask you to sign in for a private repository artifact.
 4. Right-click the downloaded ZIP and choose **Extract All**. The extracted files
@@ -52,6 +51,18 @@ is the one external GPU runtime prerequisite.
 
 GitHub may require sign-in even for a public repository's artifact. Artifacts
 expire after 30 days; request a new workflow run if the download has expired.
+
+## Upgrade an existing installation
+
+1. Save your open project, then close every Rocket Workbench window.
+2. Extract the new package and run its setup EXE. Use the same installation
+   folder as before so your Start menu shortcut opens the new version.
+3. Open the app and check that the header shows **0.3.0**. Your separately saved
+   projects and the session directory are outside the application installation.
+4. Open **CFD → GPU diagnostics** before a large GPU run. On a supported NVIDIA
+   system, the report should identify the GPU and a successful device allocation
+   and compiled reduction. If it fails, use **Copy diagnostics** to retain the complete
+   cause; an unset `CUDA_PATH` alone is expected with the bundled runtime.
 
 ## First engineering workflow
 
@@ -225,11 +236,13 @@ Workbench → Uninstall**. Your separately saved project files are yours to keep
 
 ## Build status
 
-The version 0.1.1 Windows workflow passed its build and installation checks for
-source commit `d5a0131`.
-Its installer is a real build artifact; generated binaries are kept out of Git
-source history. The workflow checked silent installation, installed engineering
-calculations and actual native desktop/API-session/WebGL startup using software
-WebGL. Workstation graphics, physical CUDA execution and a fresh consumer PC
-still require separate hardware checks. CPU tests and packaged library presence
-do not validate GPU performance on your graphics hardware.
+The linked version **0.3.0** installer was built from source
+`893c7274b1932d6496aa2aa509601075a6f66eb0`. Its Windows checks passed frozen and
+installed engineering calculations, actual CuPy native imports, bundled CUDA DLL
+and header discovery, offline kernel compilation, silent installation, native
+desktop/API-session/WebGL startup, and preference restoration across fresh
+sessions at a narrow window size. The hosted runner used software WebGL and had
+no physical NVIDIA GPU. Workstation graphics, numerical GPU execution and a
+fresh consumer PC need separate hardware checks. See [VALIDATION.md](VALIDATION.md)
+for receipts and artifact identity. Documentation-only commits after the binary's
+source revision do not rebuild it; generated binaries are kept out of Git history.

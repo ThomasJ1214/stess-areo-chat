@@ -43,6 +43,8 @@ flowchart LR
 | `alignment.py` | Read-only CAD placement proposals, preserved physical scale and adjacent axial gap/overlap diagnostics |
 | `fea_setup.py` | Shared solid-admission and thickness/resource checks; read-only mesh-sizing preflight |
 | `backenddiagnostics.py` | Cached numerical CUDA allocation/kernel probe, separate from viewport graphics support |
+| `bundled_cuda.py` / `cuda_bundle_smoke.py` | Trusted frozen-library discovery before native imports; strict shipped-DLL/header/offline-compiler packaging checks |
+| `desktop_preferences.py` | Bounded, atomic UI-only preference storage; pre-React restoration and close flushing across ephemeral desktop origins |
 | `solvers/aero.py` | Atmosphere, mass properties, reference-geometry estimates and geometry-bound coefficient-table interpolation |
 | `solvers/flight.py` | Passive launch/recovery integration, trajectory and event summaries |
 | `solvers/structure.py` | Scoped beam/fin estimates and linear static solid FEA |
@@ -179,6 +181,13 @@ actual samples. A following camera yields to manual orbit/pan/zoom and resumes
 after five seconds without input in follow mode. Rocket attitude remains
 illustrative because the solver does not integrate attitude.
 
+The follow view carries its relative framing with the recorded rocket position,
+uses bounded velocity look-ahead and snaps to discontinuous timeline selections.
+It does not smooth or change the trajectory. UI layout, tutorial progress and
+named map points persist in a separate whitelisted JSON file. The authenticated
+loopback origin still changes each launch, and the WebEngine profile stays in
+memory; session tokens and unrelated browser storage are never persisted there.
+
 The north-up map uses local east/north offsets from the launch pad. Numbered
 event points of interest seek the recorded flight time; no satellite, terrain or
 GPS service is implied.
@@ -223,6 +232,14 @@ produces a single user-local installer. Native DLLs, QtWebEngine resources,
 frontend assets, dependency metadata and application source snapshot are retained.
 CUDA toolkit libraries are included in the standard build; device drivers are
 provided by the machine owner.
+
+A PyInstaller runtime hook registers only bundled CUDA DLL directories and
+exposes the frozen resource root to cuda-pathfinder before importing CuPy.
+It preserves the user's `CUDA_PATH`. The build and installed-executable checks
+load the Qt/Windows runtime first, import actual CuPy native modules, discover
+shipped headers and compile offline PTX. These checks fail on packaging errors
+even without an NVIDIA device. Device execution remains a separate numerical
+allocation/kernel probe and requires physical-hardware validation.
 
 Desktop calls use a local-session token; normal development binds to loopback.
 The optional motor client uses a fixed HTTPS service rather than accepting
