@@ -187,10 +187,12 @@ export default function UserGuide({
         <section>
           <h3>4. Use CFD and FEA with declared limits</h3>
           <p>
-            In <strong>CFD</strong>, choose grid resolution, cell budget, step
-            and time limits, then solve. Pressure and velocity overlays come
-            from the numerical solution. Check the stop reason and all
-            convergence residuals. Increase grid resolution and
+            In <strong>CFD</strong>, choose grid resolution, cell budget and
+            simulation mode, then solve. Steady-state runs until numerical
+            convergence or Cancel, without wall-clock or step ceilings. Pressure
+            and velocity overlays come from the numerical solution. Check the
+            stop reason and all convergence residuals. Increase grid resolution
+            and
             <strong> Farfield padding</strong> separately to assess mesh and
             domain-size sensitivity. Padding is a multiple of each axis’s
             geometry extent; larger domains may require a larger cell budget.
@@ -203,21 +205,38 @@ export default function UserGuide({
             the computed velocity field. <strong>Flow display</strong> adjusts
             density, length, solved-speed colors and direction tracers. Lines
             stop at solid walls and the exported domain. Tracers use visual
-            timing on a frozen snapshot, rather than unsteady flow playback.
-            Older results without a structured field show sparse solved vectors;
-            rerun them for streamlines. These display settings do not change
-            the simulation.
+            timing on the selected computed snapshot, rather than physical
+            particle histories. High Streamline quality refines display
+            integration. X-ray rocket and Cutaway expose the stored field
+            without changing CAD or flow boundaries. Older results without a
+            structured field show sparse solved vectors; rerun them for
+            streamlines. These display settings do not change the simulation.
           </p>
           <p>
-            An unconverged result displays{" "}
-            <strong>Partial pressure force</strong>. To continue without step or
-            flow-time ceilings, enable <strong>Run until converged</strong>. Set{" "}
-            <strong>Wall time limit</strong> to 0 to remove the computer-time
-            ceiling too. Completion time is then unknown; Cancel preserves
-            actual partial fields for export.
-            <strong> GPU diagnostics</strong> explains real CUDA availability or
-            CPU fallback. At Mach below 0.3, this solver's pressure drag is
-            especially unreliable even if converged.
+            A steady result that has not converged displays{" "}
+            <strong>Partial pressure force</strong>. Its completion percent is
+            unknown. A decreasing residual trend may provide a tentative ETA
+            range; otherwise ETA remains unknown. Cancel preserves actual
+            partial fields for export. <strong>GPU diagnostics</strong> explains
+            real CUDA availability or CPU fallback. At Mach below 0.3, pressure
+            drag is especially unreliable even after convergence.
+          </p>
+          <p>
+            For <strong>Transient</strong>, choose{" "}
+            <strong>Actual calculated launch history</strong>
+            to follow the configured motor, airspeed, wind and atmosphere. A
+            current launch is reused when available; otherwise a launch is
+            calculated first. Select <strong>Whole available flight</strong> or
+            a short interval around an event. Every physical CFD step is
+            resolved, so full-flight computation may take hours or longer.{" "}
+            <strong>Fixed freestream</strong>
+            instead advances the stated duration under the current wind-test
+            conditions. Scrub the saved numerical frames with the flow timeline.
+            Each interval starts from uniform freestream and includes numerical
+            startup effects. Transient completion does not imply steady
+            convergence. This is one-way flow on fixed rigid geometry, without
+            moving-mesh attitude or canopy deployment, and its forces do not
+            revise the flight trajectory.
           </p>
           <p>
             In <strong>Structures</strong>, select the component, material, mesh

@@ -156,6 +156,14 @@ def _structural_content(result) -> str:
 
 def _cfd_content(result) -> str:
     output = _pairs(result.get("summary", {}))
+    transient = result.get("transient")
+    if isinstance(transient, Mapping):
+        output += "<h3>Actual transient snapshots</h3>"
+        output += _pairs({key: transient[key] for key in
+            ("duration_s", "completed", "temporal_sampling", "scope") if key in transient})
+        output += _table(transient.get("frames", []), ["time_s", "flight_time_s",
+            "freestream_mach", "altitude_msl_m", "dynamic_pressure_pa", "pressure_drag_n"])
+        output += '<p class="muted">Snapshot loads are instantaneous numerical results, not converged steady drag. Full field arrays are available in JSON.</p>'
     history = result.get("history", [])
     if history:
         output += "<h3>Recorded convergence history</h3>"
@@ -251,6 +259,8 @@ def _plot(rows, x_key, y_key, title, x_label, y_label) -> str:
 
 def _flight_content(result) -> str:
     output = _pairs(result.get("summary", {}))
+    if result.get("numerical_integration"):
+        output += "<h3>Numerical integration and accuracy controls</h3>" + _pairs(result["numerical_integration"])
     if result.get("events"):
         events = [{"event": row.get("name"), "time_s": row.get("time"), "sample_index": row.get("index")}
                   for row in result["events"] if isinstance(row, Mapping)]

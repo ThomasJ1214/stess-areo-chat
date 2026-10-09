@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { defaultConditions } from "./types";
 import {
   defaultCfdOptions,
+  restoreCfdOptions,
+  cfdRequestOptions,
   defaultFeaOptions,
   feaRequestOptions,
   mergeOptions,
@@ -67,5 +69,93 @@ describe("portable analysis setup", () => {
       ).not.toHaveProperty("load_pressure_pa");
     }
     expect(defaultFeaOptions.load_pressure_pa).toBe(0);
+  });
+  it("migrates legacy CFD budgets without binding reopened projects to stale jobs", () => {
+    const restored = restoreCfdOptions({
+      max_steps: 1,
+      max_wall_seconds: 1,
+      max_physical_time: 1,
+      flow_through_times: 0.1,
+      run_until_converged: false,
+      flight_job_id: "expired-job",
+      mode: "transient",
+      transient_source: "launch",
+      flight_window: "interval",
+      flight_start_s: 2,
+      flight_end_s: 2.01,
+      domain_padding: 1.5,
+      future_solver_extension: true,
+    });
+    for (const key of [
+      "max_steps",
+      "max_wall_seconds",
+      "max_physical_time",
+      "flow_through_times",
+      "run_until_converged",
+      "flight_job_id",
+    ])
+      expect(restored).not.toHaveProperty(key);
+    expect(restored.mode).toBe("transient");
+    expect(restored.flight_start_s).toBe(2);
+    expect(restored.domain_padding).toBe(1.5);
+    expect(restored).toHaveProperty("future_solver_extension", true);
+    expect(
+      restoreCfdOptions({
+        mode: "transient",
+        transient_source: "launch",
+        flight_start_s: 1,
+        flight_end_s: 1.01,
+      }).flight_window,
+    ).toBe("interval");
+    const malformed = restoreCfdOptions({
+      mode: "pretend-cfd",
+      transient_source: "synthetic",
+      flight_window: "yesterday",
+    });
+    expect(malformed.mode).toBe("steady");
+    expect(malformed.transient_source).toBe("launch");
+    expect(malformed.flight_window).toBe("whole");
+  });
+  it("sends launch intervals only when requested and preserves fixed-flow duration", () => {
+    const whole = cfdRequestOptions(
+      {
+        ...defaultCfdOptions,
+        mode: "transient",
+        flight_start_s: 20,
+        flight_end_s: 30,
+      },
+      "current-flight",
+    );
+    expect(whole).toHaveProperty("flight_job_id", "current-flight");
+    expect(whole).not.toHaveProperty("flight_start_s");
+    expect(whole).not.toHaveProperty("flight_end_s");
+    expect(whole).not.toHaveProperty("duration_s");
+    const interval = cfdRequestOptions({
+      ...defaultCfdOptions,
+      mode: "transient",
+      flight_window: "interval",
+      flight_start_s: 2,
+      flight_end_s: 2.01,
+    });
+    expect(interval.flight_start_s).toBe(2);
+    expect(interval.flight_end_s).toBe(2.01);
+    expect(interval).not.toHaveProperty("flight_job_id");
+    const fixed = cfdRequestOptions(
+      {
+        ...defaultCfdOptions,
+        mode: "transient",
+        transient_source: "fixed",
+        flight_window: "interval",
+        duration_s: 0.05,
+        flight_job_id: "stale",
+      },
+      "current-flight",
+    );
+    expect(fixed.duration_s).toBe(0.05);
+    expect(fixed).not.toHaveProperty("flight_job_id");
+    expect(fixed).not.toHaveProperty("flight_start_s");
+    expect(
+      cfdRequestOptions(defaultCfdOptions, "current-flight"),
+    ).not.toHaveProperty("flight_job_id");
   });
 });

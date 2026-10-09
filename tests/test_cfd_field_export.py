@@ -125,10 +125,15 @@ def test_partial_solve_exports_actual_field_with_original_fidelity_and_masks(mon
     from rocket_workbench.models import Conditions, Project
 
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
+    calls = 0
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls > 2
     result = cfd.solve(Project(), Conditions(mach=0.4, wind_speed=0), options={
-        "grid_resolution": 12, "transverse_resolution": 12, "max_steps": 2,
+        "grid_resolution": 12, "transverse_resolution": 12,
         "backend": "cpu", "sample_limit": 20, "surface_limit": 1,
-    })
+    }, cancelled=cancelled)
     export = result["flow_grid"]
     assert export["stride"] == 1
     assert export["solver_shape"] == result["summary"]["grid_shape"]

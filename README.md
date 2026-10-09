@@ -62,10 +62,10 @@ to keep the controls and results you need visible.
 | 3D inspection | GPU-rendered scene, component selection, original/replacement geometry, CG/CP and aerodynamic force visualization; resizable/collapsible panels |
 | Motor lookup | Explicit ThrustCurve.org search, curve/source preview and review before import; local ENG/RSE remains available offline |
 | Fast aerodynamics | Standard atmosphere, mass/CG, small-angle Barrowman reference geometry, drag/loading estimates and transparent unvalidated Mach corrections; import signature-bound coefficient CSV |
-| Flight | Passive point-mass launch, changing motor mass, single/dual recovery, wind and deterministic perturbations; red Launch button, rail/flat-ground scene, computed playback, adjustable following camera and north-up local flight/landing map with event points of interest |
+| Flight | Passive point-mass launch with error-controlled integration, changing motor mass, single/dual recovery, wind and deterministic gusts; red Launch button, rail/flat-ground scene, playback, load/stress/wind graphs, following camera and north-up landing map |
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
 | Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
-| CFD | Experimental 3D compressible inviscid Euler finite-volume solver, actual pressure/velocity and convergence history; bounded or convergence-only runs with cancellation and explicit partial-result status |
+| CFD | Experimental 3D compressible inviscid Euler finite volumes; steady-state and actual time-resolved transient modes, launch-driven airflow, saved frame playback, cancellation and qualified ETA; no runtime/step ceilings |
 | Pressure-transfer FEA | One-way mapping from a completed, numerically converged and geometry-matched CFD job; mapped coverage/distances are reported |
 | Studies | Parameter/wind sweeps, seeded Monte Carlo, configuration and original/replacement comparisons |
 | Data | Self-contained project JSON with imported mesh assets; simulation JSON/CSV and HTML reports; metric and US customary display units |
@@ -82,8 +82,10 @@ its Mach coverage. The table is bound to the selected configuration and exact
 geometry; source accuracy still requires independent validation. CFD excludes
 viscosity, skin friction and physical turbulence. Low-Mach pressure drag is
 particularly unreliable with this scheme, even after numerical convergence.
-A timed-out run returns a labeled partial field. Removing a timeout allows more
-work but does not guarantee convergence or physical accuracy. Solid FEA may need
+A cancelled run returns a labeled partial field. Unlimited runtime does not
+guarantee convergence or physical accuracy. Transient launch flow prescribes a
+one-way boundary history around fixed geometry; it does not solve moving-body
+attitude or feedback into flight. Solid FEA may need
 more elements than the budget permits for whole thin parts; use supported beam/fin
 estimates or a smaller physical CAD part. Shell FEA and region cutting are not
 included. Flight

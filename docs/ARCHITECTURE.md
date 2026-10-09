@@ -251,12 +251,15 @@ resource handling. Project schemas reject invalid numbers; solvers additionally
 validate physical prerequisites. Completed results are snapshots, not promises
 that later project edits retroactively change a past run.
 
-Progress is derived from solver steps/iterations and studies. For a bounded CFD
-run it represents consumed work budget, not percentage converged; ETA estimates
-the configured limit. Convergence-only CFD with no wall-clock limit has no known
-completion percentage or ETA. The UI shows elapsed time, steps, physical domain
-crossings and current residuals instead. A timed-out CFD job can complete its
-software lifecycle while its returned flow field remains explicitly partial.
+Progress is derived from solver telemetry and studies. Steady CFD has no
+completion percentage; a tentative convergence ETA requires a consistent measured
+residual trend and otherwise stays unknown. Transient percentage measures actual
+integrated physical time and its ETA uses recent measured throughput. Neither mode
+has a wall-clock or step timeout. The UI also shows elapsed time, steps, physical
+domain crossings and residuals. Completed transient fields are instantaneous
+numerical states, with a separate status from steady convergence. Launch-driven
+boundary schedules are snapshots of computed, geometry-matched flight inputs;
+they do not turn the point-mass trajectory into coupled attitude/CFD simulation.
 Cancellation is checked at safe solver boundaries. A grid/cell or tetrahedron
 budget is a resource limit and must be reported instead of fabricating convergence.
 

@@ -130,12 +130,10 @@ Options passed to `cfd.solve`:
 | `transverse_resolution` | min(24, axial resolution) | Cells across each transverse geometry extent, 12–128 |
 | `domain_padding` | 0.5 | Padding in multiples of corresponding geometry extent; downstream padding is at least 0.65 |
 | `max_cells` | 300,000 | Explicit allocation budget, maximum 2,000,000; excess grids are rejected |
-| `max_steps` | 5,000 | Maximum accepted conservative steps, 1–10,000 |
-| `run_until_converged` | false | Ignore step and physical-time ceilings; continue until numerical convergence, cancellation, or a nonzero wall-clock timeout |
+| `mode` | `steady` | `steady` attempts numerical convergence; `transient` integrates a defined physical interval |
+| `duration_s` | required for transient | Actual physical flow duration in seconds; this is not a computer runtime limit |
+| `snapshot_count` | 24 | Maximum saved instantaneous display frames, 2–32 |
 | `cfl` | 0.35 | CFL multiplier, 0.01–0.8 |
-| `max_wall_seconds` | 1,200 | Solver wall-clock budget, 0–86,400 seconds; **0 disables this timeout** |
-| `flow_through_times` | 2 | Target simulated time in domain-crossing times |
-| `max_physical_time` | derived | Optional explicit physical integration time in seconds |
 | `convergence_tolerance` | 0.00001 | Tolerance for conserved-state, wall-pressure, force and moment rate changes per crossing time |
 | `sample_limit` | 4,000 | Maximum fluid field samples returned to the viewer |
 | `surface_limit` | 5,000 | Maximum exposed-wall pressure samples returned |
@@ -145,18 +143,17 @@ Options passed to `cfd.solve`:
 The default grid is a quick experimental run, especially for thin fins; it
 is not sufficient merely because the solver finishes. Compare progressively
 refined grids and enlarged domains. Memory and runtime grow rapidly with
-resolution. Cell budgets always limit grid allocations. Default time/step
-budgets make an initial run bounded; they are stopping rules, not an assurance
-that the flow reaches steady state. A wall-clock budget is checked between
-steps, includes voxelization, and excludes final extraction and the first cached
-CUDA check; it is not a precise process timeout.
+resolution. Cell budgets always limit grid allocations. There is no wall-clock,
+step-count or domain-crossing timeout in either mode. Old project options
+`max_steps`, `max_wall_seconds`, `flow_through_times`, `max_physical_time` and
+`run_until_converged` no longer impose stopping limits; direct solver calls retain
+an explicit migration warning when those keys are supplied.
 
-For a full numerical steady-state attempt, enable **Stop only at convergence**
-(`run_until_converged`) and set **Wall time limit** to **0**. This can run indefinitely
-when the flow does not settle; **Cancel** still stops between steps and preserves
-actual partial fields. A nonzero time limit remains active in convergence mode.
-The stored step count and target flow time remain useful reference budgets but
-do not stop that mode. Diagnostic history is thinned to at most 4,000 samples,
+Choose **Steady-state** to run until the numerical convergence test succeeds or
+you cancel. A flow that does not settle can run indefinitely. Choose **Transient**
+to resolve the requested physical duration, even if the state becomes steady
+earlier. **Cancel** stops between accepted steps and preserves actual partial
+fields. Diagnostic history is thinned to at most 4,000 samples,
 retaining the first and latest sample, so long runs do not accumulate unlimited
 history memory. This temporal sampling does not alter the numerical state.
 
@@ -173,12 +170,16 @@ step alone cannot improve them. Whole-domain RMS alone could hide changing loads
 among many undisturbed farfield cells. Steady convergence therefore requires
 **all four** rates below tolerance for 20 successive steps after at least half
 a domain crossing time. This criterion does not establish grid convergence or
-physical validation. Percentage and ETA refer to the configured work budget,
-not a promise that the underlying flow reaches steady state by that time.
-Unlimited convergence mode has no meaningful completion percentage or
-convergence ETA. Its progress text instead reports accepted steps, physical
+physical validation. Steady-state has no meaningful completion percentage.
+Its progress text reports accepted steps, physical
 domain crossings, all residuals, and whether the half-crossing minimum time has
 been reached. `progress_basis = convergence_unknown` distinguishes that mode.
+The job layer may show a tentative convergence ETA range only when measured
+residuals consistently decline; insufficient data, stalls or oscillations leave
+the ETA unknown. This prediction is not a convergence guarantee. Transient
+percentage is integrated physical time divided by the requested duration; its
+ETA uses recent measured physical-time throughput. Initialization and extraction
+are separate phases, and changing CFL steps or hardware load change the estimate.
 
 The summary reports `domain_crossings_completed`,
 `minimum_convergence_time_s`, `minimum_convergence_time_reached`, measured
@@ -192,10 +193,31 @@ length divided by resultant freestream speed, with a 0.1-sound-speed floor at
 near-zero inflow. Reaching the minimum only permits the convergence test; all
 four residuals must still stay below tolerance for 20 successive steps.
 
-The `summary.status` value distinguishes `converged`, `step_budget`,
-`physical_time_budget`, `wall_clock_budget`, and `cancelled`. A budget-limited
-run still returns its actual partial fields and loads, with an explicit warning;
-it is never labeled converged. Cancellation is cooperative between steps.
+The `summary.status` value distinguishes `converged`, `transient_complete` and
+`cancelled`. A completed transient experiment is not a converged steady result.
+A cancelled run retains its actual partial fields and loads with an explicit
+warning. Cancellation is cooperative between steps.
+
+### Flight-driven transient experiments
+
+Transient CFD can use the current launch simulation, or a geometry-matched saved
+flight job. Select the whole flight or a shorter interval around rail exit,
+burnout or max Q. The boundary history uses calculated **air-relative** velocity,
+wind and local atmosphere, rather than ground speed or one fixed entered Mach.
+The CFD clock advances with its real acoustic CFL time step; a longer launch
+interval is not accelerated by skipping fluid integration. A whole flight can
+require millions of steps and substantial runtime. Begin with a short interval.
+
+This is one-way prescribed airflow around fixed rigid geometry. It does not
+solve six-degree-of-freedom attitude, rotating-frame flow, a moving mesh, canopy
+deployment geometry or feedback of CFD loads into the trajectory. The saved
+profile records its frame assumption and interpolation policy. The point-mass
+flight and aerodynamic-coefficient limitations remain applicable. Actual
+transient fields are available at bounded saved timestamps, with frame-specific
+freestream pressure, dynamic pressure, Mach, altitude and flight time. Playback
+selects those computed states; it does not manufacture intermediate flow fields.
+Only completed, converged **steady** results qualify for the existing CFD-to-FEA
+pressure-transfer workflow.
 
 `samples` contain position, absolute pressure, density, solved velocity and
 local Mach. `surface` contains exposed face position, numerical absolute wall
@@ -287,6 +309,15 @@ pretends CPU work ran on a GPU. AMD/Intel rendering support does not imply CUDA
 solver support. The CUDA runtime can be bundled, but a hardware-specific GPU
 driver remains a prerequisite installed on the Windows computer.
 
+Frozen Windows startup loads the bundled, version-matched
+`nvrtc-builtins64_129.dll` by absolute path before its NVRTC compiler and retains
+both library handles. This handles NVRTC's later name-based builtins load without
+changing global `PATH` or requiring a CUDA Toolkit installation. Packaging tests
+exercise CuPy's ordinary compiler-preprocessing path before any test-only native
+library loads, then compile real uncached PTX for `compute_75` and `compute_89`
+(the RTX 4070 family). Offline compilation validates the shipped compiler path;
+the application's allocation/kernel probe still requires the actual GPU/driver.
+
 The finite-volume CPU/GPU kernels reuse already recovered primitive states for
 the Rusanov Euler fluxes. This removes redundant full-grid work without changing
 the conservative flux, reflected-wall pressure or positivity checks.
@@ -328,8 +359,9 @@ colors; inspect progressively refined grids before interpreting its loading.
 - A nonzero Mach 0.3, 5-degree oblique-flow box run reaching the configured
   conserved-state **and pressure-load** steady-state criteria, with a condition-specific pressure-resultant
   CP near the symmetric box center and explicit unvalidated-force metadata.
-- Cancellation, zero/nonzero wall timeout, full convergence mode beyond step and
-  flow-time ceilings, bounded history, JSON finiteness and explicit unavailable-GPU
+- Cancellation, ignored legacy wall/step/time budgets, bounded history,
+  exact transient duration despite zero residual, actual saved timestamps and
+  changing boundary metadata, JSON finiteness and explicit unavailable-GPU
   handling. Hardware-discovery tests use controlled fake runtimes to verify error
   stages, failed kernel execution, cache behavior and vendor messages; they do not
   substitute for physical NVIDIA hardware validation.
@@ -341,7 +373,7 @@ against uniform Euler flow and an analytic affine velocity field in anisotropic
 physical coordinates, safe ray termination at an unsampled one-cell barrier,
 blocked sealed interiors, bounded payload size and unchanged source arrays.
 
-These verify kernel behavior and bounded execution. They do not validate
+These verify kernel behavior and bounded output storage. They do not validate
 rocket drag, transonic shocks, CP or pressure accuracy. This release has no
 wind-tunnel rocket force benchmark and no claim of production CFD accuracy.
 For consequential design decisions, compare a grid/domain convergence study

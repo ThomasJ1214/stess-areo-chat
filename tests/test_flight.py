@@ -103,7 +103,8 @@ def test_ejection_after_ground_contact_reports_an_undeployed_impact():
     assert any("undeployed ground impact" in warning for warning in result["warnings"])
 
 
-def test_vacuum_triangular_motor_matches_closed_form_ballistics(monkeypatch):
+@pytest.mark.parametrize("maximum_step", [.005, .2])
+def test_vacuum_triangular_motor_matches_closed_form_ballistics(monkeypatch, maximum_step):
     original = aero.atmosphere
     def vacuum(altitude, temperature_delta=0):
         result = original(0)
@@ -120,12 +121,13 @@ def test_vacuum_triangular_motor_matches_closed_form_ballistics(monkeypatch):
     burnout_velocity = peak/mass - 2*g + .5*g*liftoff
     burnout_height = peak/mass - 2*g + g*liftoff - g*liftoff**2/6
     expected_apogee = burnout_height + burnout_velocity**2/(2*g)
-    result = flight.simulate(p, conditions(dt=.005, rail_length=.2, max_time=30))
+    result = flight.simulate(p, conditions(dt=maximum_step, rail_length=.2, max_time=30))
     row = result["trajectory"][event(result, "burnout")["index"]]
     assert row["vertical_velocity"] == pytest.approx(burnout_velocity, abs=.002)
     assert row["altitude"] == pytest.approx(burnout_height, abs=.004)
     assert result["summary"]["apogee_m"] == pytest.approx(expected_apogee, abs=.02)
     assert result["summary"]["total_impulse_ns"] == pytest.approx(200)
+    assert event(result, "liftoff")["time"] == pytest.approx(liftoff, abs=1e-8)
 
 
 def test_step_halving_converges_and_canopy_large_step_stays_stable():
@@ -283,3 +285,93 @@ def test_high_body_drag_matches_closed_form_terminal_approach(monkeypatch):
     assert result["trajectory"][-1]["vertical_velocity"] == pytest.approx(expected, rel=2e-5)
     assert all(0 <= row["vertical_velocity"] <= expected*(1+1e-4) for row in result["trajectory"])
     assert result["summary"]["integration_steps"] > 5
+
+
+def test_adaptive_variable_mass_flight_matches_ideal_rocket_equation(monkeypatch):
+    # Constant thrust and exhaust velocity in vacuum give an independent
+    # Tsiolkovsky solution, including gravity and the integral for height. This
+    # checks continuously changing motor mass, not just constant-mass ballistics.
+    original = aero.atmosphere
+    def vacuum(altitude, temperature_delta=0):
+        local = original(0)
+        local.update(density_kg_m3=0.0, gravity_m_s2=9.80665)
+        return local
+    monkeypatch.setattr(aero, "atmosphere", vacuum)
+    p = rocket("single")
+    p.motors[0].curve = [[0, 200], [2, 200]]
+    mass_initial, mass_final, duration, thrust, gravity = 3.5, 3.1, 2.0, 200.0, 9.80665
+    mass_rate = (mass_initial - mass_final) / duration
+    exhaust_velocity = thrust / mass_rate
+    expected_velocity = exhaust_velocity * math.log(mass_initial / mass_final) - gravity * duration
+    expected_height = exhaust_velocity * (duration + mass_final / mass_rate * math.log(mass_final / mass_initial)) - gravity * duration**2 / 2
+    result = flight.simulate(p, conditions(dt=.2, rail_length=.1, max_time=2))
+    burnout = result["trajectory"][event(result, "burnout")["index"]]
+    assert burnout["vertical_velocity"] == pytest.approx(expected_velocity, abs=2e-5)
+    assert burnout["altitude"] == pytest.approx(expected_height, abs=2e-5)
+    assert burnout["mass"] == pytest.approx(mass_final)
+    assert burnout["thrust"] == 0  # no extra impulse from the nonzero final knot
+    assert burnout["specific_acceleration"] == pytest.approx(0, abs=1e-12)
+    assert burnout["stress"] == pytest.approx(0, abs=1e-12)  # no fictitious gravity stress in freefall
+    assert result["summary"]["total_impulse_ns"] == 400
+    assert result["numerical_integration"]["maximum_accepted_error_norm"] <= 1
+    assert result["numerical_integration"]["maximum_accepted_step_s"] <= .2
+
+
+def test_adaptive_error_control_refines_nonlinear_drag_without_smaller_user_dt(monkeypatch):
+    original = aero.atmosphere
+    monkeypatch.setattr(aero, "atmosphere", lambda altitude, temperature_delta=0: original(0))
+    p = rocket()
+    p.motors[0].propellant_mass = 0
+    p.motors[0].curve = [[0, 200], [1, 200], [1.1, 0]]
+    p.metadata["aerodynamic_polars"] = [
+        {"mach": mach, "cd": 1000, "cna": 10, "cp_m": 1.2, "geometry_signature": aero.geometry_signature(p)}
+        for mach in [0, 2]
+    ]
+    mass, density, area = 3.1, 101325 / (287.05287 * 288.15), math.pi * .05**2
+    acceleration, damping = 200 / mass - 9.80665, density * 1000 * area / (2 * mass)
+    expected_velocity = math.sqrt(acceleration / damping) * math.tanh(math.sqrt(acceleration * damping))
+    expected_height = math.log(math.cosh(math.sqrt(acceleration * damping))) / damping
+    coarse = flight.simulate(p, conditions(dt=.2, rail_length=.01, max_time=1))
+    fine = flight.simulate(p, conditions(dt=.01, rail_length=.01, max_time=1))
+    for result in (coarse, fine):
+        assert result["trajectory"][-1]["vertical_velocity"] == pytest.approx(expected_velocity, abs=2e-5)
+        assert result["trajectory"][-1]["altitude"] == pytest.approx(expected_height, abs=2e-5)
+        assert result["numerical_integration"]["maximum_accepted_error_norm"] <= 1
+    assert coarse["numerical_integration"]["rejected_steps"] > 0
+    assert coarse["numerical_integration"]["maximum_accepted_step_s"] < .2
+    assert event(coarse, "rail_exit")["time"] == pytest.approx(event(fine, "rail_exit")["time"], abs=2e-6)
+
+
+def test_flight_exports_actual_air_relative_profile_and_assumed_axis_for_cfd():
+    result = flight.simulate(rocket(), conditions(wind_speed=7, wind_direction=90, dt=.1, max_time=5))
+    initial = result["trajectory"][0]
+    assert initial["velocity"] == 0
+    assert initial["air_relative_speed"] == 7
+    assert initial["air_relative_velocity_vector"] == pytest.approx([-7, 0, 0], abs=1e-12)
+    assert initial["body_axis_world"] == [0, 0, 1]
+    assert initial["pressure_pa"] == 101325
+    assert initial["temperature_k"] == 288.15
+    assert initial["density_kg_m3"] == pytest.approx(101325 / (287.05287 * 288.15))
+    for row in result["trajectory"]:
+        relative = [vehicle - wind for vehicle, wind in zip(row["velocity_vector"], row["wind_vector"])]
+        speed = math.sqrt(sum(value**2 for value in relative))
+        assert row["air_relative_velocity_vector"] == pytest.approx(relative)
+        assert row["mach"] == pytest.approx(speed / row["sound_speed_m_s"])
+        assert row["dynamic_pressure"] == pytest.approx(.5 * row["density_kg_m3"] * speed**2)
+        assert sum(value**2 for value in row["body_axis_world"]) == pytest.approx(1)
+    assert "Attitude is not integrated" in result["conventions"]["body_axis_world"]
+    assert "not a global trajectory error bound" in result["numerical_integration"]["error_scope"]
+    json.dumps(result, allow_nan=False)
+
+
+def test_reported_force_vectors_close_newtons_law_including_rail_reaction():
+    result = flight.simulate(rocket(), conditions(wind_speed=7, launch_angle=10, launch_azimuth=90, max_time=5))
+    for row in result["trajectory"]:
+        forces = row["force_vectors_n"]
+        for axis in range(3):
+            actual_sum = sum(forces[name][axis] for name in ("body_aerodynamic_drag", "recovery_drag", "thrust", "gravity", "rail_reaction"))
+            assert actual_sum == pytest.approx(row["mass"] * row["acceleration_vector"][axis], abs=1e-10)
+        assert row["load_breakdown"]["total_drag_n"] == pytest.approx(row["drag"])
+        if row["phase"] in ("powered", "coast"):
+            assert forces["rail_reaction"] == [0, 0, 0]
+    assert result["trajectory"][0]["load_breakdown"]["rail_reaction_n"] > 0

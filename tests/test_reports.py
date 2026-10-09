@@ -189,3 +189,23 @@ def test_all_cfd_convergence_gates_have_recorded_plots_and_finite_missing_gaps()
                for key in ('cx', 'cy') if key in attrs)
     assert len(parsed.plotted) == 3  # two separate force points are circles
     assert parsed.tags.count('circle') == 2
+
+
+def test_reports_retain_flight_accuracy_and_actual_transient_scope_without_field_dump():
+    flight = flight_result([])
+    flight['numerical_integration'] = {'method': 'adaptive_rk4_step_doubling',
+        'relative_tolerance': 1e-7, 'error_scope': 'Local error; not physical validation'}
+    report = render_report('flight', flight)
+    assert 'adaptive_rk4_step_doubling' in report and '1e-07' in report
+    assert 'Local error; not physical validation' in report
+    transient = {'summary': {'mode': 'transient', 'converged': False},
+        'transient': {'duration_s': .02, 'completed': True,
+            'scope': 'One-way prescribed launch airflow on fixed geometry',
+            'temporal_sampling': 'Actual accepted states only',
+            'frames': [{'time_s': .02, 'flight_time_s': 4.1,
+                'freestream_mach': .8, 'pressure_drag_n': 123,
+                'flow_velocity_m_s': ['large-transient-field'] * 10000}]}}
+    report = render_report('cfd', transient)
+    for text in ('Actual accepted states only', 'One-way prescribed launch airflow', '4.1', '123', 'not converged steady drag'):
+        assert text in report
+    assert 'large-transient-field' not in report and len(report) < 10000

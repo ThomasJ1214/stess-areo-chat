@@ -156,7 +156,7 @@ const flightSteps: TutorialStep[] = [
   {
     title: "Inspect the important moments",
     instruction:
-      "Pause or scrub the timeline. Click events such as Rail exit, Max Q, Burnout, Apogee, and Recovery to inspect the corresponding time. Enable Forces, wind, or stress overlays and compare them with the flight graphs.",
+      "Pause or scrub the timeline. Click events such as Rail exit, Max Q, Burnout, Apogee, and Recovery to inspect the corresponding time. Enable Forces, wind, or stress overlays. Switch flight graphs between Overview, Loads, and Wind & air to inspect actual trajectory data and air-relative loads.",
     check:
       "Read altitude, air-relative speed, Mach, dynamic pressure, and deployment state at that moment. Flight stress colors are quasi-static beam/fin estimates, not transient FEA.",
     workspace: "flight",
@@ -192,22 +192,22 @@ const cfdSteps: TutorialStep[] = [
     note: "Farfield padding is a multiple of each axis's geometry extent. A larger domain at the same cell resolution increases memory and work; neither a large budget nor GPU use proves accuracy.",
   },
   {
-    title: "Allow the solution time to settle",
+    title: "Choose steady or time-resolved flow",
     instruction:
-      "For a bounded check, set Maximum steps, Flow-through times, Wall time limit, CFL number and Convergence tolerance. For longer settling, enable Run until converged. A Wall time limit of 0 removes the elapsed-computation deadline. Click Solve flow field; cancel when needed.",
+      "Choose Steady-state to settle fixed conditions until convergence, or Transient to resolve a physical interval. There are no wall-clock or step ceilings. Keep CFL number and Convergence tolerance appropriate to the grid. For launch-driven transient, choose Actual calculated launch history and a selected interval or whole available flight; the launch is computed first if needed. Click Solve flow field; cancel when needed.",
     check:
-      "Read Stop reason and Convergence before using pressures. Budget-limited fields and forces are partial. Without a time limit, convergence completion percent and ETA are unknown; inspect elapsed time, steps and residuals instead.",
+      "Read Stop reason and Convergence before using pressures. Steady completion percent is unknown; a decreasing residual trend may supply a tentative ETA range. Transient percent tracks actual physical time and ETA uses recent measured integration speed. A completed transient is not a converged steady-state result.",
     workspace: "cfd",
-    note: "Removing limits does not guarantee convergence or accuracy. Below Mach 0.3 this scheme's pressure drag is especially unreliable even after numerical convergence.",
+    note: "Whole-flight CFD resolves every physical step and may take hours or longer. Launch-driven boundaries are one-way flow on fixed geometry without moving-mesh attitude or canopy deployment. Below Mach 0.3 pressure drag is especially unreliable even after convergence.",
   },
   {
     title: "Inspect solved flow and pressure",
     instruction:
-      "Enable Streamlines and Pressure in the 3D controls. In Flow display, adjust Streamline density and Streamline length, select solved-speed colors and toggle Direction tracers. Lines follow the actual velocity snapshot and stop at walls. Read pressure force and the conservation, wall-pressure, force, and moment residual histories.",
+      "Enable Streamlines and Pressure in the 3D controls. In Flow display, select High streamline quality, density, length and solved-speed colors. X-ray rocket and Cutaway reveal the stored field. Lines follow the actual velocity snapshot and stop at walls. In transient results, scrub saved flow frames to inspect actual computed states and flight conditions. Read pressure force and residual histories.",
     check:
       "All convergence measures settle and the pressure/force values are finite. Review the result warnings, actual backend, and exterior-flow diagnostics.",
     workspace: "cfd",
-    note: "Direction tracers use visual timing on a frozen snapshot, not unsteady particle histories. This experimental Euler solver excludes skin friction, boundary layers and physical turbulence; smooth lines and numerical convergence do not validate drag accuracy.",
+    note: "Direction tracers use visual timing on the selected snapshot, not physical particle histories. Higher display quality and cutaway do not change the numerical solution or create internal airflow. This experimental Euler solver excludes skin friction, boundary layers and physical turbulence; smooth lines do not validate drag accuracy.",
   },
   {
     title: "Test grid and domain sensitivity",
@@ -220,7 +220,7 @@ const cfdSteps: TutorialStep[] = [
   {
     title: "Transfer pressure only to matching structures",
     instruction:
-      "For a completed, converged CFD result, open Structures, select the same component and choose Converged CFD surface pressure. Keep the geometry unchanged. Export the CFD solution, report, and Run input project first.",
+      "For a completed, converged steady-state CFD result, open Structures, select the same component and choose Converged CFD surface pressure. Keep the geometry unchanged. Export the CFD solution, report, and Run input project first.",
     check:
       "FEA reports mapped pressure coverage and distances. A saved project does not include the numerical pressure field; rerun CFD after reopening the app to transfer it.",
     workspace: "cfd",

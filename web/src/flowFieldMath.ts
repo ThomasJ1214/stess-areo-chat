@@ -23,12 +23,24 @@ export interface CfdFlowSettings {
   length: number;
   colorBy: "speed" | "uniform";
   animate: boolean;
+  quality?: "draft" | "standard" | "high";
+  xray?: boolean;
+  cutaway?: boolean;
+  cutawayAxis?: "x" | "y" | "z";
+  cutawayPosition?: number;
+  cutawayReverse?: boolean;
 }
 export const defaultCfdFlowSettings: CfdFlowSettings = {
   density: 160,
   length: 1.3,
   colorBy: "speed",
   animate: true,
+  quality: "standard",
+  xray: false,
+  cutaway: false,
+  cutawayAxis: "z",
+  cutawayPosition: 0.5,
+  cutawayReverse: false,
 };
 
 const vector = (value: unknown): value is FlowPoint =>
@@ -41,13 +53,23 @@ const index = (grid: FlowGrid, i: number, j: number, k: number) =>
 
 export function readFlowGrid(raw: any): FlowGrid | null {
   if (
-    !raw || !vector(raw.shape) || !vector(raw.origin_m) ||
-    !vector(raw.spacing_m) || raw.shape.some((n: number) => n < 2 || !Number.isInteger(n)) ||
+    !raw ||
+    !vector(raw.shape) ||
+    !vector(raw.origin_m) ||
+    !vector(raw.spacing_m) ||
+    raw.shape.some((n: number) => n < 2 || !Number.isInteger(n)) ||
     raw.spacing_m.some((n: number) => n <= 0)
-  ) return null;
+  )
+    return null;
   const count = raw.shape.reduce((total: number, n: number) => total * n, 1);
-  if (count > 2_000_000 || !Array.isArray(raw.fluid_mask) || raw.fluid_mask.length !== count ||
-      !Array.isArray(raw.velocity_m_s) || raw.velocity_m_s.length !== count * 3) return null;
+  if (
+    count > 2_000_000 ||
+    !Array.isArray(raw.fluid_mask) ||
+    raw.fluid_mask.length !== count ||
+    !Array.isArray(raw.velocity_m_s) ||
+    raw.velocity_m_s.length !== count * 3
+  )
+    return null;
   const fluid = new Uint8Array(count);
   const velocity = new Float64Array(count * 3);
   let minimum = Infinity;
@@ -61,7 +83,11 @@ export function readFlowGrid(raw: any): FlowGrid | null {
       velocity[n * 3 + axis] = v;
     }
     if (fluid[n]) {
-      const speed = Math.hypot(velocity[n * 3], velocity[n * 3 + 1], velocity[n * 3 + 2]);
+      const speed = Math.hypot(
+        velocity[n * 3],
+        velocity[n * 3 + 1],
+        velocity[n * 3 + 2],
+      );
       minimum = Math.min(minimum, speed);
       maximum = Math.max(maximum, speed);
     }
@@ -70,85 +96,170 @@ export function readFlowGrid(raw: any): FlowGrid | null {
   const origin = [...raw.origin_m] as FlowPoint;
   const spacing = [...raw.spacing_m] as FlowPoint;
   return {
-    shape: [...raw.shape] as FlowPoint, origin, spacing,
-    upper: origin.map((v, axis) => v + spacing[axis] * (raw.shape[axis] - 1)) as FlowPoint,
-    fluid, velocity, speedRange: [minimum, maximum],
+    shape: [...raw.shape] as FlowPoint,
+    origin,
+    spacing,
+    upper: origin.map(
+      (v, axis) => v + spacing[axis] * (raw.shape[axis] - 1),
+    ) as FlowPoint,
+    fluid,
+    velocity,
+    speedRange: [minimum, maximum],
   };
 }
 
-export function sampleVelocity(grid: FlowGrid, point: FlowPoint): FlowPoint | null {
+export function sampleVelocity(
+  grid: FlowGrid,
+  point: FlowPoint,
+): FlowPoint | null {
   const base: number[] = [];
   const fraction: number[] = [];
   for (let axis = 0; axis < 3; axis++) {
     const coordinate = (point[axis] - grid.origin[axis]) / grid.spacing[axis];
-    if (coordinate < -1e-9 || coordinate > grid.shape[axis] - 1 + 1e-9) return null;
+    if (coordinate < -1e-9 || coordinate > grid.shape[axis] - 1 + 1e-9)
+      return null;
     const bounded = Math.max(0, Math.min(grid.shape[axis] - 1, coordinate));
     base[axis] = Math.min(Math.floor(bounded), grid.shape[axis] - 2);
     fraction[axis] = bounded - base[axis];
   }
   const result: FlowPoint = [0, 0, 0];
-  for (let di = 0; di <= 1; di++) for (let dj = 0; dj <= 1; dj++) for (let dk = 0; dk <= 1; dk++) {
-    const weight = (di ? fraction[0] : 1 - fraction[0]) *
-      (dj ? fraction[1] : 1 - fraction[1]) * (dk ? fraction[2] : 1 - fraction[2]);
-    if (weight <= 1e-14) continue;
-    const n = index(grid, base[0] + di, base[1] + dj, base[2] + dk);
-    if (!grid.fluid[n]) return null;
-    for (let axis = 0; axis < 3; axis++) result[axis] += grid.velocity[n * 3 + axis] * weight;
-  }
+  for (let di = 0; di <= 1; di++)
+    for (let dj = 0; dj <= 1; dj++)
+      for (let dk = 0; dk <= 1; dk++) {
+        const weight =
+          (di ? fraction[0] : 1 - fraction[0]) *
+          (dj ? fraction[1] : 1 - fraction[1]) *
+          (dk ? fraction[2] : 1 - fraction[2]);
+        if (weight <= 1e-14) continue;
+        const n = index(grid, base[0] + di, base[1] + dj, base[2] + dk);
+        if (!grid.fluid[n]) return null;
+        for (let axis = 0; axis < 3; axis++)
+          result[axis] += grid.velocity[n * 3 + axis] * weight;
+      }
   return result;
 }
 
-function direction(grid: FlowGrid, point: FlowPoint, sign: number): FlowPoint | null {
+function direction(
+  grid: FlowGrid,
+  point: FlowPoint,
+  sign: number,
+): FlowPoint | null {
   const velocity = sampleVelocity(grid, point);
   if (!velocity) return null;
   const speed = magnitude(velocity);
   if (speed <= Math.max(1e-8, grid.speedRange[1] * 1e-9)) return null;
-  return velocity.map((v) => sign * v / speed) as FlowPoint;
+  return velocity.map((v) => (sign * v) / speed) as FlowPoint;
 }
 
 function edgeDistance(grid: FlowGrid, point: FlowPoint, dir: FlowPoint) {
   let distance = Infinity;
   for (let axis = 0; axis < 3; axis++) {
-    if (dir[axis] > 1e-14) distance = Math.min(distance, (grid.upper[axis] - point[axis]) / dir[axis]);
-    if (dir[axis] < -1e-14) distance = Math.min(distance, (grid.origin[axis] - point[axis]) / dir[axis]);
+    if (dir[axis] > 1e-14)
+      distance = Math.min(
+        distance,
+        (grid.upper[axis] - point[axis]) / dir[axis],
+      );
+    if (dir[axis] < -1e-14)
+      distance = Math.min(
+        distance,
+        (grid.origin[axis] - point[axis]) / dir[axis],
+      );
   }
   return Math.max(0, distance);
 }
 
 function safeSegment(grid: FlowGrid, start: FlowPoint, end: FlowPoint) {
-  const subdivisions = Math.max(2, Math.ceil(Math.max(...end.map((v, axis) =>
-    Math.abs(v - start[axis]) / grid.spacing[axis])) * 4));
+  const subdivisions = Math.max(
+    2,
+    Math.ceil(
+      Math.max(
+        ...end.map((v, axis) => Math.abs(v - start[axis]) / grid.spacing[axis]),
+      ) * 4,
+    ),
+  );
   for (let i = 1; i <= subdivisions; i++) {
-    const point = start.map((v, axis) => v + (end[axis] - v) * i / subdivisions) as FlowPoint;
+    const point = start.map(
+      (v, axis) => v + ((end[axis] - v) * i) / subdivisions,
+    ) as FlowPoint;
     if (!sampleVelocity(grid, point)) return false;
   }
   return true;
 }
 
-function integrateDirection(grid: FlowGrid, seed: FlowPoint, sign: number, maximumLength: number) {
+function rk4Point(
+  grid: FlowGrid,
+  previous: FlowPoint,
+  sign: number,
+  h: number,
+): FlowPoint | null {
+  const k1 = direction(grid, previous, sign);
+  const k2 = k1 && direction(grid, add(previous, k1, h / 2), sign);
+  const k3 = k2 && direction(grid, add(previous, k2, h / 2), sign);
+  const k4 = k3 && direction(grid, add(previous, k3, h), sign);
+  if (!k1 || !k2 || !k3 || !k4) return null;
+  return previous.map(
+    (v, axis) =>
+      v + (h * (k1[axis] + 2 * k2[axis] + 2 * k3[axis] + k4[axis])) / 6,
+  ) as FlowPoint;
+}
+
+function integrateDirection(
+  grid: FlowGrid,
+  seed: FlowPoint,
+  sign: number,
+  maximumLength: number,
+  quality: NonNullable<CfdFlowSettings["quality"]>,
+) {
   const points: FlowPoint[] = [seed];
   let length = 0;
+  const cellFraction =
+    quality === "draft" ? 0.65 : quality === "high" ? 0.25 : 0.45;
+  const relativeTolerance = quality === "high" ? 2e-7 : 2e-5;
   // The cap bounds rendering work for looping fields or extremely anisotropic grids.
   for (let step = 0; step < 4096 && length < maximumLength; step++) {
     const previous = points[points.length - 1];
     const k1 = direction(grid, previous, sign);
     if (!k1) break;
-    const cellStep = 0.45 / Math.max(...k1.map((v, axis) => Math.abs(v) / grid.spacing[axis]));
+    const cellStep =
+      cellFraction /
+      Math.max(...k1.map((v, axis) => Math.abs(v) / grid.spacing[axis]));
     const edge = edgeDistance(grid, previous, k1);
-    const h = Math.min(cellStep, maximumLength - length, edge);
+    let h = Math.min(cellStep, maximumLength - length, edge);
     if (h < Math.min(...grid.spacing) * 1e-8) break;
-    let next: FlowPoint;
+    let next: FlowPoint | null = null;
     if (h === edge) {
       next = add(previous, k1, h);
     } else {
-      const k2 = direction(grid, add(previous, k1, h / 2), sign);
-      const k3 = k2 && direction(grid, add(previous, k2, h / 2), sign);
-      const k4 = k3 && direction(grid, add(previous, k3, h), sign);
-      if (!k2 || !k3 || !k4) break;
-      next = previous.map((v, axis) => v + h * (k1[axis] + 2 * k2[axis] + 2 * k3[axis] + k4[axis]) / 6) as FlowPoint;
+      // Trilinear velocity is continuous across cell faces but its derivatives
+      // need not be. A high-quality path must be allowed to reduce its step
+      // through these ordinary kinks instead of terminating at a fluid face.
+      // Retries remain bounded; invalid/masked support is never accepted.
+      for (let retry = 0; retry < 24; retry++) {
+        const full = rk4Point(grid, previous, sign, h);
+        if (quality === "draft") next = full;
+        else {
+          const half = rk4Point(grid, previous, sign, h / 2);
+          const refined = half && rk4Point(grid, half, sign, h / 2);
+          if (full && refined) {
+            const difference = magnitude(
+              full.map((v, axis) => v - refined[axis]) as FlowPoint,
+            );
+            // Step doubling measures local integration error in the supplied
+            // trilinear field, never physical CFD accuracy or mesh resolution.
+            if (difference <= Math.max(1e-12, h * relativeTolerance))
+              next = refined;
+          }
+        }
+        if (next && safeSegment(grid, previous, next)) break;
+        next = null;
+        h /= 2;
+        if (h < Math.min(...grid.spacing) * 1e-8) break;
+      }
     }
-    if (!safeSegment(grid, previous, next)) break;
-    const distance = magnitude(next.map((v, axis) => v - previous[axis]) as FlowPoint);
+    if (!next || !safeSegment(grid, previous, next)) break;
+    const distance = magnitude(
+      next.map((v, axis) => v - previous[axis]) as FlowPoint,
+    );
     if (distance <= 1e-12) break;
     // RK4 parameterizes the curve by arclength. Summing chords instead would
     // overshoot the requested extent on curved paths.
@@ -158,20 +269,32 @@ function integrateDirection(grid: FlowGrid, seed: FlowPoint, sign: number, maxim
   return points;
 }
 
-export function integrateStreamline(grid: FlowGrid, seed: FlowPoint, maximumLength?: number): Streamline | null {
+export function integrateStreamline(
+  grid: FlowGrid,
+  seed: FlowPoint,
+  maximumLength?: number,
+  quality: NonNullable<CfdFlowSettings["quality"]> = "standard",
+): Streamline | null {
   if (!sampleVelocity(grid, seed)) return null;
-  const domainLength = magnitude(grid.upper.map((v, axis) => v - grid.origin[axis]) as FlowPoint);
+  const domainLength = magnitude(
+    grid.upper.map((v, axis) => v - grid.origin[axis]) as FlowPoint,
+  );
   const limit = maximumLength ?? domainLength * 1.3;
   if (!Number.isFinite(limit) || limit <= 0) return null;
-  const backward = integrateDirection(grid, seed, -1, limit).reverse();
-  const forward = integrateDirection(grid, seed, 1, limit);
+  const backward = integrateDirection(grid, seed, -1, limit, quality).reverse();
+  const forward = integrateDirection(grid, seed, 1, limit, quality);
   const points = [...backward.slice(0, -1), ...forward];
   if (points.length < 2) return null;
   const speeds = points.map((point) => magnitude(sampleVelocity(grid, point)!));
   const travelTimes = [0];
   for (let i = 1; i < points.length; i++) {
-    const distance = magnitude(points[i].map((v, axis) => v - points[i - 1][axis]) as FlowPoint);
-    travelTimes.push(travelTimes[i - 1] + distance / Math.max((speeds[i] + speeds[i - 1]) / 2, 1e-12));
+    const distance = magnitude(
+      points[i].map((v, axis) => v - points[i - 1][axis]) as FlowPoint,
+    );
+    travelTimes.push(
+      travelTimes[i - 1] +
+        distance / Math.max((speeds[i] + speeds[i - 1]) / 2, 1e-12),
+    );
   }
   return { points, speeds, travelTimes };
 }
@@ -187,23 +310,51 @@ const radicalInverse = (number: number, base: number) => {
   return result;
 };
 
-export function generateStreamlines(grid: FlowGrid, freestream: FlowPoint, settings: CfdFlowSettings): Streamline[] {
-  if (!vector(freestream) || magnitude(freestream) <= 1e-8) return [];
-  const axis = freestream.reduce((best, v, i) => Math.abs(v) > Math.abs(freestream[best]) ? i : best, 0);
+export function generateStreamlines(
+  grid: FlowGrid,
+  freestream: FlowPoint,
+  settings: CfdFlowSettings,
+): Streamline[] {
+  if (!vector(freestream) || grid.speedRange[1] <= 1e-8) return [];
+  const interiorSeeds = magnitude(freestream) <= 1e-8;
+  const axis = freestream.reduce(
+    (best, v, i) => (Math.abs(v) > Math.abs(freestream[best]) ? i : best),
+    0,
+  );
   const transverse = [0, 1, 2].filter((i) => i !== axis);
   const count = Math.round(Math.max(16, Math.min(512, settings.density)));
-  const domainLength = magnitude(grid.upper.map((v, i) => v - grid.origin[i]) as FlowPoint);
+  const domainLength = magnitude(
+    grid.upper.map((v, i) => v - grid.origin[i]) as FlowPoint,
+  );
   const length = domainLength * Math.max(0.1, Math.min(3, settings.length));
   const paths: Streamline[] = [];
   for (let i = 1; i <= count * 3 && paths.length < count; i++) {
     const point = [...grid.origin] as FlowPoint;
-    point[axis] = freestream[axis] >= 0 ? grid.origin[axis] + grid.spacing[axis] * 0.03 : grid.upper[axis] - grid.spacing[axis] * 0.03;
-    for (let j = 0; j < 2; j++) {
-      const a = transverse[j];
-      const fraction = 0.015 + radicalInverse(i, j === 0 ? 2 : 3) * 0.97;
-      point[a] += (grid.upper[a] - grid.origin[a]) * fraction;
+    if (interiorSeeds) {
+      // A stationary prescribed boundary can surround a genuinely moving
+      // transient field. Seed only supported interior velocities; invent no wind.
+      for (let a = 0; a < 3; a++) {
+        point[a] +=
+          (grid.upper[a] - grid.origin[a]) *
+          (0.015 + radicalInverse(i, [2, 3, 5][a]) * 0.97);
+      }
+    } else {
+      point[axis] =
+        freestream[axis] >= 0
+          ? grid.origin[axis] + grid.spacing[axis] * 0.03
+          : grid.upper[axis] - grid.spacing[axis] * 0.03;
+      for (let j = 0; j < 2; j++) {
+        const a = transverse[j];
+        const fraction = 0.015 + radicalInverse(i, j === 0 ? 2 : 3) * 0.97;
+        point[a] += (grid.upper[a] - grid.origin[a]) * fraction;
+      }
     }
-    const path = integrateStreamline(grid, point, length);
+    const path = integrateStreamline(
+      grid,
+      point,
+      length,
+      settings.quality || "standard",
+    );
     if (path) paths.push(path);
   }
   return paths;
@@ -222,6 +373,10 @@ export function streamlinePosition(path: Streamline, time: number): FlowPoint {
     if (path.travelTimes[middle] <= bounded) low = middle;
     else high = middle;
   }
-  const fraction = (bounded - path.travelTimes[low]) / Math.max(path.travelTimes[high] - path.travelTimes[low], 1e-12);
-  return path.points[low].map((v, axis) => v + (path.points[high][axis] - v) * fraction) as FlowPoint;
+  const fraction =
+    (bounded - path.travelTimes[low]) /
+    Math.max(path.travelTimes[high] - path.travelTimes[low], 1e-12);
+  return path.points[low].map(
+    (v, axis) => v + (path.points[high][axis] - v) * fraction,
+  ) as FlowPoint;
 }

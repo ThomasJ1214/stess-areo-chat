@@ -198,7 +198,14 @@ not be silently promoted to a full viscous Cd table.
 
 ## Flight integration and recovery
 
-The solver integrates three position and three velocity components with RK4.
+The solver integrates three position and three velocity components with
+error-controlled RK4 step doubling. A full step and two half steps estimate
+local truncation error; accepted states use the two half steps. The relative
+tolerance is `1e-7`, with separate absolute tolerances `1e-5 m` for position
+and `1e-5 m/s` for velocity. Rejected steps are reduced and retried. Recorded
+`numerical_integration` metadata includes tolerances, accepted/rejected counts,
+step bounds and event precision. These are local numerical accuracy controls,
+not a global trajectory error bound or measured physical validation.
 Gravity varies with altitude. Aerodynamic velocity is vehicle inertial velocity
 minus ambient wind; drag opposes that relative velocity. The rocket is constrained
 to the rail until its traveled distance reaches rail length. The pad reaction
@@ -238,7 +245,9 @@ axis with amplitude tied to wind speed/intensity (1 m/s floor). It supports
 repeatable sensitivity studies, not a calibrated Dryden/von Karman wind spectrum.
 
 Events include ignition, liftoff, rail exit, burnout, apogee, drogue/main deployment,
-max acceleration, max Q, max velocity and recovery. Progress is integration time
+max acceleration, max Q, max velocity, max airspeed, max Mach, max specific
+acceleration, supported max estimated stress and recovery. Peak markers identify
+accepted trajectory samples, rather than promising continuous extrema. Progress is integration time
 divided by max_time, followed by completion; ETA therefore uses a conservative
 time ceiling rather than knowledge of the future landing time. Cancellation is
 checked throughout. Reaching max_time does not fabricate recovery: summary.complete
@@ -260,6 +269,13 @@ They are not transient FEA, aeroelasticity, recovery shock, joint loads, laminat
 failure or a material fatigue calculation. Imported total polar coefficients do
 not supply component pressure/load distributions, so structural load estimates
 retain their original-reference limitations.
+
+Every trajectory row also records actual body drag, recovery drag, thrust,
+gravity and ideal rail/pad reaction vectors in world east/north/up axes.
+Their resultant equals mass times the recorded inertial acceleration; gravity
+is excluded from specific acceleration. Body/recovery drag are separated so
+the instantaneous canopy-load assumption remains visible. Flight graphs offer
+overview, loads/stress and wind/air groups using those calculated samples.
 
 ## Validation performed and references
 

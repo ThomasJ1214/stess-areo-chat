@@ -99,10 +99,14 @@ mean the installer build failed.
    Adjust the camera manually; automatic **Follow** resumes after five seconds
    without input. Pause or scrub the timeline, inspect event markers, graphs and
    the north-up local map, then export results.
-7. For CFD, begin with a modest grid and bounded work budget. For longer settling,
-   choose **Run until converged**; **Wall time limit** `0` permits an unlimited
-   run with cancellation, without a known completion ETA. Inspect actual
-   convergence and backend; timed-out forces are partial. Then compare grid/domain
+7. For CFD, begin with a modest grid. **Steady-state** runs until numerical
+   convergence or cancellation, with no time/step cutoff. **Transient** resolves
+   the chosen physical duration. Select launch history and a short flight
+   interval to follow actual calculated airspeed/wind/atmosphere, or a fixed
+   freestream wind test. Play/scrub the saved computed flow frames. Inspect actual
+   convergence and backend; cancelled forces are partial and completed transient
+   loads are instantaneous. X-ray/cutaway and high streamline quality help
+   inspect the view without changing CAD or the solved field. Compare grid/domain
    refinements. For FEA, choose a component, material, explicit load and clamp.
    Leave **Automatic mesh sizing** on and read **Mesh readiness**; **Use recommended
    mesh** can raise the budget within its permitted limit. Use **Use beam/fin
@@ -185,11 +189,10 @@ fallback; explicit GPU mode reports the failure. A working 3D viewport does not
 establish numerical CUDA support. The capability probe is cached; restart the app
 after changing the driver or application installation.
 
-**CFD stopped at “wall clock budget.”** This is an elapsed-computation limit,
-not a converged solution. Returned pressure/forces remain partial. Inspect actual
-backend and residual history, then increase allowed work or enable **Run until
-converged**. With **Wall time limit** `0`, completion time is unknown and you may need to cancel
-the run. At Mach below 0.3 the pressure-drag warning remains relevant even if
+**An older CFD result stopped at “wall clock budget.”** That result remains a
+partial solution after upgrading. Current CFD has no wall/step timeouts; rerun
+in steady or transient mode, and cancel when needed. Steady convergence may
+never occur. At Mach below 0.3 the pressure-drag warning remains relevant even if
 numerical convergence is reached. Refining a grid adds work; a faster or longer
 run does not establish physical accuracy.
 

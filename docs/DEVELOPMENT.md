@@ -301,9 +301,14 @@ material-volume checks or actual element limits. CAD thickness remains unknown.
 Preserve actionable alternatives when whole thin structures exceed the budget;
 do not imply that region cutting or shell FEA is available.
 
-CFD run controls may remove stopping ceilings, but cannot promise a convergence
-deadline. With `run_until_converged:true` and `max_wall_seconds:0`, do not show a
-completion percentage or ETA. Show measured progress quantities and retain
+CFD has no wall-clock or step stopping ceilings. Steady mode cannot promise a
+convergence deadline or completion percentage. A tentative ETA must be based on
+a convincing measured residual trend and become unknown when it stalls.
+Transient mode integrates an actual physical duration with CFL-limited steps;
+its ETA must measure recent physical-time throughput, not snapshot count.
+Keep launch history immutable and geometry-matched, and retain each saved frame's
+own freestream/atmosphere. Never interpolate a displayed solution in time and
+label it a calculated state. Show measured progress quantities and retain
 cancellation. Preserve partial-field status, executed backend, low-Mach and
 discretization warnings in cards, exports and reports. Numerical CUDA diagnostics
 probe a small actual allocation/kernel path and cache the result until restart;

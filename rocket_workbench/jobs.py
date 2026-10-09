@@ -14,6 +14,18 @@ import numpy as np
 
 from . import __version__
 from .models import Conditions, Project
+from .cfd_progress import CfdProgress
+
+
+def _physical_project_hash(project: Project) -> str:
+    """Bind flight history to saved motor, material, recovery and geometry inputs.
+
+    Analysis panel settings, display units and the project title may change while
+    inspecting an existing launch. Other saved project inputs remain bound.
+    """
+    encoded = json.dumps(project.model_dump(mode="json", exclude={"analysis_settings", "unit_system", "name"}),
+                         sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 class JobManager:
@@ -29,16 +41,18 @@ class JobManager:
             raise ValueError("Unknown simulation kind")
         options = copy.deepcopy(options or {})
         progress_basis = "completion_fraction"
-        if kind == "cfd":
-            # CFD numerical convergence has no predictable completion fraction.
-            # A finite stopping budget can report budget usage; zero wall time
-            # plus convergence-only mode has no finite stopping budget at all.
-            try:
-                no_wall_timeout = float(options.get("max_wall_seconds", 1200)) == 0
-            except (TypeError, ValueError):
-                no_wall_timeout = False  # Solver validation reports invalid inputs.
-            progress_basis = "convergence_unknown" if options.get("run_until_converged") is True and no_wall_timeout else "budget_usage"
+        uses_cfd = kind == "cfd" or kind == "comparison" and bool(options.get("use_cfd"))
+        if uses_cfd:
+            mode = options.get("mode", "steady")
+            if mode not in {"steady", "transient"}:
+                raise ValueError("CFD mode must be steady or transient.")
+            if kind == "comparison" and mode != "steady":
+                raise ValueError("CFD geometry comparisons require steady mode. Run each launch-driven transient separately to inspect its actual history.")
+            options["mode"] = mode
+            progress_basis = "physical_time" if mode == "transient" and kind == "cfd" else "convergence_unknown"
         cfd_source = None
+        flight_source = None
+        flight_result = None
         # Keep a portable input project for the run, separate from large solved
         # fields and never included in every progress-poll response.
         snapshot = project.model_copy(deep=True)
@@ -55,6 +69,28 @@ class JobManager:
             sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         from .solvers.aero import geometry_signature
         signature = geometry_signature(project, configuration_id)
+        if kind == "cfd" and options.get("mode") == "transient":
+            source = options.get("transient_source", "fixed")
+            if source not in {"fixed", "launch"}:
+                raise ValueError("Transient CFD source must be fixed or launch.")
+            if source == "launch" and options.get("flight_job_id"):
+                try:
+                    prior = self.get(str(options["flight_job_id"]))
+                except KeyError as exc:
+                    raise ValueError("The selected launch history is unavailable. Rerun launch or use a new calculated launch.") from exc
+                if prior["kind"] != "flight" or prior["status"] != "completed" or not prior.get("result"):
+                    raise ValueError("Launch-driven CFD requires a completed flight job.")
+                source_project = self.input_project(prior["id"])
+                if prior.get("geometry_signature") != signature or _physical_project_hash(source_project) != _physical_project_hash(snapshot):
+                    raise ValueError("Rocket configuration, motor, recovery or geometry changed after this launch. Recompute the launch before using its history.")
+                source_conditions = prior["result"].get("inputs", {}).get("conditions", {})
+                launch_fields = ("altitude", "wind_speed", "wind_direction", "turbulence", "temperature_delta",
+                                 "rail_length", "launch_angle", "launch_azimuth", "dt", "max_time", "seed")
+                if any(source_conditions.get(name) != getattr(conditions, name) for name in launch_fields):
+                    raise ValueError("Launch conditions changed after this flight. Recompute the launch to drive CFD with the current conditions.")
+                flight_result = copy.deepcopy(prior["result"])
+                flight_source = {"job_id": prior["id"], "generated_for_cfd": False,
+                                 "inputs": copy.deepcopy(prior["result"].get("inputs", {}))}
         if kind == "fea" and options.get("load_mode") == "cfd_pressure":
             from .models import active_components
             component = next((c for c in active_components(project, configuration_id) if c.id == options.get("component_id")), None)
@@ -64,7 +100,8 @@ class JobManager:
                 prior = self.get(str(options.get("cfd_job_id", "")))
             except KeyError as exc:
                 raise ValueError("Select an available completed CFD job before transferring pressures.") from exc
-            if prior["kind"] != "cfd" or prior["status"] != "completed" or not prior["result"]["summary"]["converged"]:
+            if (prior["kind"] != "cfd" or prior["status"] != "completed" or not prior["result"]["summary"]["converged"]
+                    or prior["result"]["summary"].get("mode", "steady") != "steady"):
                 raise ValueError("Pressure-transfer FEA requires a completed, numerically converged CFD job.")
             if prior.get("geometry_signature") != signature:
                 raise ValueError("Rocket geometry changed after the CFD solve. Recompute CFD before transferring pressures.")
@@ -104,6 +141,10 @@ class JobManager:
                 "finished": None, "result": None, "error": None, "cancel": threading.Event(),
                 "project_snapshot": snapshot, "project_sha256": project_hash,
                 "cfd_source": cfd_source,
+                "flight_source": flight_source, "flight_result": flight_result,
+                "telemetry": None, "cfd_progress": CfdProgress() if uses_cfd else None,
+                "eta_seconds": None, "eta_range_seconds": None,
+                "eta_basis": None, "eta_confidence": None,
                 "submitted_at": datetime.now(timezone.utc).isoformat()}
             self.executor.submit(self._execute, identity, project.model_copy(deep=True), kind,
                                  conditions.model_copy(deep=True), configuration_id, copy.deepcopy(options or {}))
@@ -116,9 +157,16 @@ class JobManager:
                 raise KeyError(identity)
             elapsed = (job["finished"] or time.monotonic()) - job["started"] if job["started"] else 0.0
             progress = job["progress"]
-            eta = elapsed * (1 / progress - 1) if job["status"] == "running" and progress > 0.01 and job["progress_basis"] != "convergence_unknown" else None
-            return {k: v for k, v in job.items() if k not in {"cancel", "created", "started", "finished", "project_snapshot"}} | {
-                "elapsed_seconds": max(0, elapsed), "eta_seconds": eta}
+            if job["cfd_progress"] is not None:
+                eta = job["eta_seconds"] if job["status"] == "running" else None
+            else:
+                eta = elapsed * (1 / progress - 1) if job["status"] == "running" and progress > 0.01 else None
+            return {k: v for k, v in job.items() if k not in {
+                "cancel", "created", "started", "finished", "project_snapshot", "cfd_progress", "flight_result", "flight_source"}} | {
+                "elapsed_seconds": max(0, elapsed), "eta_seconds": eta,
+                "eta_range_seconds": job["eta_range_seconds"] if job["status"] == "running" else None,
+                "eta_basis": job["eta_basis"] if job["status"] == "running" else None,
+                "eta_confidence": job["eta_confidence"] if job["status"] == "running" else None}
 
     def input_project(self, identity: str) -> Project:
         with self.lock:
@@ -143,6 +191,7 @@ class JobManager:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
     def _execute(self, identity, project, kind, conditions, configuration_id, options):
+        requested_options = copy.deepcopy(options)
         with self.lock:
             # A cancelled queued job may have been pruned before its future
             # reaches the worker. Never dereference an expired registry entry.
@@ -153,7 +202,25 @@ class JobManager:
 
         def progress(fraction, message):
             with self.lock:
-                job.update(progress=float(np.clip(fraction, 0, 0.999)), message=str(message))
+                # A solver preparation percentage or a decaying residual is not
+                # a numerical convergence/completion percentage.
+                measured = float(np.clip(fraction, 0, 0.999)) if job["cfd_progress"] is None else job["progress"]
+                job.update(progress=measured, message=str(message))
+
+        def telemetry(event):
+            with self.lock:
+                event = copy.deepcopy(event)
+                estimates = job["cfd_progress"].update(event)
+                if event.get("eta_scope"):
+                    estimates["eta_scope"] = event["eta_scope"]
+                job.update(estimates, telemetry=event)
+                if kind == "cfd" and event.get("mode") == "transient" and event.get("phase") == "integration":
+                    target = event.get("target_physical_time_s")
+                    value = event.get("physical_time_s")
+                    if isinstance(target, (int, float)) and target > 0 and isinstance(value, (int, float)):
+                        job["progress"] = float(np.clip(value / target, 0, .999))
+                elif event.get("mode") != "transient" or kind == "comparison":
+                    job["progress"] = 0.0
 
         def cancelled():
             return job["cancel"].is_set()
@@ -164,7 +231,38 @@ class JobManager:
                 result = simulate(project, conditions, configuration_id, progress, cancelled)
             elif kind == "cfd":
                 from .solvers.cfd import solve
-                result = solve(project, conditions, configuration_id, options, progress, cancelled)
+                profile = None
+                if options.get("mode") == "transient" and options.get("transient_source", "fixed") == "launch":
+                    from .solvers.flight_profile import build_flight_profile
+                    source_result = job["flight_result"]
+                    if source_result is None:
+                        from .solvers.flight import simulate
+                        telemetry({"mode": "transient", "phase": "flight_preparation"})
+                        source_result = simulate(project, conditions, configuration_id,
+                            lambda fraction, message: progress(0, "Preparing launch history: " + message), cancelled)
+                        job["flight_source"] = {"generated_for_cfd": True, "job_id": None,
+                            "inputs": {"configuration_id": configuration_id or project.active_configuration_id,
+                                "conditions": conditions.model_dump(), "project_sha256": job["project_sha256"],
+                                "geometry_signature": job["geometry_signature"], "application_version": __version__}}
+                    window = options.get("flight_window", "interval" if "flight_start_s" in options or "flight_end_s" in options else "whole")
+                    if window not in {"whole", "interval"}:
+                        raise ValueError("Choose the whole launch or a selected flight interval.")
+                    profile = build_flight_profile(source_result,
+                        start_s=options.get("flight_start_s") if window == "interval" else None,
+                        end_s=options.get("flight_end_s") if window == "interval" else None,
+                        temperature_delta=conditions.temperature_delta)
+                    options["duration_s"] = profile.duration_s
+                    options["flight_start_s"], options["flight_end_s"] = profile.start_s, profile.end_s
+                    job["flight_source"].update(profile.metadata)
+                    job["flight_source"]["profile"] = profile.to_dict()
+                    job["flight_source"]["fidelity"] = source_result.get("fidelity")
+                    job["flight_source"]["warnings"] = source_result.get("warnings", [])
+                    with self.lock:
+                        job["flight_result"] = None
+                result = solve(project, conditions, configuration_id, options, progress, cancelled,
+                               telemetry=telemetry, freestream_provider=profile)
+                if profile is not None:
+                    result["warnings"] = list(dict.fromkeys(result.get("warnings", []) + list(profile.warnings)))
             elif kind == "fea":
                 from .solvers.structure import solve_fea
                 component_id = options.get("component_id")
@@ -172,7 +270,8 @@ class JobManager:
                     raise ValueError("Select a component for finite element analysis.")
                 result = solve_fea(project, component_id, conditions, options, progress, cancelled)
             elif kind == "comparison":
-                result = compare(project, conditions, configuration_id, options, progress, cancelled)
+                result = compare(project, conditions, configuration_id, options, progress, cancelled,
+                                 telemetry=telemetry if job["cfd_progress"] is not None else None)
             else:
                 result = study(project, conditions, configuration_id, kind, options, progress, cancelled)
             result["inputs"] = {"project_id": project.id, "project_name": project.name,
@@ -180,9 +279,13 @@ class JobManager:
                 "geometry_signature": job["geometry_signature"],
                 "application_version": __version__, "project_sha256": job["project_sha256"],
                 "submitted_at": job["submitted_at"],
-                "conditions": conditions.model_dump(), "options": {k: v for k, v in options.items() if k != "cfd_surface"}}
+                "conditions": conditions.model_dump(), "options": {k: v for k, v in requested_options.items() if k != "cfd_surface"}}
+            if options != requested_options:
+                result["inputs"]["effective_options"] = {k: v for k, v in options.items() if k != "cfd_surface"}
             if job["cfd_source"] is not None:
                 result["inputs"]["cfd_source"] = copy.deepcopy(job["cfd_source"])
+            if job["flight_source"] is not None:
+                result["inputs"]["flight_source"] = copy.deepcopy(job["flight_source"])
             with self.lock:
                 was_cancelled = cancelled()
                 # CFD explicitly returns its actual transient fields on cancel.
@@ -198,7 +301,7 @@ class JobManager:
                     message="Cancelled" if cancelled() else "Simulation failed", finished=time.monotonic())
 
 
-def compare(project, conditions, configuration_id=None, options=None, progress=None, cancelled=None):
+def compare(project, conditions, configuration_id=None, options=None, progress=None, cancelled=None, telemetry=None):
     from .solvers.aero import analyze
     from .solvers.structure import analyze as structural
     options = options or {}
@@ -243,7 +346,10 @@ def compare(project, conditions, configuration_id=None, options=None, progress=N
             if cancelled and cancelled():
                 raise RuntimeError("Comparison cancelled")
             callback = (lambda f, m, i=current_stage, l=label: progress((i + f) / stages, f"{l}: {m}")) if progress else None
-            result[label]["cfd"] = solve(model, conditions, configuration_id, options, callback, cancelled)
+            stage_telemetry = (lambda event, l=label: telemetry(event | {"comparison_stage": l,
+                "eta_scope": f"{l} CFD integration only; whole comparison ETA unknown"})) if telemetry else None
+            result[label]["cfd"] = solve(model, conditions, configuration_id, options, callback, cancelled,
+                                        telemetry=stage_telemetry)
             result["warnings"].extend(f"{label} CFD: {message}" for message in result[label]["cfd"].get("warnings", []))
             current_stage += 1
         result["fidelity"] = "Empirical mass/stability comparison plus experimental inviscid Euler geometry comparison."

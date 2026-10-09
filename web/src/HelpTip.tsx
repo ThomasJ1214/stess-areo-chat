@@ -12,11 +12,13 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "Streamlines",
     aliases: ["Streamline density", "Streamline length", "Streamline color"],
-    definition: "Continuous lines tangent to the computed velocity in a CFD snapshot. They use the actual exported field and stop at walls or its boundary. Density, length and color change only the display. They are not unsteady particle trajectories, and smoother lines do not improve the solver's accuracy.",
+    definition:
+      "Continuous lines tangent to the computed velocity in a CFD snapshot. They use the actual exported field and stop at walls or its boundary. Density, length and color change only the display. They are not unsteady particle trajectories, and smoother lines do not improve the solver's accuracy.",
   },
   {
     term: "Direction tracers",
-    definition: "Moving markers showing direction along the computed snapshot streamlines. Their timing is slowed for viewing. They are not time-accurate CFD particles or a reconstruction of unsteady flow.",
+    definition:
+      "Moving markers showing direction along the computed snapshot streamlines. Their timing is slowed for viewing. They are not time-accurate CFD particles or a reconstruction of unsteady flow.",
   },
   {
     term: "Automatic alignment",
@@ -37,13 +39,13 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "Run until converged",
     definition:
-      "Ignores CFD step and simulated-flow-time ceilings and waits for the configured numerical residual criteria. A nonzero wall time limit still applies. With wall time 0, it runs until convergence or cancellation; completion percentage and ETA are unknown. Convergence alone does not validate physical accuracy.",
+      "Older name for current Steady-state mode, which waits for the configured numerical residual criteria without wall-clock or step ceilings. Completion percentage stays unknown; a sustained residual decline may support a tentative ETA. It runs until convergence or cancellation. Convergence alone does not validate physical accuracy.",
   },
   {
     term: "Partial pressure force",
-    aliases: ["Inviscid pressure drag"],
+    aliases: ["Inviscid pressure drag", "Instantaneous pressure force"],
     definition:
-      "The current axial force from computed exterior surface pressures. A partial solution is not a steady-flow prediction. This inviscid solver omits skin friction, boundary layers, viscous separation, and turbulence; its result is not total aerodynamic drag. Low-Mach pressure forces are particularly unreliable.",
+      "The current resultant from computed exterior surface pressures, projected along the incoming freestream direction. A partial solution is not a steady-flow prediction. This inviscid solver omits skin friction, boundary layers, viscous separation, and turbulence; its result is not total aerodynamic drag. Low-Mach pressure forces are particularly unreliable.",
   },
   {
     term: "Mach",
@@ -442,13 +444,13 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "ETA",
     definition:
-      "Estimated time remaining, based on current work and progress. Simulation budgets and solver behavior can make it change. Flight progress uses the duration ceiling until completion; it does not know the future landing time in advance.",
+      "Estimated computer time remaining. Transient CFD estimates remaining integration time from recent measured physical-time throughput; startup and export time can add overhead. Steady CFD has no meaningful completion percent: a stable decreasing residual trend may support a tentative ETA range, while flat or erratic residuals keep ETA unknown. It does not promise convergence or accuracy. Flight progress uses the duration ceiling until completion; it does not know future landing time in advance.",
   },
   {
     term: "Time step",
     aliases: ["dt"],
     definition:
-      "Maximum interval used by the flight integrator, in seconds. The solver takes smaller steps near thrust knots, events, and stiff drag cases. Halving the ceiling and comparing outputs helps check time-integration sensitivity.",
+      "Maximum interval used by the flight integrator, in seconds. The solver controls RK4 integration error and takes smaller steps near thrust knots, events and stiff drag cases. Halving the ceiling and comparing outputs helps check time-integration sensitivity.",
   },
   {
     term: "Duration limit",
@@ -506,14 +508,58 @@ export const engineeringGlossary: GlossaryEntry[] = [
       "Tilt of the launch rail measured from straight up. 0° is vertical. Launch azimuth selects the compass bearing of that tilt. This is separate from aerodynamic angle of attack.",
   },
   {
+    term: "Steady-state",
+    aliases: ["Simulation mode"],
+    definition:
+      "A flow prediction whose numerical state settles under fixed conditions. Steady mode advances the actual Euler equations until conservation-state, wall-pressure, force and moment changes meet the numerical criteria, or you cancel. It has no elapsed-time or step ceiling and may never converge. Numerical convergence does not establish physical accuracy.",
+  },
+  {
+    term: "Transient",
+    aliases: ["Transient duration", "Saved flow frames"],
+    definition:
+      "Time-resolved flow evolution advanced at actual CFL-limited numerical time steps. Duration is simulated physical time, not a computer-time deadline. Each interval starts from uniform freestream and includes numerical startup effects. Playback shows bounded saved computed states; it does not invent intermediate flow solutions. A completed transient interval is not a converged steady-state result.",
+  },
+  {
+    term: "Flow time",
+    definition:
+      "Physical time advanced by the CFD equations, in seconds. This differs from the computer elapsed time needed to calculate it. In transient playback it is the selected saved frame's flow time; launch time also includes the chosen flight interval start offset.",
+  },
+  {
+    term: "Transient source",
+    aliases: [
+      "Flight interval",
+      "Flight start time",
+      "Flight end time",
+      "Inspect flight event",
+    ],
+    definition:
+      "Use an actual calculated launch history to prescribe changing air-relative speed, wind and atmosphere around fixed rigid rocket geometry, or hold freestream conditions fixed for a wind test. Launch-driven CFD is a one-way approximation: it does not feed forces back into the flight, solve full moving-mesh attitude, deploy a canopy, or replace point-mass flight assumptions. Whole-flight CFD resolves every physical time step and can take substantial computer time; a short interval is useful for inspection.",
+  },
+  {
+    term: "Streamline quality",
+    definition:
+      "Controls integration accuracy when drawing streamlines through the stored solved velocity field. High quality takes finer display steps and costs more graphics work; it does not refine the CFD grid, recover unresolved fins, or improve physical solver accuracy.",
+  },
+  {
+    term: "X-ray rocket",
+    definition:
+      "Makes the displayed rocket translucent so solved flow behind its surface can be inspected. It does not create flow in sealed material or change the geometry, CFD, mass or structural results.",
+  },
+  {
+    term: "Cutaway",
+    aliases: ["Cutaway axis", "Cutaway position", "Reverse cutaway"],
+    definition:
+      "A viewer-only clipping plane through the rocket and stored field. Axis selects a model-coordinate direction; position moves from one side of the bounding box to the other; reverse selects the retained side. Clipping does not cut CAD, open cavities, change mass, or modify any numerical solution.",
+  },
+  {
     term: "Flow-through times",
     definition:
-      "CFD physical-time budget measured in characteristic flow-crossing times of the computational domain. It allows the initial flow to pass through the region before judging settling. Reaching this budget is not proof of numerical convergence.",
+      "Characteristic flow-crossing times measure how long air takes to traverse the domain. They help assess startup settling; they no longer impose an execution ceiling. Reaching a particular crossing count does not establish convergence.",
   },
   {
     term: "Wall time limit",
     definition:
-      "Computer elapsed-time ceiling for CFD, separate from simulated flow time. 0 disables this limit. A job stopped here is partial. With Run until converged and no wall-time ceiling, completion time is unknown; Cancel retains actual partial flow fields.",
+      "Older projects may contain a computer-time ceiling for CFD. Current steady and transient solvers ignore these legacy limits; they continue until convergence, the requested physical interval, or cancellation. Cancel retains actual partial fields.",
   },
   {
     term: "Cell budget",
@@ -524,7 +570,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Maximum steps",
     aliases: ["Time steps"],
     definition:
-      "CFD iteration/time-step ceiling. More steps allow more simulated flow evolution but do not guarantee convergence. Read the actual stop reason and residual histories before using the pressure result.",
+      "Number of actual numerical integration steps. Current CFD has no step ceiling. More steps allow flow evolution but do not guarantee convergence. Read the actual stop reason and residual histories before using pressure results.",
   },
   {
     term: "Surface load",

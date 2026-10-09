@@ -416,25 +416,189 @@ def _flow_grid(velocity, solid, spacing, origin, max_nodes=100_000):
     )
 
 
+class _TransientRecorder:
+    """Bounded actual-time snapshots with one immutable display topology.
+
+    Snapshot scheduling never changes the CFL step or interpolates a fluid state.
+    A scheduled time is represented by the first accepted state at/after it;
+    the initial state and exact final/cancelled state are always retained.
+    """
+
+    def __init__(self, state, solid, spacing, origin, wall, pressure_inf,
+                 density_inf, velocity_inf, duration, frame_limit,
+                 sample_limit, surface_limit):
+        self.solid = solid
+        self.wall = wall
+        self.duration = duration
+        self.frame_limit = frame_limit
+        self.pressure_inf = pressure_inf
+        self.density_inf = density_inf
+        self.speed = float(np.linalg.norm(velocity_inf))
+        self.velocity_inf = velocity_inf
+        self.dynamic_pressure = 0.5 * density_inf * self.speed**2
+        fluid_indices = np.argwhere(~solid)
+        take = np.linspace(0, len(fluid_indices) - 1,
+                           min(sample_limit, 1000, len(fluid_indices)), dtype=int)
+        self.sample_indices = fluid_indices[take]
+        self.surface_indices = np.linspace(
+            0, len(wall["areas"]) - 1,
+            min(surface_limit, 2000, len(wall["areas"])), dtype=int)
+        _, initial_velocity, _, _ = primitives(state)
+        flow = _flow_grid(initial_velocity, solid, spacing, origin, max_nodes=12_000)
+        self.mask = np.asarray(flow["fluid_mask"], dtype=bool).reshape(flow["shape"])
+        self.stride = flow["stride"]
+        flow.pop("velocity_m_s")
+        self.topology = dict(
+            flow_grid=flow,
+            sample_positions_m=(origin + self.sample_indices * spacing).tolist(),
+            surface_positions_m=wall["positions"][self.surface_indices].tolist(),
+            surface_normals=wall["normals"][self.surface_indices].tolist(),
+        )
+        self.frames = []
+        self.next_schedule = 1
+        self.capture(state, 0.0, 0)
+
+    def due(self, physical_time):
+        # Reserve a slot for the exact final/cancelled numerical state.
+        return (self.next_schedule < self.frame_limit - 1 and
+                physical_time >= self.duration * self.next_schedule / (self.frame_limit - 1))
+
+    def capture(self, state, physical_time, step, environment=None):
+        environment = environment or dict(
+            pressure_pa=self.pressure_inf, density_kg_m3=self.density_inf,
+            velocity_m_s=self.velocity_inf.tolist())
+        pressure_inf = float(environment["pressure_pa"])
+        incoming_velocity = np.asarray(environment["velocity_m_s"], dtype=float)
+        speed = float(np.linalg.norm(incoming_velocity))
+        dynamic_pressure = 0.5 * float(environment["density_kg_m3"]) * speed**2
+        rho, velocity, pressure, sound = primitives(state)
+        index = tuple(self.sample_indices.T)
+        sampled_velocity = velocity[index]
+        wall_pressure = _wall_pressure(state, self.wall)
+        face_force = -(wall_pressure - pressure_inf)[:, None] * self.wall["normals"] * self.wall["areas"][:, None]
+        force = face_force.sum(axis=0)
+        moment = np.cross(self.wall["positions"], face_force).sum(axis=0)
+        flow_velocity = np.array(velocity[::self.stride, ::self.stride, ::self.stride], copy=True)
+        flow_velocity[~self.mask] = 0.0
+        frame = dict(
+            time_s=float(physical_time), step=int(step),
+            flow_velocity_m_s=flow_velocity.reshape(-1).tolist(),
+            sample_pressure_pa=pressure[index].tolist(),
+            sample_velocity_m_s=sampled_velocity.tolist(),
+            sample_density_kg_m3=rho[index].tolist(),
+            sample_mach=(np.linalg.norm(sampled_velocity, axis=-1) / sound[index]).tolist(),
+            surface_pressure_pa=wall_pressure[self.surface_indices].tolist(),
+            force_n=force.tolist(), moment_about_origin_nm=moment.tolist(),
+            pressure_drag_n=float(np.dot(force, incoming_velocity / speed)) if speed else 0.0,
+            freestream_pressure_pa=pressure_inf,
+            dynamic_pressure_pa=dynamic_pressure,
+            freestream_velocity_m_s=incoming_velocity.tolist(),
+            freestream_mach=speed / math.sqrt(GAMMA * pressure_inf / float(environment["density_kg_m3"])) if speed else 0.0,
+            pressure_coefficient_defined=bool(dynamic_pressure > pressure_inf * np.finfo(float).eps * 64),
+            altitude_msl_m=environment.get("altitude_msl_m"),
+            flight_time_s=environment.get("flight_time_s"),
+        )
+        if self.frames and self.frames[-1]["step"] == step:
+            self.frames[-1] = frame
+        elif len(self.frames) < self.frame_limit:
+            self.frames.append(frame)
+        else:
+            self.frames[-1] = frame
+        while (self.next_schedule < self.frame_limit - 1 and
+               physical_time >= self.duration * self.next_schedule / (self.frame_limit - 1)):
+            self.next_schedule += 1
+
+    def result(self, completed):
+        return dict(
+            duration_s=self.duration, completed=completed, topology=self.topology,
+            frames=self.frames, frame_limit=self.frame_limit,
+            max_display_nodes=12_000,
+            temporal_sampling="Actual accepted Euler states at their physical timestamps; scheduled capture times snap forward to an accepted step. Initial and final/cancelled states retained. No temporal field interpolation.",
+            scope="Fixed rocket geometry, uniform initial freestream and constant prescribed farfield; inviscid numerical startup/evolution, without moving geometry or modeled turbulence.",
+        )
+
+
+def _freestream_environment(provider, physical_time):
+    """Validate prescribed boundary data without modifying provider output."""
+    environment = dict(provider(physical_time))
+    for key in ("density_kg_m3", "pressure_pa"):
+        if isinstance(environment[key], bool):
+            raise ValueError(f"Transient freestream {key} must be positive and finite.")
+        value = float(environment[key])
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Transient freestream {key} must be positive and finite.")
+        environment[key] = value
+    velocity = np.asarray(environment["velocity_m_s"], dtype=float)
+    if velocity.shape != (3,) or not np.isfinite(velocity).all():
+        raise ValueError("Transient freestream velocity_m_s must be a finite 3D vector.")
+    mach = float(np.linalg.norm(velocity)) / math.sqrt(GAMMA * environment["pressure_pa"] / environment["density_kg_m3"])
+    if mach > 2.05 + 1e-12:
+        raise ValueError("The prescribed transient freestream exceeds the supported Mach 2 range.")
+    environment["velocity_m_s"] = velocity.tolist()
+    environment["freestream_mach"] = mach
+    for key in ("altitude_msl_m", "flight_time_s"):
+        if environment.get(key) is not None:
+            value = float(environment[key])
+            if not math.isfinite(value):
+                raise ValueError(f"Transient freestream {key} must be finite.")
+            environment[key] = value
+    acceleration = np.asarray(environment.get("frame_acceleration_m_s2", [0, 0, 0]), dtype=float)
+    if acceleration.shape != (3,) or not np.isfinite(acceleration).all():
+        raise ValueError("Transient frame_acceleration_m_s2 must be a finite 3D vector.")
+    environment["frame_acceleration_m_s2"] = acceleration.tolist()
+    return environment
+
+
+def _accelerating_frame_update(state, solid, acceleration, dt, xp=np):
+    """Translation-only inertial source, preserving internal energy exactly.
+
+    Constant frame acceleration over an explicit split step gives momentum
+    impulse -rho*a*dt and corresponding kinetic-energy work. It does not imply
+    a rotating coordinate frame, moving walls, or a full vehicle-attitude model.
+    """
+    impulse_velocity = xp.asarray(acceleration) * dt
+    updated = state.copy()
+    momentum = state[..., 1:4]
+    updated[..., 1:4] = momentum - state[..., 0, None] * impulse_velocity
+    updated[..., 4] = state[..., 4] - xp.sum(momentum * impulse_velocity, axis=-1) + 0.5 * state[..., 0] * xp.sum(impulse_velocity**2)
+    return xp.where(solid[..., None], state, updated)
+
+
 def solve(project, conditions, configuration_id: str | None = None,
-          options: dict | None = None, progress=None, cancelled=None) -> dict[str, Any]:
+          options: dict | None = None, progress=None, cancelled=None,
+          telemetry=None, freestream_provider=None) -> dict[str, Any]:
     """Run real Euler flow on current/original combined project geometry.
 
-    Step, cell, physical-time and wall-clock budgets are explicit. Reaching a
-    budget returns a partial numerical solution with its stopping reason; it
-    never labels an unfinished run converged. Cancellation returns partial fields.
+    Steady mode has no wall-clock, step or physical-time stopping budget. It
+    stops only at numerical convergence or cancellation. Transient mode solves
+    the requested physical duration, independently of the steady residual.
+    Cell allocation limits remain enforced; cancellation retains actual fields.
+    The optional telemetry callback receives structured measured progress while
+    the existing two-argument progress callback remains compatible.
     """
     from ..geometry import project_mesh
     from .aero import atmosphere, freestream
 
     options = dict(options or {})
-    max_steps = _number(options, "max_steps", 5000, 1, 10000, True)
+    mode = options.get("mode", "steady")
+    if not isinstance(mode, str) or mode not in {"steady", "transient"}:
+        raise ValueError("CFD mode must be steady or transient.")
+    if freestream_provider is not None and mode != "transient":
+        raise ValueError("A time-varying freestream provider requires transient CFD mode.")
+    duration = None
+    if mode == "transient":
+        raw_duration = options.get("duration_s")
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Transient duration_s must be a positive finite physical time in seconds.") from exc
+        if isinstance(raw_duration, bool) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError("Transient duration_s must be a positive finite physical time in seconds.")
+    frame_limit = _number(options, "snapshot_count", 24, 2, 32, True)
+    legacy_stop_options = sorted(set(options) & {
+        "max_steps", "max_wall_seconds", "max_physical_time", "flow_through_times", "run_until_converged",
+    })
     cfl = _number(options, "cfl", 0.35, 0.01, 0.8)
-    max_wall = _number(options, "max_wall_seconds", 1200, 0, 86400)
-    until_converged = options.get("run_until_converged", False)
-    if not isinstance(until_converged, bool):
-        raise ValueError("run_until_converged must be a boolean.")
-    flow_times = _number(options, "flow_through_times", 2.0, 0.05, 20)
     tolerance = _number(options, "convergence_tolerance", 1e-5, 1e-10, 0.01)
     sample_limit = _number(options, "sample_limit", 4000, 1, 20000, True)
     surface_limit = _number(options, "surface_limit", 5000, 1, 30000, True)
@@ -442,7 +606,14 @@ def solve(project, conditions, configuration_id: str | None = None,
     if not isinstance(original, bool):
         raise ValueError("original must be a boolean geometry selection.")
     xp, backend, warnings = _backend(str(options.get("backend", "auto")))
+    if legacy_stop_options:
+        warnings.append("Legacy CFD stopping options are ignored: " + ", ".join(legacy_stop_options) + ". Steady mode stops only at convergence/cancellation; transient mode completes duration_s or is cancelled. No wall-clock or step timeout is enforced.")
     start = time.perf_counter()
+    if telemetry:
+        telemetry(dict(mode=mode, phase="voxelization", integration_steps=0,
+                       physical_time_s=0.0, target_physical_time_s=duration,
+                       elapsed_seconds=0.0, integration_elapsed_seconds=0.0,
+                       done=False, status="running"))
     if progress:
         progress(0.0, "Voxelizing the external rocket geometry for the Euler grid")
     mesh = project_mesh(project, configuration_id, original=original)
@@ -469,10 +640,20 @@ def solve(project, conditions, configuration_id: str | None = None,
         raise ValueError("Freestream must contain a finite 3D velocity vector.")
     rho_inf = float(air.get("density", air.get("density_kg_m3")))
     pressure_inf = float(air.get("pressure", air.get("pressure_pa")))
+    environment = dict(density_kg_m3=rho_inf, pressure_pa=pressure_inf,
+                       velocity_m_s=velocity.tolist(), altitude_msl_m=conditions.altitude,
+                       flight_time_s=None, frame_acceleration_m_s2=[0, 0, 0])
+    if freestream_provider is not None:
+        environment = _freestream_environment(freestream_provider, 0.0)
+        rho_inf = environment["density_kg_m3"]
+        pressure_inf = environment["pressure_pa"]
+        velocity = np.asarray(environment["velocity_m_s"], dtype=float)
+        warnings.append("Time-varying transient CFD is one-way prescribed boundary forcing of fixed geometry. A launch profile supplies body-equivalent air-relative flow, not a solved moving/rotating vehicle. Translation-only frame acceleration is included only when explicitly supplied; rotating-frame forces, changing attitude, moving boundaries and CFD feedback into the flight are not modeled.")
+        warnings.append("A time-varying profile may pass through low Mach below 0.3. This Euler scheme has no all-speed preconditioning: acoustic numerical dissipation can dominate physical pressure differences, and low-Mach pressure drag is especially unreliable.")
     sound_inf = math.sqrt(GAMMA * pressure_inf / rho_inf)
     speed = float(np.linalg.norm(velocity))
     actual_mach = speed / sound_inf
-    if actual_mach > 2.05:
+    if actual_mach > 2.05 + 1e-12:
         raise ValueError("The actual freestream including lateral wind exceeds the supported Mach 2 range.")
     if conditions.turbulence:
         warnings.append("The turbulence input is not modeled by inviscid Euler; no turbulent or viscous fluctuations are synthesized.")
@@ -510,31 +691,75 @@ def solve(project, conditions, configuration_id: str | None = None,
     crossing_speed = max(speed, sound_inf * 0.1)
     flow_time = float(solid_cpu.shape[0] * spacing[0] / crossing_speed)
     minimum_convergence_time = 0.5 * flow_time
-    target_time = flow_times * flow_time
-    if "max_physical_time" in options:
-        target_time = _number(options, "max_physical_time", target_time, 1e-8, 10000)
+    target_time = duration
     physical_time = 0.0
     history = []
-    status = "step_budget"
+    status = "running"
     steps = 0
     stable_streak = 0
     rejected_steps = 0
-    wall_pressure_residual = force_residual = moment_residual = None
+    residual = wall_pressure_residual = force_residual = moment_residual = None
+    recorder = None
+    if mode == "transient":
+        initial_state = xp.asnumpy(state) if backend == "cupy-cuda" else np.asarray(state)
+        recorder = _TransientRecorder(initial_state, solid_cpu, spacing, origin, wall_cpu,
+                                      pressure_inf, rho_inf, velocity, duration,
+                                      frame_limit, sample_limit, surface_limit)
+        recorder.capture(initial_state, 0.0, 0, environment)
     integration_start = time.perf_counter()
-    while until_converged or steps < max_steps:
+
+    def emit_telemetry(phase="integration", done=False):
+        if telemetry:
+            telemetry(dict(
+                mode=mode, phase=phase, integration_steps=steps,
+                physical_time_s=physical_time, target_physical_time_s=target_time,
+                domain_crossings_completed=physical_time / flow_time,
+                minimum_convergence_time_s=minimum_convergence_time,
+                residual=residual, wall_pressure_residual=wall_pressure_residual,
+                force_residual=force_residual, moment_residual=moment_residual,
+                convergence_tolerance=tolerance, stable_streak=stable_streak,
+                required_stable_steps=20, rejected_steps=rejected_steps,
+                elapsed_seconds=max(0.0, time.perf_counter() - start),
+                integration_elapsed_seconds=max(0.0, time.perf_counter() - integration_start),
+                flight_time_s=environment.get("flight_time_s"),
+                freestream_mach=environment.get("freestream_mach", actual_mach),
+                altitude_msl_m=environment.get("altitude_msl_m"),
+                done=done, status=status,
+            ))
+
+    emit_telemetry()
+    while True:
         if cancelled and cancelled():
             status = "cancelled"
             break
-        if max_wall > 0 and time.perf_counter() - start >= max_wall:
-            status = "wall_clock_budget"
+        if mode == "transient" and physical_time >= target_time:
+            status = "transient_complete"
             break
+        if freestream_provider is not None:
+            environment = _freestream_environment(freestream_provider, physical_time)
+            rho_inf, pressure_inf = environment["density_kg_m3"], environment["pressure_pa"]
+            velocity = np.asarray(environment["velocity_m_s"], dtype=float)
+            sound_inf = math.sqrt(GAMMA * pressure_inf / rho_inf)
+            speed = float(np.linalg.norm(velocity))
+            actual_mach = speed / sound_inf
+            farfield_cpu = conserved(rho_inf, velocity, pressure_inf)
+            farfield = xp.asarray(farfield_cpu)
         step = steps + 1
         dt = stable_timestep(state, solid, spacing, cfl, xp=xp)
-        if not until_converged:
+        # A changing prescribed boundary may be faster than the current domain.
+        # Include its characteristic speeds in the same multidimensional CFL.
+        incoming_dt = cfl / float(np.sum((np.abs(velocity) + sound_inf) / spacing))
+        dt = min(dt, incoming_dt)
+        if mode == "transient":
             dt = min(dt, target_time - physical_time)
+        if not math.isfinite(dt) or dt <= 0 or physical_time + dt <= physical_time:
+            raise RuntimeError("The CFD physical timestep cannot advance finite time. No duplicate-time or nonphysical state was accepted.")
         accepted = False
         for _ in range(9):
             candidate = finite_volume_step(state, solid, spacing, dt, farfield, xp=xp)
+            acceleration = environment.get("frame_acceleration_m_s2", [0, 0, 0])
+            if any(acceleration):
+                candidate = _accelerating_frame_update(candidate, solid, acceleration, dt, xp)
             if _physical(candidate, solid, xp):
                 accepted = True
                 break
@@ -555,12 +780,14 @@ def solve(project, conditions, configuration_id: str | None = None,
         moment_residual = float(xp.linalg.norm(xp.sum(xp.cross(relative_wall_positions, force_change), axis=0))) / moment_scale * flow_time / dt
         previous_wall_pressure = wall_pressure
         state = candidate
-        physical_time += dt
+        # Pin the terminal timestamp to the user's actual physical duration;
+        # the accepted terminal Euler step uses precisely this remainder.
+        physical_time = target_time if mode == "transient" and dt == target_time - physical_time else physical_time + dt
         steps = step
         _, vel, pressure, sound = primitives(state, xp=xp)
         min_pressure = float(xp.min(xp.where(solid, xp.inf, pressure)))
         max_mach = float(xp.max(xp.where(solid, 0, xp.linalg.norm(vel, axis=-1) / sound)))
-        if step == 1 or step % 5 == 0 or (not until_converged and (step == max_steps or physical_time >= target_time)):
+        if step == 1 or step % 5 == 0 or (mode == "transient" and physical_time >= target_time):
             _record_history(history, dict(step=step, time_s=physical_time, dt_s=dt, residual=residual,
                                 wall_pressure_residual=wall_pressure_residual,
                                 force_residual=force_residual, moment_residual=moment_residual,
@@ -570,24 +797,27 @@ def solve(project, conditions, configuration_id: str | None = None,
         # disturbance has had time to traverse the body/domain.
         rates = (residual, wall_pressure_residual, force_residual, moment_residual)
         stable_streak = stable_streak + 1 if max(rates) < tolerance and physical_time >= minimum_convergence_time else 0
-        elapsed = time.perf_counter() - start
         integration_elapsed = max(time.perf_counter() - integration_start, 1e-12)
         physical_rate = physical_time / integration_elapsed
         time_to_minimum = max(0.0, minimum_convergence_time - physical_time) / physical_rate
-        limits = ([] if until_converged else [step / max_steps, physical_time / target_time])
-        if max_wall > 0:
-            limits.append(elapsed / max_wall)
-        completion = min(1.0, max(limits)) if limits else min(0.90, physical_time / minimum_convergence_time * 0.90)
+        if freestream_provider is not None:
+            environment = _freestream_environment(freestream_provider, physical_time)
+        if recorder and recorder.due(physical_time):
+            snapshot_state = xp.asnumpy(state) if backend == "cupy-cuda" else np.asarray(state)
+            recorder.capture(snapshot_state, physical_time, steps, environment)
         if progress and (step == 1 or step % 5 == 0):
             timing = f"about {time_to_minimum:.0f} s to minimum flow time" if time_to_minimum > 0 else "minimum flow time reached"
-            deadline = "Completion time unknown; waiting for numerical convergence" if not limits else f"{completion:.0%} of configured work budget used; convergence time unknown"
-            step_label = str(step) if until_converged else f"{step}/{max_steps}"
-            progress(min(completion * 0.95, 0.95), f"Euler step {step_label}; {physical_time / flow_time:.3f} domain crossings; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; {timing}. {deadline}.")
-        if stable_streak >= 20:
+            deadline = ("Completion time unknown; waiting for numerical convergence" if mode == "steady" else
+                        f"{physical_time:.6g}/{target_time:.6g} s physical flow time; completion follows the requested duration")
+            completion = 0.0 if mode == "steady" else min(0.95, physical_time / target_time * 0.95)
+            progress(completion, f"Euler step {step}; {physical_time / flow_time:.3f} domain crossings; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; {timing}. {deadline}.")
+        if step == 1 or step % 5 == 0:
+            emit_telemetry()
+        if mode == "steady" and stable_streak >= 20:
             status = "converged"
             break
-        if not until_converged and physical_time >= target_time * (1 - 1e-12):
-            status = "physical_time_budget"
+        if mode == "transient" and physical_time >= target_time:
+            status = "transient_complete"
             break
     integration_elapsed = max(0.0, time.perf_counter() - integration_start)
     if steps and history[-1]["step"] != steps:
@@ -601,6 +831,15 @@ def solve(project, conditions, configuration_id: str | None = None,
         state_cpu = xp.asnumpy(state)
     else:
         state_cpu = np.asarray(state)
+    if freestream_provider is not None:
+        environment = _freestream_environment(freestream_provider, physical_time)
+        rho_inf, pressure_inf = environment["density_kg_m3"], environment["pressure_pa"]
+        velocity = np.asarray(environment["velocity_m_s"], dtype=float)
+        speed = float(np.linalg.norm(velocity))
+        actual_mach = speed / math.sqrt(GAMMA * pressure_inf / rho_inf)
+    if recorder:
+        recorder.capture(state_cpu, physical_time, steps, environment)
+    emit_telemetry("extraction")
     if progress:
         progress(0.96, "Extracting solved fluid samples and integrating wall pressure loads")
     rho, vel, pressure, sound = primitives(state_cpu)
@@ -621,7 +860,9 @@ def solve(project, conditions, configuration_id: str | None = None,
         speed, rho_inf, surface_limit)
     if negative_wall_faces:
         warnings.append(f"{negative_wall_faces} wall Riemann expansions reach vacuum (zero pressure). These loads cannot be transferred to FEA; inspect the flow and refine before interpreting them.")
-    if status != "converged":
+    if status == "transient_complete":
+        warnings.append("Completed the requested transient physical duration. Stored fields are instantaneous numerical states, not a converged steady-flow prediction or time-averaged loads.")
+    elif status != "converged":
         warnings.append(f"Stopping reason: {status}. The returned fields are the actual partial solution, not a converged steady-flow prediction.")
     lateral_force_squared = float(force[1] ** 2 + force[2] ** 2)
     cp_m = None
@@ -633,16 +874,20 @@ def solve(project, conditions, configuration_id: str | None = None,
         cp_fit_residual = float(np.linalg.norm(moment - np.cross([cp_m, 0, 0], force)))
     elif status == "converged":
         warnings.append("Pressure-resultant CP is undefined at negligible lateral force; no CP is inferred from axial drag.")
-    summary = dict(status=status, converged=status == "converged", steps=steps,
+    summary = dict(status=status, mode=mode, completed=status in {"converged", "transient_complete"},
+                   converged=status == "converged", steps=steps,
                    physical_time_s=physical_time, target_physical_time_s=target_time,
                    elapsed_seconds=time.perf_counter() - start, flow_through_time_s=flow_time,
                    force_n=force.tolist(), moment_about_origin_nm=moment.tolist(),
                    pressure_drag_n=float(np.dot(force, velocity / speed)) if speed else 0.0,
                    pressure_force_steady=status == "converged", pressure_force_validated=False,
-                   pressure_output_kind="Converged numerical pressure resultant; unvalidated" if status == "converged" else "Partial transient numerical pressure resultant; not a steady drag prediction",
-                   run_until_converged=until_converged,
-                   stop_policy="Convergence or cancellation, plus wall-clock timeout when nonzero" if until_converged else "First of convergence, step, physical-time or nonzero wall-clock budget, or cancellation",
-                   progress_basis="convergence_unknown" if until_converged and max_wall == 0 else "budget_usage",
+                   pressure_output_kind=("Converged numerical pressure resultant; unvalidated" if status == "converged" else
+                                         "Completed transient instantaneous pressure resultant; not a steady drag prediction" if status == "transient_complete" else
+                                         "Partial transient numerical pressure resultant; not a steady drag prediction"),
+                   run_until_converged=mode == "steady",
+                   stop_policy="Numerical convergence or cancellation; no wall-clock, step or physical-time timeout" if mode == "steady" else "Requested physical duration or cancellation; no wall-clock or step timeout",
+                   progress_basis="convergence_unknown" if mode == "steady" else "physical_time",
+                   legacy_stop_options_ignored=legacy_stop_options,
                    domain_crossings_completed=physical_time / flow_time,
                    minimum_convergence_time_s=minimum_convergence_time,
                    minimum_convergence_time_reached=physical_time >= minimum_convergence_time,
@@ -652,7 +897,7 @@ def solve(project, conditions, configuration_id: str | None = None,
                    measured_steps_per_second=steps / integration_elapsed if steps and integration_elapsed > 0 else None,
                    simulated_seconds_per_wall_second=physical_time / integration_elapsed if steps and integration_elapsed > 0 else None,
                    estimated_seconds_to_minimum_flow_time=max(0.0, minimum_convergence_time - physical_time) * integration_elapsed / physical_time if physical_time > 0 else None,
-                   estimated_seconds_to_target_flow_time=max(0.0, target_time - physical_time) * integration_elapsed / physical_time if physical_time > 0 else None,
+                   estimated_seconds_to_target_flow_time=max(0.0, target_time - physical_time) * integration_elapsed / physical_time if target_time is not None and physical_time > 0 else None,
                    timing_estimate_basis="Measured integration throughput; startup/voxelization and extraction excluded. Not an estimate of convergence time.",
                    wall_pressure_residual=wall_pressure_residual,
                    force_residual=force_residual, moment_residual=moment_residual,
@@ -672,6 +917,9 @@ def solve(project, conditions, configuration_id: str | None = None,
                    cell_spacing_m=spacing.tolist(),
                    grid_origin_m=origin.tolist(), freestream_velocity_m_s=velocity.tolist(),
                    freestream_mach=actual_mach, freestream_pressure_pa=pressure_inf,
+                   dynamic_pressure_pa=0.5 * rho_inf * speed**2,
+                   freestream_kind="time_varying_prescribed" if freestream_provider is not None else "constant",
+                   altitude_msl_m=environment.get("altitude_msl_m"), flight_time_s=environment.get("flight_time_s"),
                    min_pressure_pa=float(np.min(pressure[~solid_cpu])),
                    max_mach=float(np.max(np.linalg.norm(vel[~solid_cpu], axis=-1) / sound[~solid_cpu])),
                    residual=history[-1]["residual"] if history else None,
@@ -680,12 +928,21 @@ def solve(project, conditions, configuration_id: str | None = None,
                    project_id=project.id,
                    configuration_id=configuration_id or project.active_configuration_id,
                    original_geometry=original, mesh_sha256=mesh_digest.hexdigest(),
-                   max_steps=max_steps, max_wall_seconds=max_wall, cfl=cfl)
+                   max_steps=None, max_wall_seconds=0, cfl=cfl)
     if options.get("backend", "auto") != "cpu":
         from ..backenddiagnostics import cuda_diagnostics
         summary["cuda_diagnostics"] = cuda_diagnostics()
     summary.update(geometry_diagnostics)
+    if recorder:
+        summary["transient_frame_count"] = len(recorder.frames)
+        summary["transient_frame_limit"] = frame_limit
+    emit_telemetry("complete", done=True)
     if progress:
         progress(1.0, f"Euler solve finished: {status}; {steps} conservative steps")
-    return dict(samples=samples, flow_grid=flow_grid, surface=surface, history=history, summary=summary,
-                fidelity=FIDELITY, warnings=warnings, backend=backend)
+    result = dict(samples=samples, flow_grid=flow_grid, surface=surface, history=history, summary=summary,
+                  fidelity=FIDELITY, warnings=warnings, backend=backend)
+    if recorder:
+        result["transient"] = recorder.result(status == "transient_complete")
+        if freestream_provider is not None:
+            result["transient"]["scope"] = "Fixed rocket geometry with an actual-time prescribed freestream profile. Launch data supply body-equivalent air-relative boundary conditions; moving/rotating geometry, solved attitude, recovery geometry and CFD feedback into flight are not modeled. No physical-time compression."
+    return result

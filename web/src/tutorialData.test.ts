@@ -89,4 +89,17 @@ describe("engineering definitions", () => {
     );
     expect(getTermDefinition("not a technical term")).toBeUndefined();
   });
+  it("explains physical transient time, one-way launch coupling and viewer-only cutaway", () => {
+    expect(getTermDefinition("Transient duration")).toContain(
+      "simulated physical time",
+    );
+    expect(getTermDefinition("Transient source")).toContain(
+      "one-way approximation",
+    );
+    expect(getTermDefinition("ETA")).toContain("tentative ETA range");
+    expect(getTermDefinition("Cutaway")).toContain("does not cut CAD");
+    expect(getTermDefinition("Streamline quality")).toContain(
+      "does not refine the CFD grid",
+    );
+  });
 });

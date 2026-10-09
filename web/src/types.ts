@@ -130,10 +130,27 @@ export interface Job {
   status: string;
   progress: number;
   progress_basis?:
-    "completion_fraction" | "budget_usage" | "convergence_unknown";
+    | "completion_fraction"
+    | "budget_usage"
+    | "convergence_unknown"
+    | "physical_time";
   message: string;
   elapsed_seconds: number;
   eta_seconds: number | null;
+  eta_range_seconds?: [number, number] | null;
+  eta_basis?: "physical_time_throughput" | "convergence_trend" | null;
+  eta_confidence?: "measured" | "tentative" | null;
+  telemetry?: {
+    phase?: string;
+    integration_steps?: number;
+    physical_time_s?: number;
+    target_physical_time_s?: number;
+    flight_time_s?: number;
+    freestream_mach?: number;
+    altitude_msl_m?: number;
+    residuals?: Record<string, number>;
+    [key: string]: unknown;
+  } | null;
   result: any;
   error: string | null;
 }

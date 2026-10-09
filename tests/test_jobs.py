@@ -122,13 +122,14 @@ def test_cancelled_queued_jobs_can_be_pruned_without_worker_errors():
         manager.submit(demo_project(), "sweep", Conditions(), options={"count": 2})
 
 
-@pytest.mark.parametrize("until_converged, wall_seconds, basis", [
-    (True, 0, "convergence_unknown"),
-    (True, "0", "convergence_unknown"),
-    (True, 60, "budget_usage"),
-    (False, 0, "budget_usage"),
+@pytest.mark.parametrize("mode, until_converged, wall_seconds, basis", [
+    ("steady", True, 0, "convergence_unknown"),
+    ("steady", True, "0", "convergence_unknown"),
+    ("steady", True, 60, "convergence_unknown"),
+    ("steady", False, 0, "convergence_unknown"),
+    ("transient", False, 60, "physical_time"),
 ])
-def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, until_converged, wall_seconds, basis):
+def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, mode, until_converged, wall_seconds, basis):
     """Gate actual numerical work so running/cancelled states are inspectable.
 
     Fields come from ten conservative Euler advances on a real portable cube
@@ -149,20 +150,23 @@ def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, u
     release = threading.Event()
     real_solve = cfd.solve
 
-    def controlled_solve(value, conditions, configuration_id, options, progress, cancelled):
+    def controlled_solve(value, conditions, configuration_id, options, progress, cancelled,
+                         telemetry=None, freestream_provider=None):
         def observed(fraction, message):
             progress(fraction, message)
             if message.startswith("Euler step 10;") or message.startswith("Euler step 10/"):
                 entered.set()
                 if not release.wait(timeout=5):
                     raise AssertionError("Test did not release the real CFD worker")
-        return real_solve(value, conditions, configuration_id, options, observed, cancelled)
+        return real_solve(value, conditions, configuration_id, options, observed, cancelled,
+                          telemetry=telemetry, freestream_provider=freestream_provider)
 
     monkeypatch.setattr(cfd, "solve", controlled_solve)
     manager = JobManager()
     try:
         submitted = manager.submit(project, "cfd", Conditions(mach=0.3, wind_speed=0), options={
             "backend": "cpu", "grid_resolution": 12, "cfl": 0.7,
+            "mode": mode, "duration_s": .01,
             "max_steps": 20, "flow_through_times": 8,
             "run_until_converged": until_converged, "max_wall_seconds": wall_seconds,
             "sample_limit": 100, "surface_limit": 100,
@@ -173,10 +177,14 @@ def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, u
         assert running["status"] == "running" and running["result"] is None
         assert running["progress_basis"] == basis
         if basis == "convergence_unknown":
-            assert running["progress"] > 0.01  # ETA must be unknown despite apparent progress.
+            assert running["progress"] == 0  # Residual decay is never a completion fraction.
             assert running["eta_seconds"] is None
-        elif not until_converged:
-            assert running["eta_seconds"] is not None and running["eta_seconds"] >= 0
+        else:
+            assert running["progress"] > 0
+            # Early measurements may not yet support a throughput estimate.
+            assert running["eta_seconds"] is None or running["eta_seconds"] >= 0
+        assert running["telemetry"]["phase"] == "integration"
+        assert running["telemetry"]["integration_steps"] >= 5
         manager.cancel(submitted["id"])
         release.set()
         stopped = completed(manager, submitted["id"])
@@ -192,6 +200,7 @@ def test_real_cfd_job_progress_and_cancelled_fields_remain_honest(monkeypatch, u
         assert min(row["pressure_pa"] for row in result["samples"]) > 0
         assert result["inputs"]["project_sha256"] == stopped["project_sha256"]
         assert result["inputs"]["options"]["run_until_converged"] == until_converged
+        assert "max_wall_seconds" in result["summary"]["legacy_stop_options_ignored"]
         json.dumps(stopped, allow_nan=False)
         with pytest.raises(ValueError, match="completed, numerically converged CFD"):
             manager.submit(project, "fea", Conditions(), options={

@@ -9,6 +9,16 @@ from rocket_workbench.models import Component, Conditions, GeometryAsset, Materi
 from rocket_workbench.solvers import cfd
 
 
+def _cancel_after_steps(count):
+    """Allow a finite scientific observation window without solver budgets."""
+    calls = 0
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls > count
+    return cancelled
+
+
 def test_uniform_oblique_supersonic_freestream_is_preserved():
     farfield = cfd.conserved(1.2, [650.0, 30.0, -15.0], 101325.0)
     state = np.broadcast_to(farfield, (10, 7, 6, 5)).copy()
@@ -221,7 +231,8 @@ def test_sealed_cad_cavity_has_identical_exterior_flow_without_changing_material
     positions = np.asarray([row["position"] for row in results[1][0]])
     assert np.all(np.max(np.abs(positions) / (np.array([0.3, 0.2, 0.16]) / 2), axis=1) >= 1)
 
-    solved = cfd.solve(project, Conditions(mach=0.3, wind_speed=0), options=options)
+    solved = cfd.solve(project, Conditions(mach=0.3, wind_speed=0), options=options,
+                       cancelled=_cancel_after_steps(4))
     assert solved["summary"]["aerodynamic_voxel_sha256"] == hollow_diagnostics["aerodynamic_voxel_sha256"]
     assert solved["summary"]["source_material_mesh_modified"] is False
     assert project.model_dump(mode="json") == before_project
@@ -277,13 +288,14 @@ def test_real_geometry_solve_produces_positive_pressure_and_real_loads(monkeypat
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: mesh)
     messages = []
     result = cfd.solve(Project(), Conditions(mach=mach, wind_speed=0, angle_of_attack=0),
-                       options={"grid_resolution": 12, "max_steps": 12, "backend": "cpu"},
+                       options={"grid_resolution": 12, "backend": "cpu"},
+                       cancelled=_cancel_after_steps(12),
                        progress=lambda fraction, message: messages.append((fraction, message)))
     assert result["backend"] == "numpy-cpu"
     assert result["summary"]["steps"] == 12
     assert result["summary"]["min_pressure_pa"] > 0
     assert result["summary"]["force_n"][0] > 0
-    assert result["summary"]["status"] == "step_budget"
+    assert result["summary"]["status"] == "cancelled"
     assert result["summary"]["cp_m"] is None
     assert not result["summary"]["pressure_force_steady"]
     assert not result["summary"]["pressure_force_validated"]
@@ -321,9 +333,11 @@ def test_nontrivial_oblique_box_run_converges_and_pressure_cp_is_condition_speci
     assert summary["minimum_convergence_time_reached"]
     assert summary["domain_crossings_completed"] >= 0.5
     if until_converged:
-        assert summary["steps"] > summary["max_steps"]
-        assert summary["physical_time_s"] > summary["target_physical_time_s"]
+        assert summary["steps"] > 1
+        assert summary["max_steps"] is None
+        assert summary["target_physical_time_s"] is None
         assert summary["progress_basis"] == "convergence_unknown"
+    assert "max_steps" in summary["legacy_stop_options_ignored"]
 
 
 def test_farfield_rms_does_not_hide_unsettled_pressure_loads(monkeypatch):
@@ -333,7 +347,7 @@ def test_farfield_rms_does_not_hide_unsettled_pressure_loads(monkeypatch):
         "grid_resolution": 12, "max_steps": 200, "max_wall_seconds": 60,
         "flow_through_times": 8, "convergence_tolerance": 0.01, "cfl": 0.7,
         "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
-    })
+    }, cancelled=_cancel_after_steps(200))
     summary = result["summary"]
     assert summary["residual"] < 0.01
     assert max(summary["wall_pressure_residual"], summary["force_residual"], summary["moment_residual"]) > 0.01
@@ -345,7 +359,7 @@ def test_low_mach_dissipation_limitation_is_explicit(monkeypatch):
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
     result = cfd.solve(Project(), Conditions(mach=0.05, wind_speed=0), options={
         "grid_resolution": 12, "max_steps": 1, "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
-    })
+    }, cancelled=_cancel_after_steps(1))
     assert any("Low-Mach" in warning and "dissipation" in warning for warning in result["warnings"])
 
 
@@ -357,8 +371,8 @@ def test_cancellation_and_invalid_input_are_explicit(monkeypatch):
     assert result["summary"]["status"] == "cancelled"
     assert result["summary"]["steps"] == 0
     assert not result["summary"]["converged"]
-    with pytest.raises(ValueError, match="max_steps"):
-        cfd.solve(Project(), Conditions(), options={"max_steps": 0})
+    with pytest.raises(ValueError, match="CFD mode"):
+        cfd.solve(Project(), Conditions(), options={"mode": "unsupported"})
 
 
 def test_explicit_gpu_request_does_not_silently_fall_back(monkeypatch):
@@ -368,38 +382,23 @@ def test_explicit_gpu_request_does_not_silently_fall_back(monkeypatch):
         cfd._backend("gpu")
 
 
-def test_zero_wall_timeout_ignores_elapsed_deadline_but_keeps_step_budget(monkeypatch):
+@pytest.mark.parametrize("legacy_timeout", [0, 1])
+def test_legacy_wall_and_step_budgets_are_ignored_even_after_a_day(monkeypatch, legacy_timeout):
     from types import SimpleNamespace
     import rocket_workbench.geometry as geometry
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
     clock = iter(range(1, 1000))
     monkeypatch.setattr(cfd, "time", SimpleNamespace(perf_counter=lambda: next(clock) * 100000.0))
     result = cfd.solve(Project(), Conditions(mach=0.3, wind_speed=0), options={
-        "grid_resolution": 12, "max_steps": 2, "max_wall_seconds": 0,
+        "grid_resolution": 12, "max_steps": 1, "max_wall_seconds": legacy_timeout,
         "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
-    })
-    assert result["summary"]["status"] == "step_budget"
+    }, cancelled=_cancel_after_steps(2))
+    assert result["summary"]["status"] == "cancelled"
     assert result["summary"]["steps"] == 2
     assert result["summary"]["elapsed_seconds"] > 86400
     assert not result["summary"]["pressure_force_steady"]
-
-
-def test_nonzero_wall_timeout_returns_honest_partial_state(monkeypatch):
-    from types import SimpleNamespace
-    import rocket_workbench.geometry as geometry
-    monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: trimesh.creation.box(extents=[0.1] * 3))
-    clock = iter(range(1000))
-    monkeypatch.setattr(cfd, "time", SimpleNamespace(perf_counter=lambda: float(next(clock))))
-    result = cfd.solve(Project(), Conditions(mach=0.3, wind_speed=0), options={
-        "grid_resolution": 12, "max_steps": 2, "max_wall_seconds": 1,
-        "backend": "cpu", "sample_limit": 1, "surface_limit": 1,
-    })
-    summary = result["summary"]
-    assert summary["status"] == "wall_clock_budget" and summary["steps"] == 0
-    assert summary["domain_crossings_completed"] == 0
-    assert not summary["minimum_convergence_time_reached"]
-    assert summary["measured_steps_per_second"] is None
-    assert "not a steady drag prediction" in summary["pressure_output_kind"]
+    assert result["summary"]["legacy_stop_options_ignored"] == ["max_steps", "max_wall_seconds"]
+    assert any("ignored" in warning and "max_wall_seconds" in warning for warning in result["warnings"])
     json.dumps(result, allow_nan=False)
 
 
@@ -419,12 +418,13 @@ def test_convergence_only_run_is_cancellable_and_ignores_short_work_ceiling(monk
     }, cancelled=cancelled, progress=lambda fraction, message: messages.append(message))
     summary = result["summary"]
     assert summary["status"] == "cancelled" and summary["steps"] == 3
-    assert summary["physical_time_s"] > summary["target_physical_time_s"]
+    assert summary["physical_time_s"] > 1e-8
+    assert summary["target_physical_time_s"] is None
     assert summary["progress_basis"] == "convergence_unknown"
     assert any("Completion time unknown" in message for message in messages)
     assert summary["measured_steps_per_second"] > 0
     assert summary["estimated_seconds_to_minimum_flow_time"] > 0
-    assert summary["estimated_seconds_to_target_flow_time"] == 0
+    assert summary["estimated_seconds_to_target_flow_time"] is None
 
 
 def test_original_fin_resolution_is_axis_aware_and_cad_thickness_is_not_invented():

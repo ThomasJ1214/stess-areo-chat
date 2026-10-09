@@ -108,17 +108,25 @@ uniform scale; no source mesh edit, material union or structural joint is inferr
 With `auto_align:true`, attachment derives this transform from `alignment_options`
 rather than using a supplied manual transform.
 
-For CFD, `run_until_converged:true` removes step and physical-flow-time stop
-ceilings. A nonzero `max_wall_seconds` still stops the solver; `0` disables that
-timeout. Cell-allocation limits, cancellation and numerical validity checks remain.
-Returned `summary.progress_basis` is `budget_usage` for bounded CFD runs or
-`convergence_unknown` for convergence-only runs with no timeout. The UI must not
-interpret work-budget usage as physical convergence or show a convergence ETA
-in the latter mode. `summary.status`, `converged`, force-result validity and
-warnings distinguish an actual partial field from a converged numerical field.
+CFD `mode` is `steady` (default) or `transient`. Steady runs stop only at
+numerical convergence or cancellation. Transient runs integrate positive
+`duration_s` or stop on cancellation. Neither mode enforces old wall-clock,
+step-count or domain-crossing budgets. Cell-allocation limits, cancellation and
+numerical validity checks remain. Transient job options can select
+`transient_source:launch` or `fixed`; launch uses a matching `flight_job_id` or
+calculates a current launch, with optional `flight_start_s`/`flight_end_s`.
+`snapshot_count` bounds saved real display states independently of integration.
+Steady job progress uses `convergence_unknown`, always without a finite percentage;
+transient progress measures integrated physical time. Structured telemetry
+supports measured-throughput ETA or a qualified tentative convergence range.
+`summary.status`, `converged`, force-result validity and warnings distinguish an
+actual partial field, completed transient experiment and converged steady field.
 Convergence remains numerical steadiness, not mesh/domain or physical validation.
-Job polling exposes the same progress-basis distinction; ordinary jobs use
-`completion_fraction` rather than CFD work-budget usage.
+Job polling exposes the same mode distinction; ordinary jobs use
+`completion_fraction`. Transient output adds shared `transient.topology` and
+bounded actual-time `transient.frames` with field arrays and frame-specific
+freestream pressure/velocity, altitude and flight time. No intermediate flow
+states are inferred by the frontend.
 
 Preflight `can_run` concerns current solid-validity/thickness/resource checks,
 not validated FEA loading/supports. Original thin parts retain mesh size no

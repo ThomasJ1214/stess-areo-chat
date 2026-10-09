@@ -23,6 +23,7 @@ import { fmt, quantity, fitSphereDistance } from "./units";
 import { flightDragDirection, fieldRange } from "./viewerData";
 import CfdFlowView, { CfdFlowLegend, getCfdFlowGrid } from "./CfdFlowView";
 import type { CfdFlowSettings } from "./flowFieldMath";
+import { cfdCutawayPlane } from "./cfdInspection";
 import {
   ambientWind,
   flightLocalDrag,
@@ -87,6 +88,8 @@ function Solid({
   ghost = false,
   stressValue,
   maxStress = 1,
+  xray = false,
+  clippingPlanes,
 }: {
   part: NonNullable<MeshResponse>["components"][0];
   index: number;
@@ -96,6 +99,8 @@ function Solid({
   ghost?: boolean;
   stressValue?: number;
   maxStress?: number;
+  xray?: boolean;
+  clippingPlanes?: THREE.Plane[];
 }) {
   const g = useMemo(() => geometry(part.vertices, part.faces), [part]);
   useEffect(() => () => g.dispose(), [g]);
@@ -118,8 +123,10 @@ function Solid({
         metalness={ghost ? 0 : 0.28}
         roughness={0.48}
         wireframe={wireframe || ghost}
-        transparent={ghost}
-        opacity={ghost ? 0.17 : 1}
+        transparent={ghost || xray}
+        opacity={ghost ? 0.17 : xray ? 0.16 : 1}
+        depthWrite={!ghost && !xray}
+        clippingPlanes={clippingPlanes}
         side={THREE.DoubleSide}
       />
     </mesh>
@@ -518,11 +525,33 @@ function Scene({
   const center = box.getCenter(new THREE.Vector3()).toArray();
   const dimensions = box.getSize(new THREE.Vector3());
   const size = Math.max(dimensions.x, dimensions.y, dimensions.z, 0.1);
+  const clippingPlanes = useMemo(() => {
+    if (p.workspace !== "cfd") return undefined;
+    const plane = cfdCutawayPlane(
+      box.min.toArray(),
+      box.max.toArray(),
+      p.flowSettings,
+    );
+    return plane
+      ? [new THREE.Plane(new THREE.Vector3(...plane.normal), plane.constant)]
+      : undefined;
+  }, [
+    p.workspace,
+    box,
+    p.flowSettings?.cutaway,
+    p.flowSettings?.cutawayAxis,
+    p.flowSettings?.cutawayPosition,
+    p.flowSettings?.cutawayReverse,
+  ]);
+  const xray = p.workspace === "cfd" && Boolean(p.flowSettings?.xray);
   const cfdFlowBox = useMemo(() => {
     if (p.workspace !== "cfd" || !p.overlays.flow) return null;
     const grid = getCfdFlowGrid(p.cfd);
     if (!grid) return null;
-    return new THREE.Box3(new THREE.Vector3(...grid.origin), new THREE.Vector3(...grid.upper)).union(box);
+    return new THREE.Box3(
+      new THREE.Vector3(...grid.origin),
+      new THREE.Vector3(...grid.upper),
+    ).union(box);
   }, [p.workspace, p.overlays.flow, p.cfd, box]);
   const min = box.min.x;
   const cg = p.flightRow?.cg ?? p.aero?.cg_m;
@@ -561,8 +590,16 @@ function Scene({
     ? flightBox.getCenter(new THREE.Vector3()).toArray()
     : tracking
       ? rocketPoint
-      : cfdFlowBox ? cfdFlowBox.getCenter(new THREE.Vector3()).toArray() : center;
-  const frameSize = overview ? extent : tracking ? size * 1.3 : cfdFlowBox ? Math.max(...cfdFlowBox.getSize(new THREE.Vector3()).toArray()) : size;
+      : cfdFlowBox
+        ? cfdFlowBox.getCenter(new THREE.Vector3()).toArray()
+        : center;
+  const frameSize = overview
+    ? extent
+    : tracking
+      ? size * 1.3
+      : cfdFlowBox
+        ? Math.max(...cfdFlowBox.getSize(new THREE.Vector3()).toArray())
+        : size;
   const followDistance = followCameraDistance(
     size,
     rocketPoint[1],
@@ -600,7 +637,9 @@ function Scene({
         <>
           <FollowCamera
             target={pose.position}
-            velocity={inertialToScene(p.flightRow?.velocity_vector || [0, 0, 0])}
+            velocity={inertialToScene(
+              p.flightRow?.velocity_vector || [0, 0, 0],
+            )}
             railDirection={railDirection(conditions)}
             onRail={pose.onRail}
             flightTime={p.flightRow?.time ?? null}
@@ -630,7 +669,9 @@ function Scene({
           <Framing
             center={frameCenter}
             size={frameSize}
-            radius={(cfdFlowBox || box).getBoundingSphere(new THREE.Sphere()).radius}
+            radius={
+              (cfdFlowBox || box).getBoundingSphere(new THREE.Sphere()).radius
+            }
             resetKey={resetKey}
             far={extent * 4}
           />
@@ -717,6 +758,8 @@ function Scene({
                       ?.stress_pa
                   }
                   maxStress={maxStress}
+                  xray={xray}
+                  clippingPlanes={clippingPlanes}
                 />
               ))}
             {previewParts.map((part) => (
@@ -737,6 +780,7 @@ function Scene({
                       ?.stress_pa
                   }
                   maxStress={maxStress}
+                  clippingPlanes={clippingPlanes}
                 />
               ))}
             {p.fea && (p.overlays.stress || p.overlays.deformation) && (
@@ -754,6 +798,7 @@ function Scene({
                 pressure={p.overlays.pressure}
                 settings={p.flowSettings}
                 size={size}
+                clippingPlanes={clippingPlanes}
               />
             )}
             {p.overlays.markers &&
@@ -1007,6 +1052,17 @@ export default function Viewport(p: Props) {
       data-auto-follow={String(flightScene && mode === "follow" && automatic)}
       data-manual-until={manualUntil.current}
       data-alignment-preview={String(alignmentPreviewVisible)}
+      data-cfd-frame-index={p.cfd?.transient_snapshot?.index ?? ""}
+      data-cfd-time={p.cfd?.transient_snapshot?.time_s ?? ""}
+      data-cfd-flight-time={p.cfd?.transient_snapshot?.flight_time_s ?? ""}
+      data-cfd-xray={String(
+        p.workspace === "cfd" && Boolean(p.flowSettings?.xray),
+      )}
+      data-cfd-cutaway={String(
+        p.workspace === "cfd" && Boolean(p.flowSettings?.cutaway),
+      )}
+      data-cfd-cutaway-axis={p.flowSettings?.cutawayAxis || "z"}
+      data-cfd-cutaway-position={p.flowSettings?.cutawayPosition ?? 0.5}
     >
       <div className="viewport-top">
         <span className="live-dot" /> GPU 3D VIEWPORT{" "}
@@ -1024,6 +1080,9 @@ export default function Viewport(p: Props) {
             antialias: true,
             alpha: false,
             powerPreference: "high-performance",
+          }}
+          onCreated={({ gl }) => {
+            gl.localClippingEnabled = true;
           }}
         >
           <Scene

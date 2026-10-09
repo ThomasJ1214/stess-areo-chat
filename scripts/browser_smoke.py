@@ -595,6 +595,59 @@ def main():
             page.screenshot(path=str(args.artifacts / "flight.png"), full_page=True)
             receipt.append("Complete dual-deployment flight, events, timeline, CSV and content-verified portable run inputs")
 
+            page.get_by_label("Flight graph group", exact=True).select_option("Loads & stress")
+            expect(page.locator(".flight-charts")).to_contain_text("Specific acceleration")
+            expect(page.locator(".flight-charts")).to_contain_text("Total aerodynamic drag")
+            page.get_by_label("Flight graph group", exact=True).select_option("Wind & air")
+            expect(page.locator(".flight-charts")).to_contain_text("Air-relative speed")
+            expect(page.locator(".flight-charts")).to_contain_text("modeled gust")
+            page.get_by_label("Flight graph group", exact=True).select_option("Overview")
+            receipt.append("Flight overview, load/stress and wind/air graphs expose actual saved samples and preserve estimate/gust limits")
+
+            # Drive a real transient solve with this actual completed launch,
+            # rather than a fabricated flight fixture or independent steady cases.
+            navigate("CFD")
+            page.get_by_label("Simulation mode", exact=True).select_option("transient")
+            page.get_by_label("Transient source", exact=True).select_option("launch")
+            page.get_by_label("Flight interval", exact=True).select_option("interval")
+            page.get_by_label("Flight start time", exact=True).fill("0.2")
+            page.get_by_label("Flight end time", exact=True).fill("0.201")
+            page.get_by_label("Saved flow frames", exact=True).fill("4")
+            page.get_by_label("Lengthwise grid cells", exact=True).fill("12")
+            page.get_by_label("Transverse grid cells", exact=True).fill("12")
+            with page.expect_response(lambda r: r.url.endswith("/api/jobs") and r.request.method == "POST") as transient_started:
+                transient = job("Solve flow field", timeout=240)
+            assert transient_started.value.request.post_data_json["options"]["flight_job_id"]
+            assert transient["summary"]["status"] == "transient_complete"
+            assert transient["summary"]["completed"] and not transient["summary"]["converged"]
+            assert not transient["summary"]["pressure_force_steady"]
+            frames = transient["transient"]["frames"]
+            assert 2 <= len(frames) <= 4 and frames[0]["time_s"] == 0
+            assert abs(frames[-1]["time_s"] - 0.001) < 1e-12
+            assert frames[-1]["flight_time_s"] == 0.201
+            assert abs(frames[-1]["freestream_mach"] - frames[0]["freestream_mach"]) > 1e-7
+            assert transient["inputs"]["flight_source"]["inputs"]["project_sha256"] == flight["inputs"]["project_sha256"]
+            player = page.get_by_label("Transient CFD playback", exact=True)
+            expect(player).to_be_visible()
+            flow_timeline = page.get_by_label("CFD snapshot timeline", exact=True)
+            flow_timeline.evaluate("el => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'0');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}")
+            expect(viewport).to_have_attribute("data-cfd-time", "0")
+            page.get_by_role("button", name="Next CFD snapshot", exact=True).click()
+            expect(viewport).to_have_attribute("data-cfd-time", str(frames[1]["time_s"]))
+            expect(viewport).to_have_attribute("data-cfd-flight-time", str(frames[1]["flight_time_s"]))
+            page.get_by_role("button", name="Restart CFD playback", exact=True).click()
+            page.get_by_role("button", name="Play CFD playback", exact=True).click()
+            expect(player).to_have_attribute("data-cfd-playing", "true")
+            page.wait_for_function("() => Number(document.querySelector('[aria-label=\"Transient CFD playback\"]').dataset.cfdFrameIndex) > 0", timeout=12000)
+            page.get_by_role("button", name="Pause CFD playback", exact=True).click()
+            expect(player).to_have_attribute("data-cfd-playing", "false")
+            (args.artifacts / "launch-transient-cfd.json").write_text(json.dumps(transient, indent=2, allow_nan=False), "utf8")
+            page.screenshot(path=str(args.artifacts / "launch-transient-cfd.png"), full_page=True)
+            no_errors()
+            receipt.append("Actual completed launch drives time-resolved CFL Euler flow with changing airspeed/atmosphere and immutable provenance; real timestamped frames scrub/play/pause without steady-result claims")
+            page.get_by_label("Simulation mode", exact=True).select_option("steady")
+            page.get_by_label("Transverse grid cells", exact=True).fill("24")
+
             navigate("Studies")
             page.get_by_label("Samples", exact=True).fill("3")
             sweep = job("Run parameter sweep")
@@ -776,17 +829,18 @@ def main():
             receipt.append("Malformed numeric edits block jobs; same-value project reload resets unfinished text")
             page.get_by_label("Angle of attack", exact=True).fill("5")
             page.get_by_label("Lateral wind", exact=True).fill("0")
-            for label, value in [("Lengthwise grid cells", "12"), ("Maximum steps", "1500"), ("Flow-through times", "8"), ("CFL number", "0.7"), ("Convergence tolerance", "0.001")]:
+            for label, value in [("Lengthwise grid cells", "12"), ("CFL number", "0.7"), ("Convergence tolerance", "0.001")]:
                 page.get_by_label(label, exact=True).fill(value)
             cfd_settings = save_project("cfd-settings.rocket.json")
             assert cfd_settings["analysis_settings"]["cfd_options"]["grid_resolution"] == 12
-            assert cfd_settings["analysis_settings"]["cfd_options"]["max_steps"] == 1500
+            assert cfd_settings["analysis_settings"]["cfd_options"]["mode"] == "steady"
+            assert not {"max_steps", "max_wall_seconds", "flow_through_times", "run_until_converged"}.intersection(cfd_settings["analysis_settings"]["cfd_options"])
             assert cfd_settings["analysis_settings"]["cfd_options"]["convergence_tolerance"] == 0.001
             page.get_by_label("Lengthwise grid cells", exact=True).fill("16")
             upload('input[accept=".json,.rocket"]', args.artifacts / "cfd-settings.rocket.json", "project/load")
             navigate("CFD")
             expect(page.get_by_label("Lengthwise grid cells", exact=True)).to_have_value("12")
-            expect(page.get_by_label("Maximum steps", exact=True)).to_have_value("1500")
+            expect(page.get_by_label("Maximum steps", exact=True)).to_have_count(0)
             expect(page.get_by_label("Convergence tolerance", exact=True)).to_have_value("0.001")
             with page.expect_response(lambda r: r.url.endswith("/api/jobs") and r.request.method == "POST") as flow_started:
                 flow = job("Solve flow field", timeout=240)
@@ -828,6 +882,29 @@ def main():
             expect(field_status).to_have_attribute("data-flow-tracers", "true")
             expect(page.get_by_label("CFD velocity magnitude legend", exact=True)).to_be_visible()
             expect(field_status).to_contain_text("Direction tracers · visual timing")
+            geometry_before_display = context.request.get(base + "/api/project").json()
+            standard_segments = int(field_status.get_attribute("data-flow-segments"))
+            page.get_by_label("Streamline quality", exact=True).select_option("high")
+            expect(field_status).to_have_attribute("data-flow-quality", "high")
+            page.wait_for_function("previous => Number(document.querySelector('.cfd-field-status').dataset.flowSegments) > previous", arg=standard_segments)
+            page.get_by_role("button", name="X-ray rocket", exact=True).click()
+            expect(page.locator(".viewport")).to_have_attribute("data-cfd-xray", "true")
+            page.get_by_role("button", name="Cutaway", exact=True).click()
+            expect(page.locator(".viewport")).to_have_attribute("data-cfd-cutaway", "true")
+            page.get_by_label("Cutaway axis", exact=True).select_option("y")
+            page.get_by_label("Cutaway position", exact=True).evaluate("el => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'0.75');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}")
+            expect(page.locator(".viewport")).to_have_attribute("data-cfd-cutaway-axis", "y")
+            expect(page.locator(".viewport")).to_have_attribute("data-cfd-cutaway-position", "0.75")
+            page.get_by_role("button", name="Reverse cutaway", exact=True).click()
+            expect(page.get_by_role("button", name="Reverse cutaway", exact=True)).to_have_attribute("aria-pressed", "true")
+            page.screenshot(path=str(args.artifacts / "cfd-high-quality-cutaway.png"), full_page=True)
+            assert context.request.get(base + "/api/project").json() == geometry_before_display
+            page.get_by_role("button", name="Cutaway", exact=True).click()
+            page.get_by_role("button", name="X-ray rocket", exact=True).click()
+            page.get_by_label("Streamline quality", exact=True).select_option("standard")
+            expect(field_status).to_have_attribute("data-flow-quality", "standard")
+            expect(page.locator(".viewport")).to_have_attribute("data-cfd-cutaway", "false")
+            receipt.append("High-quality real-field streamlines, X-ray and axis/position/reversed Three.js cutaway render without changing source geometry or solved loads")
             frame_intervals = page.evaluate("""async () => {
                 const intervals = []; let previous;
                 await new Promise(resolve => { const frame = timestamp => {
@@ -963,19 +1040,16 @@ def main():
             expect(diagnostics_button).to_be_focused()
             receipt.append("GPU diagnostics preserves the actual probe/root cause, keeps technical details collapsed and copies the exact report to local clipboard or JSON fallback without network requests")
 
-            page.get_by_label("Maximum steps", exact=True).fill("1")
-            page.get_by_label("Flow-through times", exact=True).fill("0.1")
-            page.get_by_label("Wall time limit", exact=True).fill("0")
-            page.get_by_role("button", name="Run until converged", exact=True).click()
-            expect(page.get_by_label("Maximum steps", exact=True)).to_be_disabled()
-            expect(page.get_by_label("Flow-through times", exact=True)).to_be_disabled()
+            expect(page.get_by_label("Maximum steps", exact=True)).to_have_count(0)
+            expect(page.get_by_label("Wall time limit", exact=True)).to_have_count(0)
+            expect(page.get_by_label("Flow-through times", exact=True)).to_have_count(0)
             with page.expect_response(lambda r: r.url.endswith("/api/jobs") and r.request.method == "POST") as unlimited_started:
                 page.get_by_role("button", name="Solve flow field", exact=True).click()
             assert unlimited_started.value.status == 200, unlimited_started.value.text()
             unlimited_id = unlimited_started.value.json()["id"]
             unlimited_options = unlimited_started.value.request.post_data_json["options"]
-            assert unlimited_options["run_until_converged"] and unlimited_options["max_wall_seconds"] == 0
-            assert unlimited_options["max_steps"] == 1 and unlimited_options["flow_through_times"] == 0.1
+            assert unlimited_options["mode"] == "steady"
+            assert not {"max_steps", "max_wall_seconds", "flow_through_times", "run_until_converged"}.intersection(unlimited_options)
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 live_job = context.request.get(base + "/api/jobs/" + unlimited_id).json()
@@ -986,11 +1060,12 @@ def main():
                 page.wait_for_timeout(150)
             else:
                 raise AssertionError("Unbounded CFD did not advance beyond the disabled finite budgets")
-            assert live_job["progress_basis"] == "convergence_unknown" and live_job["eta_seconds"] is None
+            assert live_job["progress_basis"] == "convergence_unknown"
             progressbar = page.get_by_role("progressbar", name="cfd progress", exact=True)
             expect(progressbar).to_be_visible()
             assert progressbar.get_attribute("aria-valuenow") is None
-            expect(page.locator(".job-meta")).to_contain_text("completion time unknown")
+            if live_job["eta_seconds"] is None:
+                expect(page.locator(".job-meta")).to_contain_text("ETA unknown")
             cancel_url = base + "/api/jobs/" + unlimited_id + "/cancel"
 
             def terminal_cancel_reply(route):
@@ -1031,7 +1106,7 @@ def main():
             expect(page.get_by_role("button", name="Run finite element analysis", exact=True)).to_be_disabled()
             expect(page.locator('select[aria-label="Surface load"] option[value="cfd_pressure"]')).to_be_disabled()
             no_errors()
-            receipt.append("Actual unlimited CFD exceeds disabled step/time ceilings, reports unknown convergence progress, survives a delayed terminal cancellation reply, exports partial fields and blocks pressure FEA")
+            receipt.append("Steady CFD has no step/time ceilings, reports indeterminate convergence progress, survives a delayed terminal cancellation reply, exports partial fields and blocks pressure FEA")
 
             navigate("Design")
             ork = upload('input[accept=".ork"]', ROOT / "tests/fixtures/openrocket/dual-deployment.ork", "import/ork")

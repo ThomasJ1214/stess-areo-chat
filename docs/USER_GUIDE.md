@@ -230,12 +230,15 @@ not transient FEA or a resolved parachute-opening load.
    unavailable. Numerical CUDA needs a compatible NVIDIA device/driver; AMD/Intel
    graphics can render the scene but cannot run this CUDA solver. Automatic mode
    may use CPU; the result reports what ran. Restart the app after a driver change.
-4. For a first bounded check, leave **Run until converged** off and set steps,
-   flow-through times and **Wall time limit**. For a longer settling run, turn
-   **Run until converged** on; this removes step/flow-time ceilings. Set **Wall
-   time limit** to `0` only when you intend no elapsed-computation deadline.
-   That mode can run indefinitely; use **Cancel** when needed. It shows measured
-   steps, elapsed time and residuals, without a promised completion percent/ETA.
+4. Choose **Steady-state** for fixed-condition numerical convergence, or
+   **Transient** for a physical flow interval. Neither mode has a computer-time
+   or step-count cutoff. A steady run may continue indefinitely; use **Cancel**
+   when needed. Its progress shows measured steps, elapsed time and residuals;
+   a tentative ETA requires a consistent residual trend, and otherwise remains
+   unknown. Transient percentage and ETA follow actual integrated physical time.
+   For transient launch flow, use **Launch history** and choose the whole flight
+   or a short interval. The app uses calculated air-relative velocity, wind and
+   atmosphere. A fixed-condition transient test is also available.
 5. Click **Solve flow field**. Pressure/velocity fields are actual numerical
    outputs. Check stopping reason, convergence history, wall/force convergence,
    grid spacing and geometry/flow diagnostics before using loads.
@@ -245,7 +248,13 @@ not transient FEA or a resolved parachute-opening load.
    timing on the frozen field, not unsteady particle histories. Lines stop at the
    exported domain and conservative wall mask; they do not enter sealed cavities.
    Older saved results show sparse solved vectors until rerun. Display settings
-   do not change forces, geometry or the solution.
+   do not change forces, geometry or the solution. Streamline quality improves
+   display integration and smoothness; it does not refine the CFD grid. X-ray
+   makes the rocket translucent. Cutaway clips the displayed model/field to
+   inspect inner layers; it never cuts saved CAD or opens sealed flow space.
+   For transient results, play, pause or scrub the saved CFD frames. Each
+   timestamp identifies an actual computed state, with no manufactured
+   intermediate flow fields.
 7. Refine the grid and increase **Farfield padding**, then compare loads. Padding
    is a fraction of each geometry extent; it is not a distance in metres. A numerically
    steady answer alone does not establish resolution independence or physical
@@ -254,15 +263,21 @@ not transient FEA or a resolved parachute-opening load.
 This solver is experimental compressible inviscid Euler, with staircase walls.
 It omits viscosity, skin friction, boundary layers and turbulence. Low-Mach
 pressure forces are particularly sensitive to numerical dissipation. Its
-pressure drag is not a validated total drag coefficient. An iteration/time
-budget stopping reason is not convergence. See [CFD.md](CFD.md).
+pressure drag is not a validated total drag coefficient. Completed transient
+fields are instantaneous loads, not steady drag. Launch-driven CFD prescribes a
+one-way airflow history on fixed geometry; it does not model rotating vehicle
+attitude, moving meshes, canopy shape changes or feedback into the trajectory.
+Whole-flight CFD can require millions of acoustic CFL steps. Begin with a short
+interval. See [CFD.md](CFD.md).
 
-### If CFD says “Not reached” or “wall clock budget”
+### If CFD says “Not reached” or an older result says “wall clock budget”
 
 The reported force and colored fields are the actual **partial solution** at
 the time the solver stopped. Do not use that force as settled drag or transfer
-it to FEA. A progress bar reaching its limit means the allowed work ended;
-it does not mean the flow converged.
+it to FEA. Current steady runs have no runtime limit. Old budget-limited results
+remain partial after upgrading; rerun them to obtain a new solution. Transient
+100% means its physical interval was integrated, not that steady convergence
+was reached.
 
 For the reported example, `7.83e-3 s` is simulated physical flow time, whereas
 `1200 s` is the computer's allowed running time. The two are different clocks.

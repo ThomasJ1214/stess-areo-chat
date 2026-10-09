@@ -67,7 +67,18 @@ import {
   FieldSelect,
 } from "./Controls";
 import { request, post, upload, download } from "./api";
-import { usePersistentSettings, feaRequestOptions } from "./workspaceSettings";
+import {
+  usePersistentSettings,
+  feaRequestOptions,
+  cfdRequestOptions,
+} from "./workspaceSettings";
+import CfdTransientPlayer from "./CfdTransientPlayer";
+import { selectCfdFrame } from "./cfdTransientData";
+import {
+  etaDescription,
+  progressDescription,
+  formatElapsed,
+} from "./jobProgress";
 import { assertValidNumberFields } from "./numericInput";
 import type {
   Project,
@@ -144,7 +155,53 @@ export default function App() {
   );
   const [mapVisible, setMapVisible] = useState(true);
   const [mapExpanded, setMapExpanded] = useState(false);
-  const [flowSettings, setFlowSettings] = useState<CfdFlowSettings>(defaultCfdFlowSettings);
+  const [flowSettings, setFlowSettings] = useState<CfdFlowSettings>(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("rocket-workbench-flow-display") || "null",
+      );
+      if (!saved || typeof saved !== "object") return defaultCfdFlowSettings;
+      return {
+        ...defaultCfdFlowSettings,
+        density: Number.isFinite(saved.density)
+          ? Math.round(Math.max(16, Math.min(512, saved.density)))
+          : defaultCfdFlowSettings.density,
+        length: Number.isFinite(saved.length)
+          ? Math.max(0.1, Math.min(3, saved.length))
+          : defaultCfdFlowSettings.length,
+        colorBy: saved.colorBy === "uniform" ? "uniform" : "speed",
+        animate:
+          typeof saved.animate === "boolean"
+            ? saved.animate
+            : defaultCfdFlowSettings.animate,
+        quality: ["draft", "standard", "high"].includes(saved.quality)
+          ? saved.quality
+          : "standard",
+        xray: saved.xray === true,
+        cutaway: saved.cutaway === true,
+        cutawayAxis: ["x", "y", "z"].includes(saved.cutawayAxis)
+          ? saved.cutawayAxis
+          : "z",
+        cutawayPosition: Number.isFinite(saved.cutawayPosition)
+          ? Math.max(0, Math.min(1, saved.cutawayPosition))
+          : 0.5,
+        cutawayReverse: saved.cutawayReverse === true,
+      };
+    } catch {
+      return defaultCfdFlowSettings;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "rocket-workbench-flow-display",
+        JSON.stringify(flowSettings),
+      );
+    } catch {
+      /* Display remains usable without local storage. */
+    }
+  }, [flowSettings]);
+  const [cfdFrameIndex, setCfdFrameIndex] = useState(0);
   const [gpuDiagnosticsOpen, setGpuDiagnosticsOpen] = useState(false);
   const [automaticAlignment, setAutomaticAlignment] = useState(true);
   const [alignmentOptions, setAlignmentOptions] = useState({
@@ -264,6 +321,13 @@ export default function App() {
     fea = results.fea,
     cfd = results.cfd,
     study = results[studyMode];
+  const selectedCfd = cfd ? selectCfdFrame(cfd, cfdFrameIndex) : null;
+  const cfdSummary = selectedCfd?.summary;
+  const canTransferCfd =
+    !!cfd?.summary?.converged &&
+    cfd.summary.mode !== "transient" &&
+    cfd.job_status !== "cancelled";
+  const launchEndTime = flight?.trajectory?.at(-1)?.time;
   const row = nearestRow(flight?.trajectory || [], playTime);
   const aero = analysis?.aero,
     structural = analysis?.structure;
@@ -276,6 +340,7 @@ export default function App() {
     setPlaying(false);
   };
   const clearResults = () => {
+    setCfdFrameIndex(0);
     setAnalysis(null);
     setResults({});
     setResultJobs({});
@@ -511,8 +576,10 @@ export default function App() {
           }
           if (jobKind === "fea")
             setOverlays((o) => ({ ...o, stress: true, deformation: false }));
-          if (jobKind === "cfd")
+          if (jobKind === "cfd") {
+            setCfdFrameIndex(0);
             setOverlays((o) => ({ ...o, flow: true, pressure: true }));
+          }
           if (jobKind === "comparison") setComparison(next.result);
           if (jobKind === "sweep" || jobKind === "monte_carlo") {
             const key = Object.keys(next.result.statistics || {})[0];
@@ -637,7 +704,12 @@ export default function App() {
         kind,
         conditions,
         configuration_id: project?.active_configuration_id,
-        options: kind === "fea" ? feaRequestOptions(options) : options,
+        options:
+          kind === "fea"
+            ? feaRequestOptions(options)
+            : kind === "cfd"
+              ? cfdRequestOptions(options, resultJobs.flight)
+              : options,
       });
       if (kind === "flight") {
         launchPlayback.current = autoPlayback;
@@ -902,7 +974,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.3.0</span>
+          <span className="version">0.3.1</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -1381,7 +1453,7 @@ export default function App() {
               aero={aero}
               flightRow={workspace === "flight" ? row : null}
               fea={workspace === "structure" ? fea : null}
-              cfd={workspace === "cfd" ? cfd : null}
+              cfd={workspace === "cfd" ? selectedCfd : null}
               flowSettings={flowSettings}
               deformationScale={deformationScale}
               workspace={workspace}
@@ -1546,23 +1618,28 @@ export default function App() {
                   />
                 </div>
                 <div className="job-meta">
+                  <span>{job ? progressDescription(job) : "Preparing…"}</span>
                   <span>
-                    {job?.progress_basis === "convergence_unknown"
-                      ? "Convergence pending · completion time unknown"
-                      : `${fmt((job?.progress || 0) * 100, 0)}% ${job?.progress_basis === "budget_usage" ? "budget used" : "complete"}`}
-                  </span>
-                  <span>
-                    Elapsed {fmt(job?.elapsed_seconds, 0)}s ·{" "}
-                    {job?.progress_basis === "budget_usage"
-                      ? "Budget ETA"
-                      : "ETA"}{" "}
-                    {job?.eta_seconds === null
-                      ? job?.progress_basis === "convergence_unknown"
-                        ? "unknown"
-                        : "calculating…"
-                      : `${fmt(job?.eta_seconds, 0)}s`}
+                    Elapsed {formatElapsed(job?.elapsed_seconds || 0)} ·{" "}
+                    {job ? etaDescription(job) : "ETA calculating…"}
+                    <HelpTip term="ETA" />
                   </span>
                 </div>
+                {job?.telemetry && (
+                  <p className="microcopy" aria-label="Live solver progress">
+                    {job.telemetry.phase
+                      ? String(job.telemetry.phase).replaceAll("_", " ")
+                      : ""}
+                    {typeof job.telemetry.integration_steps === "number" &&
+                      ` · ${fmt(job.telemetry.integration_steps, 0)} steps`}
+                    {typeof job.telemetry.physical_time_s === "number" &&
+                      ` · flow ${fmt(job.telemetry.physical_time_s, 5)} s`}
+                    {typeof job.telemetry.flight_time_s === "number" &&
+                      ` · flight ${fmt(job.telemetry.flight_time_s, 3)} s`}
+                    {typeof job.telemetry.freestream_mach === "number" &&
+                      ` · Mach ${fmt(job.telemetry.freestream_mach, 3)}`}
+                  </p>
+                )}
               </div>
             )}
             {workspace === "design" && (
@@ -2142,15 +2219,30 @@ export default function App() {
                 </div>
                 {cfd ? (
                   <>
+                    <CfdTransientPlayer
+                      data={cfd}
+                      frameIndex={cfdFrameIndex}
+                      onFrameChange={setCfdFrameIndex}
+                      units={units}
+                    />
+                    {cfdSummary?.mode === "transient" && (
+                      <p className="microcopy">
+                        Pressure force, flow time and step count below describe
+                        the selected saved frame. Stop reason describes the
+                        complete run.
+                      </p>
+                    )}
                     <div className="metrics-row">
                       <Metric
                         label={
-                          cfd.summary?.converged
-                            ? "Inviscid pressure drag"
-                            : "Partial pressure force"
+                          cfdSummary?.mode === "transient"
+                            ? "Instantaneous pressure force"
+                            : cfdSummary?.converged
+                              ? "Inviscid pressure drag"
+                              : "Partial pressure force"
                         }
                         value={displayValue(
-                          cfd.summary?.pressure_drag_n,
+                          cfdSummary?.pressure_drag_n,
                           "force",
                           units,
                         )}
@@ -2160,16 +2252,20 @@ export default function App() {
                         label="Grid cells"
                         value={cfd.summary?.cell_count}
                       />
-                      <Metric label="Time steps" value={cfd.summary?.steps} />
+                      <Metric label="Time steps" value={cfdSummary?.steps} />
                       <Metric
                         label="Flow time"
-                        value={cfd.summary?.physical_time_s}
+                        value={cfdSummary?.physical_time_s}
                         unit="s"
                       />
                       <Metric
                         label="Convergence"
                         value={
-                          cfd.summary?.converged ? "Reached" : "Not reached"
+                          cfdSummary?.mode === "transient"
+                            ? "Transient · not steady"
+                            : cfd.summary?.converged
+                              ? "Reached"
+                              : "Not reached"
                         }
                         color={cfd.summary?.converged ? "#71c8be" : "#e0b176"}
                       />
@@ -2185,9 +2281,9 @@ export default function App() {
                       <div className="engineering-note">
                         <AlertTriangle size={16} />
                         <p>
-                          This is a partial flow field. Its pressure force is
-                          not a converged steady-flow prediction. Review the
-                          stop reason and residual history before continuing.
+                          {cfdSummary?.mode === "transient"
+                            ? "These are time-resolved numerical snapshots, not a converged steady-flow prediction. Playback uses saved computed states; pressure transfer to static FEA requires a separate converged steady-state run."
+                            : "This is a partial flow field. Its pressure force is not a converged steady-flow prediction. Review the stop reason and residual history before continuing."}
                         </p>
                       </div>
                     )}
@@ -2200,28 +2296,49 @@ export default function App() {
                         Actual calculation: <strong>{cfd.backend}</strong> ·{" "}
                         {fmt(cfd.summary?.measured_steps_per_second, 1)} steps/s
                       </p>
-                      <p>
-                        Domain crossings:{" "}
-                        {fmt(cfd.summary?.domain_crossings_completed, 3)} ·
-                        minimum convergence flow time{" "}
-                        {fmt(cfd.summary?.minimum_convergence_time_s, 5)} s{" "}
-                        {cfd.summary?.minimum_convergence_time_reached
-                          ? "reached"
-                          : "not reached"}
-                        .
-                      </p>
-                      {cfd.summary?.estimated_seconds_to_minimum_flow_time !=
-                        null && (
+                      {cfdSummary?.mode === "transient" ? (
                         <p>
-                          Measured-speed estimate to minimum flow time:{" "}
-                          {fmt(
-                            cfd.summary.estimated_seconds_to_minimum_flow_time,
-                            0,
-                          )}{" "}
-                          computer seconds. Residual convergence can take
-                          longer; this is not an accuracy guarantee.
+                          Selected frame freestream Mach{" "}
+                          {fmt(cfdSummary.freestream_mach, 4)} · dynamic
+                          pressure{" "}
+                          {quantity(
+                            cfdSummary.dynamic_pressure_pa,
+                            "pressure",
+                            units,
+                            3,
+                          )}
+                          {cfdSummary.altitude_msl_m != null
+                            ? ` · altitude MSL ${quantity(cfdSummary.altitude_msl_m, "length", units, 3)}`
+                            : ""}
+                          . Saved frames are accepted computed states without
+                          temporal blending.
+                        </p>
+                      ) : (
+                        <p>
+                          Domain crossings:{" "}
+                          {fmt(cfd.summary?.domain_crossings_completed, 3)} ·
+                          minimum convergence flow time{" "}
+                          {fmt(cfd.summary?.minimum_convergence_time_s, 5)} s{" "}
+                          {cfd.summary?.minimum_convergence_time_reached
+                            ? "reached"
+                            : "not reached"}
+                          .
                         </p>
                       )}
+                      {cfdSummary?.mode !== "transient" &&
+                        cfd.summary?.estimated_seconds_to_minimum_flow_time !=
+                          null && (
+                          <p>
+                            Measured-speed estimate to minimum flow time:{" "}
+                            {fmt(
+                              cfd.summary
+                                .estimated_seconds_to_minimum_flow_time,
+                              0,
+                            )}{" "}
+                            computer seconds. Residual convergence can take
+                            longer; this is not an accuracy guarantee.
+                          </p>
+                        )}
                       {cfd.summary?.median_solid_cross_section_cells && (
                         <p>
                           Median body cross-section:{" "}
@@ -2235,8 +2352,44 @@ export default function App() {
                     <Fidelity
                       data={cfd}
                       currentConditions={conditions}
-                      currentOptions={cfdOptions}
+                      currentOptions={cfdRequestOptions(
+                        cfdOptions,
+                        resultJobs.flight,
+                      )}
                     />
+                    {cfd.inputs?.flight_source && (
+                      <div
+                        className="solver-readiness"
+                        aria-label="Launch-driven CFD source"
+                      >
+                        <h4>Calculated launch source</h4>
+                        <p>
+                          {cfd.inputs.flight_source.generated_for_cfd
+                            ? "Launch calculated for this CFD run"
+                            : "Existing completed launch history"}{" "}
+                          · {fmt(cfd.inputs.flight_source.start_s, 4)}–
+                          {fmt(cfd.inputs.flight_source.end_s, 4)} s
+                        </p>
+                        <p>
+                          {cfd.inputs.flight_source.source_flight_fidelity ||
+                            cfd.inputs.flight_source.fidelity}
+                        </p>
+                        <p>{cfd.inputs.flight_source.coupling}</p>
+                        <p>
+                          Profile input{" "}
+                          {String(
+                            cfd.inputs.flight_source.profile_sha256 || "",
+                          ).slice(0, 12)}{" "}
+                          ·{" "}
+                          {fmt(
+                            cfd.inputs.flight_source.profile_sample_count,
+                            0,
+                          )}{" "}
+                          flight samples · max incoming Mach{" "}
+                          {fmt(cfd.inputs.flight_source.max_incoming_mach, 4)}
+                        </p>
+                      </div>
+                    )}
                     {cfd.summary?.aerodynamic_geometry_policy && (
                       <div className="warning-list">
                         <Info size={15} />
@@ -2305,10 +2458,10 @@ export default function App() {
                     title="Explore flow around actual geometry."
                   >
                     The Cartesian Euler solver computes inviscid compressible
-                    flow on a voxel grid. Inspect continuous streamlines,
-                    solved speed colors and pressure samples from computed fields.
-                    This solver does not predict skin
-                    friction, turbulence, or validated transonic drag.
+                    flow on a voxel grid. Inspect continuous streamlines, solved
+                    speed colors and pressure samples from computed fields. This
+                    solver does not predict skin friction, turbulence, or
+                    validated transonic drag.
                   </Empty>
                 )}
               </div>
@@ -3655,6 +3808,17 @@ export default function App() {
                   <div className="subheading">
                     <Wind size={13} /> ENVIRONMENT & FLOW
                   </div>
+                  {workspace === "cfd" &&
+                    cfdOptions.mode === "transient" &&
+                    cfdOptions.transient_source === "launch" && (
+                      <p className="microcopy">
+                        Launch history determines airspeed and incidence;
+                        Primary stream speed, Mach override, Angle of attack and
+                        Sideslip are static-test inputs. Set rail and launch
+                        direction in Flight. Wind, altitude and temperature
+                        below remain launch inputs.
+                      </p>
+                    )}
                   {conditionFields}
                   {workspace === "flight" && (
                     <>
@@ -3959,19 +4123,12 @@ export default function App() {
                         <option value="traction">
                           Prescribed free-end traction
                         </option>
-                        <option
-                          value="cfd_pressure"
-                          disabled={
-                            !cfd?.summary?.converged ||
-                            cfd?.job_status === "cancelled"
-                          }
-                        >
+                        <option value="cfd_pressure" disabled={!canTransferCfd}>
                           Converged CFD surface pressure
                         </option>
                       </FieldSelect>
                       {feaOptions.load_mode === "cfd_pressure" &&
-                        (!cfd?.summary?.converged ||
-                          cfd?.job_status === "cancelled") && (
+                        !canTransferCfd && (
                           <p className="field-error">
                             Rerun and converge the source CFD job in this
                             session before transferring its pressure. A saved
@@ -4077,44 +4234,192 @@ export default function App() {
                       <div className="subheading">
                         <Activity size={13} /> CARTESIAN EULER SOLVER
                       </div>
-                      <Toggle
-                        label="Run until converged"
-                        value={cfdOptions.run_until_converged}
-                        onChange={() =>
-                          setCfdOptions({
-                            ...cfdOptions,
-                            run_until_converged:
-                              !cfdOptions.run_until_converged,
-                          })
+                      <FieldSelect
+                        label="Simulation mode"
+                        value={cfdOptions.mode}
+                        onChange={(mode) =>
+                          setCfdOptions({ ...cfdOptions, mode })
                         }
-                      />
+                      >
+                        <option value="steady">
+                          Steady-state · run until convergence
+                        </option>
+                        <option value="transient">
+                          Transient · resolve actual flow time
+                        </option>
+                      </FieldSelect>
                       <p className="microcopy">
-                        Convergence mode ignores step and flow-time ceilings.
-                        Wall time still applies unless set to 0. Cancel retains
-                        actual partial CFD fields. Convergence does not
-                        establish accuracy.
+                        No wall-clock or step limits. Steady-state continues
+                        until numerical convergence or Cancel. Transient
+                        resolves the chosen physical interval with CFL-limited
+                        steps; it can take much longer than the flight itself.
+                        Cancel preserves actual partial fields. Convergence does
+                        not establish accuracy.
                       </p>
-                      <div className="field-pair">
-                        <NumberField
-                          label="Lengthwise grid cells"
-                          value={cfdOptions.grid_resolution}
-                          onChange={(n) =>
-                            n !== null &&
-                            setCfdOptions({ ...cfdOptions, grid_resolution: n })
-                          }
-                          step={4}
-                        />
-                        <NumberField
-                          label="Maximum steps"
-                          disabled={cfdOptions.run_until_converged}
-                          value={cfdOptions.max_steps}
-                          onChange={(n) =>
-                            n !== null &&
-                            setCfdOptions({ ...cfdOptions, max_steps: n })
-                          }
-                          step={100}
-                        />
-                      </div>
+                      {cfdOptions.mode === "transient" && (
+                        <>
+                          <FieldSelect
+                            label="Transient source"
+                            value={cfdOptions.transient_source}
+                            onChange={(transient_source) =>
+                              setCfdOptions({ ...cfdOptions, transient_source })
+                            }
+                          >
+                            <option value="launch">
+                              Actual calculated launch history
+                            </option>
+                            <option value="fixed">
+                              Fixed freestream · wind test
+                            </option>
+                          </FieldSelect>
+                          {cfdOptions.transient_source === "launch" ? (
+                            <>
+                              <p className="microcopy">
+                                {resultJobs.flight
+                                  ? `Uses the current calculated flight${launchEndTime != null ? ` (${fmt(launchEndTime, 2)} s)` : ""}.`
+                                  : "Calculates a launch first using this configuration, motor, recovery and conditions."}{" "}
+                                Boundary airspeed, wind and atmosphere follow
+                                that history. This is one-way flow on a fixed
+                                rigid rocket, without moving-mesh attitude or
+                                chute deployment. Each interval starts at
+                                uniform freestream; early frames include startup
+                                effects.
+                              </p>
+                              <FieldSelect
+                                label="Flight interval"
+                                value={cfdOptions.flight_window}
+                                onChange={(flight_window) =>
+                                  setCfdOptions({
+                                    ...cfdOptions,
+                                    flight_window,
+                                  })
+                                }
+                              >
+                                <option value="whole">
+                                  Whole available flight
+                                </option>
+                                <option value="interval">
+                                  Selected flight interval
+                                </option>
+                              </FieldSelect>
+                              {cfdOptions.flight_window === "interval" && (
+                                <>
+                                  <div className="field-pair">
+                                    <NumberField
+                                      label="Flight start time"
+                                      unit="s"
+                                      min={0}
+                                      value={cfdOptions.flight_start_s}
+                                      onChange={(n) =>
+                                        n !== null &&
+                                        setCfdOptions({
+                                          ...cfdOptions,
+                                          flight_start_s: n,
+                                        })
+                                      }
+                                    />
+                                    <NumberField
+                                      label="Flight end time"
+                                      unit="s"
+                                      min={0}
+                                      value={cfdOptions.flight_end_s}
+                                      onChange={(n) =>
+                                        n !== null &&
+                                        setCfdOptions({
+                                          ...cfdOptions,
+                                          flight_end_s: n,
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                  {cfdOptions.flight_end_s <=
+                                    cfdOptions.flight_start_s && (
+                                    <p className="field-error">
+                                      End time must be greater than start time.
+                                    </p>
+                                  )}
+                                  {flight?.events?.length > 0 && (
+                                    <FieldSelect
+                                      label="Inspect flight event"
+                                      value=""
+                                      onChange={(v) => {
+                                        if (!v) return;
+                                        const time = Number(v);
+                                        setCfdOptions({
+                                          ...cfdOptions,
+                                          flight_start_s: Math.max(
+                                            0,
+                                            time - 0.005,
+                                          ),
+                                          flight_end_s: Math.min(
+                                            launchEndTime ?? time + 0.005,
+                                            time + 0.005,
+                                          ),
+                                        });
+                                      }}
+                                    >
+                                      <option value="">
+                                        Choose a 10 ms window…
+                                      </option>
+                                      {flight.events.map(
+                                        (event: any, index: number) => (
+                                          <option
+                                            key={index}
+                                            value={event.time}
+                                          >
+                                            {String(
+                                              event.name ||
+                                                event.type ||
+                                                "Event",
+                                            ).replaceAll("_", " ")}{" "}
+                                            · {fmt(event.time, 3)} s
+                                          </option>
+                                        ),
+                                      )}
+                                    </FieldSelect>
+                                  )}
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            <NumberField
+                              label="Transient duration"
+                              unit="s"
+                              min={0.000000001}
+                              value={cfdOptions.duration_s}
+                              onChange={(n) =>
+                                n !== null &&
+                                setCfdOptions({ ...cfdOptions, duration_s: n })
+                              }
+                              hint="Physical time advanced by the solver, not a computer-time deadline. Freestream stays at the current conditions."
+                            />
+                          )}
+                          <NumberField
+                            label="Saved flow frames"
+                            min={2}
+                            max={32}
+                            step={1}
+                            value={cfdOptions.snapshot_count}
+                            onChange={(n) =>
+                              n !== null &&
+                              setCfdOptions({
+                                ...cfdOptions,
+                                snapshot_count: n,
+                              })
+                            }
+                            hint="Bounded saved numerical snapshots for playback. Each frame is an actually computed flow state; this does not control the solver time step."
+                          />
+                        </>
+                      )}
+                      <NumberField
+                        label="Lengthwise grid cells"
+                        value={cfdOptions.grid_resolution}
+                        onChange={(n) =>
+                          n !== null &&
+                          setCfdOptions({ ...cfdOptions, grid_resolution: n })
+                        }
+                        step={4}
+                      />
                       <div className="field-pair">
                         <NumberField
                           label="Transverse grid cells"
@@ -4182,31 +4487,6 @@ export default function App() {
                         max={3}
                         hint="Padding on each side as a multiple of that axis's geometry extent. Nose-side padding is at least 0.35; tail-side padding is at least 0.65. Larger domains may require a larger cell budget."
                       />
-                      <NumberField
-                        label="Flow-through times"
-                        disabled={cfdOptions.run_until_converged}
-                        value={cfdOptions.flow_through_times}
-                        onChange={(n) =>
-                          n !== null &&
-                          setCfdOptions({
-                            ...cfdOptions,
-                            flow_through_times: n,
-                          })
-                        }
-                        min={0.1}
-                      />
-                      <NumberField
-                        label="Wall time limit"
-                        value={cfdOptions.max_wall_seconds}
-                        onChange={(n) =>
-                          n !== null &&
-                          setCfdOptions({ ...cfdOptions, max_wall_seconds: n })
-                        }
-                        unit="s"
-                        min={0}
-                        max={86400}
-                        hint="Computer time budget, separate from simulated flow time. 0 disables this limit. With Run until converged enabled and 0 here, the job continues until numerical convergence or cancellation; completion time is unknown."
-                      />
                       <FieldSelect
                         label="Compute backend"
                         value={cfdOptions.backend}
@@ -4225,7 +4505,93 @@ export default function App() {
                         <Gauge size={14} /> GPU diagnostics
                       </button>
                       <details className="cfd-display-settings" open>
-                        <summary><SlidersHorizontal size={14} /> Flow display</summary>
+                        <summary>
+                          <SlidersHorizontal size={14} /> Flow display
+                        </summary>
+                        <FieldSelect
+                          label="Streamline quality"
+                          value={flowSettings.quality || "standard"}
+                          onChange={(v) =>
+                            setFlowSettings((previous) => ({
+                              ...previous,
+                              quality: v as "draft" | "standard" | "high",
+                            }))
+                          }
+                        >
+                          <option value="draft">Draft · fast preview</option>
+                          <option value="standard">Standard</option>
+                          <option value="high">
+                            High · finer streamline integration
+                          </option>
+                        </FieldSelect>
+                        <Toggle
+                          label="X-ray rocket"
+                          value={!!flowSettings.xray}
+                          onChange={() =>
+                            setFlowSettings((previous) => ({
+                              ...previous,
+                              xray: !previous.xray,
+                            }))
+                          }
+                        />
+                        <Toggle
+                          label="Cutaway"
+                          value={!!flowSettings.cutaway}
+                          onChange={() =>
+                            setFlowSettings((previous) => ({
+                              ...previous,
+                              cutaway: !previous.cutaway,
+                            }))
+                          }
+                        />
+                        {flowSettings.cutaway && (
+                          <>
+                            <FieldSelect
+                              label="Cutaway axis"
+                              value={flowSettings.cutawayAxis || "z"}
+                              onChange={(v) =>
+                                setFlowSettings((previous) => ({
+                                  ...previous,
+                                  cutawayAxis: v as "x" | "y" | "z",
+                                }))
+                              }
+                            >
+                              <option value="x">X · rocket length</option>
+                              <option value="y">Y · cross-section</option>
+                              <option value="z">Z · cross-section</option>
+                            </FieldSelect>
+                            <div className="field">
+                              <span>
+                                Cutaway position{" "}
+                                <HelpTip term="Cutaway position" />
+                              </span>
+                              <input
+                                type="range"
+                                aria-label="Cutaway position"
+                                min={0}
+                                max={1}
+                                step={0.01}
+                                value={flowSettings.cutawayPosition ?? 0.5}
+                                onChange={(event) =>
+                                  setFlowSettings((previous) => ({
+                                    ...previous,
+                                    cutawayPosition: Number(event.target.value),
+                                  }))
+                                }
+                              />
+                            </div>
+                            <Toggle
+                              label="Reverse cutaway"
+                              value={!!flowSettings.cutawayReverse}
+                              onChange={() =>
+                                setFlowSettings((previous) => ({
+                                  ...previous,
+                                  cutawayReverse: !previous.cutawayReverse,
+                                }))
+                              }
+                            />
+                          </>
+                        )}
                         <NumberField
                           label="Streamline density"
                           value={flowSettings.density}
@@ -4233,7 +4599,15 @@ export default function App() {
                           max={512}
                           step={16}
                           hint="Number of lines seeded through the solved velocity field. This changes the display only."
-                          onChange={(n) => n !== null && setFlowSettings((s) => ({ ...s, density: Math.round(Math.max(16, Math.min(512, n))) }))}
+                          onChange={(n) =>
+                            n !== null &&
+                            setFlowSettings((s) => ({
+                              ...s,
+                              density: Math.round(
+                                Math.max(16, Math.min(512, n)),
+                              ),
+                            }))
+                          }
                         />
                         <NumberField
                           label="Streamline length"
@@ -4243,22 +4617,47 @@ export default function App() {
                           step={0.1}
                           unit="× domain"
                           hint="Maximum integration length within the actual exported flow domain. Lines stop at walls or the domain boundary."
-                          onChange={(n) => n !== null && setFlowSettings((s) => ({ ...s, length: Math.max(0.1, Math.min(3, n)) }))}
+                          onChange={(n) =>
+                            n !== null &&
+                            setFlowSettings((s) => ({
+                              ...s,
+                              length: Math.max(0.1, Math.min(3, n)),
+                            }))
+                          }
                         />
                         <FieldSelect
                           label="Streamline color"
                           value={flowSettings.colorBy}
-                          onChange={(v) => setFlowSettings((s) => ({ ...s, colorBy: v === "speed" ? "speed" : "uniform" }))}
+                          onChange={(v) =>
+                            setFlowSettings((s) => ({
+                              ...s,
+                              colorBy: v === "speed" ? "speed" : "uniform",
+                            }))
+                          }
                         >
-                          <option value="speed">Solved velocity magnitude</option>
+                          <option value="speed">
+                            Solved velocity magnitude
+                          </option>
                           <option value="uniform">Uniform teal</option>
                         </FieldSelect>
                         <Toggle
                           label="Direction tracers"
                           value={flowSettings.animate}
-                          onChange={() => setFlowSettings((s) => ({ ...s, animate: !s.animate }))}
+                          onChange={() =>
+                            setFlowSettings((s) => ({
+                              ...s,
+                              animate: !s.animate,
+                            }))
+                          }
                         />
-                        <p className="microcopy">Tracers show flow direction on a frozen snapshot at a visual speed. They are not time-accurate unsteady flow playback. Display controls do not change the solution.</p>
+                        <p className="microcopy">
+                          Tracers show flow direction on a frozen snapshot at a
+                          visual speed. They are not time-accurate unsteady flow
+                          playback. X-ray and cutaway reveal the stored field
+                          without opening geometry or changing the solution.
+                          High streamline quality refines display integration;
+                          it does not refine the CFD grid.
+                        </p>
                       </details>
                       <div className="engineering-note">
                         <AlertTriangle size={15} />
@@ -4314,7 +4713,11 @@ export default function App() {
                             className="secondary wide"
                             onClick={() =>
                               startJob("comparison", {
-                                ...cfdOptions,
+                                ...cfdRequestOptions({
+                                  ...cfdOptions,
+                                  mode: "steady",
+                                }),
+                                mode: "steady",
                                 use_cfd: true,
                               })
                             }
@@ -4323,9 +4726,10 @@ export default function App() {
                             <Activity size={14} /> Compare with Euler CFD
                           </button>
                           <p className="microcopy">
-                            CFD comparison runs two full local solutions using
-                            the current grid settings. Empirical CP values
-                            remain subject to model limitations.
+                            CFD comparison runs two steady-state solutions using
+                            the current grid settings, until convergence or
+                            Cancel. Empirical CP values remain subject to model
+                            limitations.
                           </p>
                         </>
                       ) : (
@@ -4563,8 +4967,7 @@ export default function App() {
                         feaPreflightPending ||
                         !feaPreflight?.can_run ||
                         (feaOptions.load_mode === "cfd_pressure" &&
-                          (!cfd?.summary?.converged ||
-                            cfd?.job_status === "cancelled"))
+                          !canTransferCfd)
                       }
                     >
                       <Play size={15} /> Run finite element analysis
@@ -4574,7 +4977,13 @@ export default function App() {
                     <button
                       className="primary wide run-button"
                       onClick={() => startJob("cfd", cfdOptions)}
-                      disabled={!canRun}
+                      disabled={
+                        !canRun ||
+                        (cfdOptions.mode === "transient" &&
+                          cfdOptions.transient_source === "launch" &&
+                          cfdOptions.flight_window === "interval" &&
+                          cfdOptions.flight_end_s <= cfdOptions.flight_start_s)
+                      }
                     >
                       <Play size={15} /> Solve flow field
                     </button>

@@ -10,11 +10,14 @@ export const defaultCfdOptions = {
   domain_padding: 0.5,
   cfl: 0.35,
   convergence_tolerance: 0.00001,
-  max_steps: 5000,
   backend: "auto",
-  max_wall_seconds: 1200,
-  flow_through_times: 8,
-  run_until_converged: false,
+  mode: "steady",
+  transient_source: "launch",
+  duration_s: 0.01,
+  snapshot_count: 24,
+  flight_window: "whole",
+  flight_start_s: 0,
+  flight_end_s: 1,
 };
 export const defaultFeaOptions = {
   component_id: "",
@@ -79,7 +82,7 @@ export function mergeOptions<T extends Record<string, unknown>>(
 export function restoreSettings(saved?: AnalysisSettings): WorkspaceSettings {
   return {
     conditions: { ...defaultConditions, ...saved?.conditions },
-    cfd_options: mergeOptions(defaultCfdOptions, saved?.cfd_options),
+    cfd_options: restoreCfdOptions(saved?.cfd_options),
     fea_options: mergeOptions(defaultFeaOptions, saved?.fea_options),
     study_options: mergeOptions(defaultStudyOptions, saved?.study_options),
     study_mode: ["sweep", "monte_carlo", "comparison"].includes(
@@ -88,6 +91,54 @@ export function restoreSettings(saved?: AnalysisSettings): WorkspaceSettings {
       ? saved!.study_mode
       : "sweep",
   };
+}
+
+/** Restore older projects without retaining obsolete execution time ceilings. */
+export function restoreCfdOptions(saved?: Record<string, unknown>) {
+  const restored = mergeOptions(defaultCfdOptions, saved);
+  for (const key of [
+    "max_steps",
+    "max_wall_seconds",
+    "max_physical_time",
+    "flow_through_times",
+    "run_until_converged",
+    "flight_job_id",
+  ])
+    delete (restored as Record<string, unknown>)[key];
+  if (!["steady", "transient"].includes(restored.mode))
+    restored.mode = "steady";
+  if (!["launch", "fixed"].includes(restored.transient_source))
+    restored.transient_source = "launch";
+  if (
+    !saved?.flight_window &&
+    saved?.mode === "transient" &&
+    saved?.transient_source === "launch" &&
+    (saved.flight_start_s !== undefined || saved.flight_end_s !== undefined)
+  )
+    restored.flight_window = "interval";
+  if (!["whole", "interval"].includes(restored.flight_window))
+    restored.flight_window = "whole";
+  return restored;
+}
+
+/** Flight job ids are session-bound; only attach a current completed launch. */
+export function cfdRequestOptions(
+  options: Record<string, unknown>,
+  flightJobId?: string,
+) {
+  const result = { ...options };
+  const launch =
+    result.mode === "transient" && result.transient_source === "launch";
+  const whole = result.flight_window !== "interval";
+  delete result.flight_window;
+  delete result.flight_job_id;
+  if (!launch || whole) {
+    delete result.flight_start_s;
+    delete result.flight_end_s;
+  }
+  if (launch && flightJobId) result.flight_job_id = flightJobId;
+  if (launch) delete result.duration_s;
+  return result;
 }
 
 /** Send an explicit pressure only when the selected load is uniform pressure. */

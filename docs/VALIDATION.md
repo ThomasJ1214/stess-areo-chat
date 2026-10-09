@@ -1,5 +1,35 @@
 # Validation checkpoint
 
+## 0.3.1 implementation checks
+
+The 0.3.1 changes add error-controlled flight integration and exported force
+vectors, launch-driven physical-time CFD, separate steady/transient states,
+qualified ETA, real snapshot playback, and higher-quality streamlines with
+X-ray/cutaway inspection. CFD has no wall-clock or step-count stopping ceilings.
+The NVRTC repair preloads the matched bundled builtins through production startup;
+the stricter compiler check exercises normal CuPy preprocessing before any
+test-only DLL loads, then compiles uncached `compute_75` and `compute_89` PTX.
+
+The final local Python suite passed **411 tests**. Native Qt shell/WebGL/API/project
+startup and two fresh 900-pixel preference sessions passed. New independent
+references include variable-mass rocket motion, quadratic drag, actual-time
+transient uniform flow, whole/selected flight-profile consistency and changing
+atmospheric pressure. The streamline review found High-quality lines stopping
+at ordinary fluid-cell interpolation interfaces: a bounded retry repair restores
+full-domain lines without relaxing masks or numerical tolerance. An independent
+piecewise-affine velocity test reproduces the failure; the actual solved box
+field now produces 11,672 Standard segments and 26,511 High segments, with
+both reaching the full exported domain. This is display verification, not
+grid refinement or hardware performance validation.
+
+Browser and Windows release checks must pass before accepting a new installer.
+The historical 0.3.0 evidence below does not validate the 0.3.1 package or its
+different normal compiler startup path. No physical NVIDIA execution, measured
+flight comparison, resolved turbulence or six-degree-of-freedom validation is
+claimed.
+
+## Earlier verified 0.3.0 release
+
 Recorded 2026-10-09 during the version 0.3.0 review, using the Linux cloud
 workspace and GitHub-hosted Linux/Windows runners.
 The final clean source passed **332 Python tests**, **48 frontend tests**, and the

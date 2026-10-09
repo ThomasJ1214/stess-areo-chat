@@ -16,6 +16,14 @@ from rocket_workbench.models import Conditions, Project, configuration
 from rocket_workbench.solvers import aero
 
 
+# Local integration tolerances are expressed in SI and applied independently to
+# position and velocity. They control numerical truncation error, not uncertainty
+# in aerodynamic coefficients, motor data, recovery parameters or attitude.
+_RELATIVE_TOLERANCE = 1e-7
+_POSITION_ABSOLUTE_TOLERANCE_M = 1e-5
+_VELOCITY_ABSOLUTE_TOLERANCE_M_S = 1e-5
+
+
 def _validated_motor(project: Project, configuration_id: str | None) -> tuple:
     cfg = configuration(project, configuration_id)
     if not cfg.recovery_defined:
@@ -129,8 +137,14 @@ def simulate(
     any_polar_used = False
     nonpositive_stability = False
     undefined_stability = False
-    # Event/root integration works within fixed steps; event times do not depend
-    # on the chosen output sampling grid.
+    rejected_steps = 0
+    next_step = conditions.dt
+    minimum_accepted_step = None
+    maximum_accepted_step = None
+    maximum_accepted_error_norm = 0.0
+    last_body_axis = rail_direction.copy()
+    # Events are located inside accepted error-controlled steps, independently
+    # of the trajectory's output sampling grid.
     def dynamics(at_time, at_state, details=False):
         altitude_msl = conditions.altitude + max(0.0, float(at_state[2]))
         atm = aero.atmosphere(altitude_msl, conditions.temperature_delta)
@@ -183,18 +197,55 @@ def simulate(
         k4 = dynamics(end_time, at_state + dt * k3)
         return at_state + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
+    def refined_step(at_time, at_state, dt):
+        """Two RK4 half steps, also used by event roots for consistent states."""
+        midpoint = integrate(at_time, at_state, dt / 2)
+        return integrate(at_time + dt / 2, midpoint, dt / 2)
+
+    def controlled_step(at_time, at_state, requested_dt):
+        """Accept RK4 step doubling only after a measured local-error check.
+
+        The difference divided by 2**4-1 estimates the error in the two-half-step
+        solution. No extrapolated state is substituted; the accepted state is
+        the actually integrated refined solution. Boundaries and drag stability
+        have already capped requested_dt.
+        """
+        nonlocal rejected_steps, next_step, maximum_accepted_error_norm
+        dt = requested_dt
+        absolute = np.array([_POSITION_ABSOLUTE_TOLERANCE_M] * 3 +
+                            [_VELOCITY_ABSOLUTE_TOLERANCE_M_S] * 3)
+        while True:
+            if cancelled and cancelled():
+                raise RuntimeError("Simulation cancelled.")
+            if at_time + dt <= at_time:
+                raise ValueError("Flight accuracy control requires a time step below floating-point resolution. Check the motor, aerodynamic and recovery data; no valid trajectory can be returned.")
+            coarse = integrate(at_time, at_state, dt)
+            refined = refined_step(at_time, at_state, dt)
+            if np.all(np.isfinite(coarse)) and np.all(np.isfinite(refined)):
+                scale = absolute + _RELATIVE_TOLERANCE * np.maximum(np.abs(at_state), np.abs(refined))
+                error_norm = float(np.max(np.abs(refined - coarse) / (15 * scale)))
+            else:
+                error_norm = math.inf
+            factor = min(2.0, max(0.1, 0.9 * error_norm ** -0.2)) if error_norm > 0 else 2.0
+            if error_norm <= 1.0:
+                maximum_accepted_error_norm = max(maximum_accepted_error_norm, error_norm)
+                next_step = min(conditions.dt, dt * factor)
+                return dt, refined
+            rejected_steps += 1
+            dt *= min(0.5, factor)
+
     def event_root(at_time, at_state, dt, measure, threshold):
         low, high = 0.0, dt
         start = measure(at_state) - threshold
         for _ in range(28):
             middle = (low + high) / 2
-            candidate = integrate(at_time, at_state, middle)
+            candidate = refined_step(at_time, at_state, middle)
             if (measure(candidate) - threshold) * start > 0:
                 low = middle
             else:
                 high = middle
         duration = (low + high) / 2
-        return duration, integrate(at_time, at_state, duration)
+        return duration, refined_step(at_time, at_state, duration)
 
     def phase(at_time):
         if landed:
@@ -206,8 +257,27 @@ def simulate(
         return "powered" if at_time < burnout_time and at_time >= cfg.ignition_delay else "coast"
 
     def append_row():
-        nonlocal exceeded_mach, polar_outside_coverage, any_polar_used, nonpositive_stability, undefined_stability
+        nonlocal exceeded_mach, polar_outside_coverage, any_polar_used, nonpositive_stability, undefined_stability, last_body_axis
         derivative, aerodynamic, thrust, mass, cg, drag, gravity, relative = dynamics(time, state, True)
+        altitude_msl = conditions.altitude + max(0.0, float(state[2]))
+        local_atmosphere = aero.atmosphere(altitude_msl, conditions.temperature_delta)
+        ground_speed = float(np.linalg.norm(state[3:]))
+        thrust_axis = rail_direction if on_rail or ground_speed < 1e-10 else state[3:] / ground_speed
+        if on_rail:
+            last_body_axis = rail_direction.copy()
+        elif ground_speed > 1e-6:
+            last_body_axis = state[3:] / ground_speed
+        air_speed = float(np.linalg.norm(relative))
+        drag_direction = -relative / air_speed if air_speed > 1e-10 else np.zeros(3)
+        body_drag_vector = drag_direction * aerodynamic["drag_n"]
+        recovery_drag = drag - aerodynamic["drag_n"]
+        recovery_drag_vector = drag_direction * recovery_drag
+        thrust_vector = thrust_axis * thrust
+        gravity_force = gravity * mass
+        net_force = derivative[3:] * mass
+        # Includes the pad support and transverse launch-rail reaction. The
+        # reaction disappears after rail exit; no rail friction is assumed.
+        rail_reaction = net_force - (body_drag_vector + recovery_drag_vector + thrust_vector + gravity_force) if on_rail else np.zeros(3)
         specific_acceleration = float(np.linalg.norm(derivative[3:] - gravity))
         stress = None
         structural_components = []
@@ -222,11 +292,23 @@ def simulate(
         nonpositive_stability |= static_margin is not None and static_margin <= 0
         undefined_stability |= static_margin is None
         row = {
-            "time": time, "altitude": max(0.0, float(state[2])), "altitude_msl": conditions.altitude + max(0.0, float(state[2])),
+            "time": time, "altitude": max(0.0, float(state[2])), "altitude_msl": altitude_msl,
             "east": float(state[0]), "north": float(state[1]), "velocity": float(np.linalg.norm(state[3:])),
             "vertical_velocity": float(state[5]), "velocity_vector": state[3:].tolist(),
-            "air_relative_speed": float(np.linalg.norm(relative)), "acceleration": float(np.linalg.norm(derivative[3:])),
+            "air_relative_speed": air_speed, "air_relative_velocity_vector": relative.tolist(),
+            "density_kg_m3": local_atmosphere["density_kg_m3"], "pressure_pa": local_atmosphere["pressure_pa"],
+            "temperature_k": local_atmosphere["temperature_k"], "sound_speed_m_s": local_atmosphere["speed_of_sound_m_s"],
+            "body_axis_world": last_body_axis.tolist(), "thrust_axis_world": thrust_axis.tolist(),
+            "acceleration": float(np.linalg.norm(derivative[3:])),
             "acceleration_vector": derivative[3:].tolist(), "specific_acceleration": specific_acceleration,
+            "specific_acceleration_vector": (derivative[3:] - gravity).tolist(),
+            "force_vectors_n": {"body_aerodynamic_drag": body_drag_vector.tolist(),
+                                "recovery_drag": recovery_drag_vector.tolist(), "thrust": thrust_vector.tolist(),
+                                "gravity": gravity_force.tolist(), "rail_reaction": rail_reaction.tolist(),
+                                "net": net_force.tolist()},
+            "load_breakdown": {"body_drag_n": aerodynamic["drag_n"], "recovery_drag_n": recovery_drag,
+                               "total_drag_n": drag, "thrust_n": thrust, "gravity_n": float(np.linalg.norm(gravity_force)),
+                               "rail_reaction_n": float(np.linalg.norm(rail_reaction)), "net_force_n": float(np.linalg.norm(net_force))},
             "mach": aerodynamic["mach"], "dynamic_pressure": aerodynamic["dynamic_pressure_pa"],
             "mass": mass, "cg": cg, "cp": aerodynamic["cp_m"], "stability": static_margin,
             "drag": drag, "thrust": thrust, "stress": stress, "structural_components": structural_components,
@@ -253,14 +335,14 @@ def simulate(
     while time < conditions.max_time - 1e-10 and not landed:
         if cancelled and cancelled():
             raise RuntimeError("Simulation cancelled.")
-        dt = min(conditions.dt, conditions.max_time - time)
+        dt = min(conditions.dt, next_step, conditions.max_time - time)
         pending_times = [t for t in (cfg.ignition_delay, burnout_time, deploy_time) if t is not None and t > time + 1e-9]
         knot_index = int(np.searchsorted(curve[:, 0], time - cfg.ignition_delay + 1e-9, side="right"))
         if knot_index < len(curve):
             pending_times.append(cfg.ignition_delay + float(curve[knot_index, 0]))
         if pending_times:
             dt = min(dt, min(pending_times) - time)
-        liftoff_crossing = False
+        liftoff_crossing_time = None
         if on_rail and np.linalg.norm(state[:3]) < 1e-9 and np.linalg.norm(state[3:]) < 1e-9:
             if pad_balance(time) >= -1e-10 and pad_balance(time + dt) > 0:
                 record_event("liftoff")
@@ -273,7 +355,7 @@ def simulate(
                     else:
                         high = middle
                 dt = high
-                liftoff_crossing = True
+                liftoff_crossing_time = time + dt
         # Quadratic drag can be stiff for large canopies, high supplied Cd, or
         # light rockets. Account for both body and canopy drag, rather than only
         # stabilizing descent. The user's dt remains an upper bound.
@@ -285,9 +367,7 @@ def simulate(
         drag_derivative = atm_now["density_kg_m3"] * (body_area + canopy_area) * max(1.0, speed_now)
         if drag_derivative > 0:
             dt = min(dt, 0.5 * mass_now / drag_derivative)
-        candidate = integrate(time, state, dt)
-        if not np.all(np.isfinite(candidate)):
-            raise ValueError("Flight integration became non-finite. Check the supplied aerodynamic/motor data and use a smaller time step; no valid trajectory can be returned.")
+        dt, candidate = controlled_step(time, state, dt)
         event_name = None
         if on_rail and float(np.dot(candidate[:3], rail_direction)) >= conditions.rail_length:
             dt, candidate = event_root(time, state, dt, lambda s: float(np.dot(s[:3], rail_direction)), conditions.rail_length)
@@ -303,7 +383,9 @@ def simulate(
             candidate[2] = 0.0
             event_name = "recovery"
         state, time = candidate, time + dt
-        if liftoff_crossing:
+        minimum_accepted_step = dt if minimum_accepted_step is None else min(minimum_accepted_step, dt)
+        maximum_accepted_step = dt if maximum_accepted_step is None else max(maximum_accepted_step, dt)
+        if liftoff_crossing_time is not None and abs(time - liftoff_crossing_time) < 1e-8:
             record_event("liftoff")
         if on_rail and np.dot(state[:3], rail_direction) < 0:
             state = np.zeros(6)
@@ -363,9 +445,15 @@ def simulate(
         warnings.append("Part of the trajectory has a nonpositive static stability margin. This point-mass solver cannot predict tumbling, so its smooth trajectory does not establish stable physical flight.")
     if undefined_stability:
         warnings.append("Part of the trajectory has no positive normal-force slope, so CP and static stability are undefined for those rows. The point-mass trajectory does not establish stable physical flight.")
-    for name, key in [("max_acceleration", "acceleration"), ("max_q", "dynamic_pressure"), ("max_velocity", "velocity")]:
+    for name, key in [("max_acceleration", "acceleration"), ("max_q", "dynamic_pressure"),
+                      ("max_velocity", "velocity"), ("max_airspeed", "air_relative_speed"),
+                      ("max_mach", "mach"), ("max_specific_acceleration", "specific_acceleration")]:
         index = max(range(len(trajectory)), key=lambda i: trajectory[i][key])
         events.append({"name": name, "time": trajectory[index]["time"], "index": index})
+    supported_stress_rows = [i for i, row in enumerate(trajectory) if row.get("stress") is not None]
+    if supported_stress_rows:
+        index = max(supported_stress_rows, key=lambda i: trajectory[i]["stress"])
+        events.append({"name": "max_estimated_stress", "time": trajectory[index]["time"], "index": index})
     for event in events:
         if "index" not in event:
             event["index"] = min(range(len(trajectory)), key=lambda i: abs(trajectory[i]["time"] - event["time"]))
@@ -389,10 +477,30 @@ def simulate(
     if progress:
         progress(1.0, "Flight simulation complete" if landed else "Flight integration complete; maximum time reached")
     return {"trajectory": trajectory, "events": events, "summary": summary,
-            "fidelity": "RK4 passive 3D point-mass gravity-turn flight; " + ("user-supplied geometry-matched polar where covered; " if any_polar_used else "original-reference drag; ") + "optional quasi-static beam/fin stress estimates",
+            "fidelity": "Adaptive RK4 passive 3D point-mass gravity-turn flight; " + ("user-supplied geometry-matched polar where covered; " if any_polar_used else "original-reference drag; ") + "optional quasi-static beam/fin stress estimates",
             "warnings": list(dict.fromkeys(warnings)), "backend": "CPU",
             "conventions": {"altitude": "AGL; altitude_msl is geometric MSL", "wind_direction": "toward; 0 north, 90 east",
-                            "acceleration": "inertial magnitude; specific_acceleration excludes gravity", "stress": "quasi-static estimate in Pa; null when unavailable"},
+                            "acceleration": "inertial magnitude; specific_acceleration excludes gravity", "stress": "quasi-static estimate in Pa; null when unavailable",
+                            "air_relative_velocity_vector": "world [east,north,up], vehicle velocity minus the actual ambient wind",
+                            "body_axis_world": "assumed nose-directed axis: rail direction while constrained, then ground-velocity direction; last valid axis retained at zero speed. Attitude is not integrated, including during recovery",
+                            "thrust_axis_world": "axis actually used by the point-mass thrust law; not a resolved attitude",
+                            "force_vectors_n": "world [east,north,up], newtons. Body and recovery drag are separate; rail_reaction includes ideal frictionless rail/pad constraints",
+                            "peak_events": "max Q, max acceleration and max velocity are maxima of accepted trajectory samples; recovery force steps are not resolved opening shocks"},
+            "numerical_integration": {
+                "method": "adaptive_rk4_step_doubling", "order": 4,
+                "relative_tolerance": _RELATIVE_TOLERANCE,
+                "position_absolute_tolerance_m": _POSITION_ABSOLUTE_TOLERANCE_M,
+                "velocity_absolute_tolerance_m_s": _VELOCITY_ABSOLUTE_TOLERANCE_M_S,
+                "maximum_step_s": conditions.dt,
+                "minimum_accepted_step_s": minimum_accepted_step,
+                "maximum_accepted_step_s": maximum_accepted_step,
+                "accepted_steps": steps, "rejected_steps": rejected_steps,
+                "maximum_accepted_error_norm": maximum_accepted_error_norm,
+                "event_root_iterations": 28,
+                "liftoff_root_iterations": 32,
+                "maximum_event_time_bracket_s": conditions.dt / 2**28,
+                "error_scope": "measured local numerical error estimate; not a global trajectory error bound or physical validation",
+            },
             "validity": {"max_mach": 2, "within_operating_range": not exceeded_mach,
                          "six_dof": False, "cad_resolved_aerodynamics": False,
                          "geometry_matched_polar_used": any_polar_used,
