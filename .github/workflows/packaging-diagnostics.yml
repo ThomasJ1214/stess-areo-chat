@@ -1,0 +1,86 @@
+name: Read packaging failure diagnostics
+
+on:
+  push:
+    branches: ['diagnose/**']
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Same-repository Windows packaging run with a diagnostics artifact'
+        required: false
+        default: '37867286932'
+
+# This job only reads this repository's existing diagnostic artifact. It does
+# not rebuild, publish an application, or expose credentials/artifact contents.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate source run
+        id: source
+        env:
+          DIAGNOSTIC_RUN_ID: ${{ inputs.run_id || '37867286932' }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          value = os.environ['DIAGNOSTIC_RUN_ID']
+          if not re.fullmatch(r'[1-9][0-9]{0,19}', value):
+              raise ValueError('The packaging run ID must be a positive numeric ID.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf8') as output:
+              output.write('run_id=' + value + '\n')
+          PY
+      - name: Download same-repository packaging diagnostics
+        uses: actions/download-artifact@v4
+        with:
+          name: RocketWorkbench-windows-build-diagnostics
+          path: diagnostics
+          run-id: ${{ steps.source.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+      - name: Report bounded native preference failure
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+
+          paths = list(Path('diagnostics').rglob('installed-preferences-smoke.json'))
+          if len(paths) != 1:
+              raise RuntimeError('Expected exactly one installed preferences receipt; found ' + str(len(paths)))
+          receipt = json.loads(paths[0].read_text('utf8'))
+          native = receipt.get('native_receipt', {})
+          if not isinstance(native, dict):
+              native = {}
+
+          def safe(value, limit=3500):
+              if not isinstance(value, (str, bool, int, float)) and value is not None:
+                  return '[unexpected diagnostic value type]'
+              text = str(value)
+              text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+              text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+              text = re.sub(r'(?i)([?&](?:token|access_token|session_token|auth|password)=)[^\s&\'"<>]+', r'\1[redacted]', text)
+              text = re.sub(r'(?i)\b[0-9a-f]{64}\b', '[redacted long identifier]', text)
+              if len(text) > limit:
+                  marker = '\n... beginning and final cause retained ...\n'
+                  remaining = limit - len(marker)
+                  head = min(1000, remaining // 3)
+                  text = text[:head] + marker + text[-(remaining - head):]
+              return text
+
+          # Print only selected test-status fields, never logs, environment,
+          # secrets, preference values, projects or the complete JSON artifact.
+          summary = {key: safe(receipt.get(key), 120) for key in ('status', 'phase', 'exit_code')}
+          summary['native'] = {key: safe(native.get(key), 120) for key in (
+              'status', 'phase', 'stage', 'last_ui_status', 'close_flush_verified', 'layout_restored', 'map_point_visible')}
+          cause = safe(native.get('error') or receipt.get('error') or 'No error text was included; inspect native status fields.')
+          print(json.dumps(summary, sort_keys=True))
+          escaped = cause.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print('::error title=Recorded installed preferences failure::' + escaped)
+          print('Diagnostic retrieval completed; this job does not rerun or validate the application.')
+          PY
