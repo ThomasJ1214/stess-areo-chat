@@ -6,17 +6,17 @@ on:
       source_run_id:
         description: Existing Windows installer run to download and verify
         required: false
-        default: '37934882324'
+        default: '37985799359'
         type: string
       expected_version:
         description: Exact application version in the existing installer
         required: false
-        default: '0.3.0'
+        default: '0.3.1'
         type: string
       expected_source_commit:
         description: Full clean source commit recorded in the installer manifest
         required: false
-        default: '893c7274b1932d6496aa2aa509601075a6f66eb0'
+        default: 'da4baab51c99911bd648fd3de935c4c9f3033af6'
         type: string
   push:
     branches: ['verify-download/**']
@@ -36,9 +36,9 @@ jobs:
         id: source
         shell: pwsh
         env:
-          REQUESTED_RUN_ID: ${{ inputs.source_run_id || '37934882324' }}
-          REQUESTED_VERSION: ${{ inputs.expected_version || '0.3.0' }}
-          REQUESTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit || '893c7274b1932d6496aa2aa509601075a6f66eb0' }}
+          REQUESTED_RUN_ID: ${{ inputs.source_run_id || '37985799359' }}
+          REQUESTED_VERSION: ${{ inputs.expected_version || '0.3.1' }}
+          REQUESTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit || 'da4baab51c99911bd648fd3de935c4c9f3033af6' }}
         run: |
           if ($env:REQUESTED_RUN_ID -notmatch '^[1-9][0-9]{0,19}$') {
             throw 'Source run ID must be a positive decimal GitHub Actions run ID.'

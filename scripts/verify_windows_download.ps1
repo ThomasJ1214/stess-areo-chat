@@ -5,8 +5,8 @@ param(
     [Parameter(Mandatory = $true)] [string] $ArtifactDirectory,
     [Parameter(Mandatory = $true)] [string] $OutputDirectory,
     [Parameter(Mandatory = $true)] [ValidatePattern('^[1-9][0-9]{0,19}$')] [string] $SourceRunId,
-    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')] [string] $ExpectedVersion = '0.3.0',
-    [ValidatePattern('^[a-fA-F0-9]{40}$')] [string] $ExpectedSourceCommit = '893c7274b1932d6496aa2aa509601075a6f66eb0'
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')] [string] $ExpectedVersion = '0.3.1',
+    [ValidatePattern('^[a-fA-F0-9]{40}$')] [string] $ExpectedSourceCommit = 'da4baab51c99911bd648fd3de935c4c9f3033af6'
 )
 $ErrorActionPreference = 'Stop'
 $expectedSource = $ExpectedSourceCommit.ToLowerInvariant()
@@ -23,7 +23,7 @@ $proof = [ordered]@{
     installer_sha256 = $null
     installer_bytes = $null
     required_checks = $checks
-    scope = 'Existing artifact download, byte integrity and fresh installed Windows engine/CUDA/native desktop checks; no rebuild.'
+    scope = 'Existing artifact download, byte integrity and fresh installed Windows engine/launch-driven CFD/CUDA/native desktop checks; no rebuild.'
     gpu_device_execution = 'Not tested; CUDA native imports and offline kernel compilation only.'
     graphics_backend = 'Hosted VM software WebGL; no physical workstation graphics benchmark.'
 }
@@ -148,6 +148,18 @@ try {
     }
     $checks.Add('fresh_installed_cuda_native_imports_headers_and_offline_compilation_pass')
 
+    if ($requiresStartupCompilerGate) {
+        $launchCfdPath = Join-Path $output 'installed-launch-cfd-smoke.json'
+        & (Join-Path $PSScriptRoot 'installed_launch_cfd_smoke.ps1') -Executable $executable -OutputPath $launchCfdPath -ExpectedVersion $ExpectedVersion
+        $launchCfd = Get-Content -LiteralPath $launchCfdPath -Raw | ConvertFrom-Json
+        Require ($launchCfd.status -eq 'ok' -and $launchCfd.application_version -eq $ExpectedVersion -and $launchCfd.source_matches -eq $true -and $launchCfd.frame_count -ge 2) 'Freshly installed launch-driven CFD did not return actual matching launch/field evidence.'
+        $proof.launch_cfd_frame_count = $launchCfd.frame_count
+        $proof.launch_cfd_physical_time_s = $launchCfd.physical_time_s
+        $proof.launch_cfd_source_matches = $launchCfd.source_matches
+        $proof.launch_cfd_boundary_speed_matches = $launchCfd.boundary_speed_matches
+        $checks.Add('fresh_installed_saved_launch_drives_real_transient_cfd_with_independently_matched_changing_boundary_speeds')
+    }
+
     $desktopData = Join-Path $env:RUNNER_TEMP ('RocketWorkbench-download-desktop-' + [Guid]::NewGuid().ToString('N'))
     try {
         & $processCheck -FilePath $executable -ProcessArguments @('--desktop-smoke-test', '--data-dir', ('"' + $desktopData + '"')) -TimeoutSeconds 90
@@ -164,7 +176,7 @@ try {
     }
     $checks.Add('fresh_installed_native_ui_authenticated_api_project_and_webgl_pass')
     $proof.status = 'ok'
-    Notice "Downloaded original $ExpectedVersion installer from run $SourceRunId; SHA-256 $actualHash matches shipped checksum. Fresh installation, real flight/FEA engine, bundled CUDA imports/offline compiler and native UI/API/WebGL passed. Physical NVIDIA device execution is not tested."
+    Notice "Downloaded original $ExpectedVersion installer from run $SourceRunId; SHA-256 $actualHash matches shipped checksum. Fresh installation, real flight/FEA engine, launch-driven transient CFD where supported, bundled CUDA imports/offline compiler and native UI/API/WebGL passed. Physical NVIDIA device execution is not tested."
 } catch {
     $proof.error = $_.Exception.Message
     Notice $proof.error 'error'
