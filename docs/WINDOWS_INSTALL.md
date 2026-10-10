@@ -18,10 +18,11 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-Open the [verified **0.3.0** installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37934882324#artifacts).
+Open the [verified **0.3.1** installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37985799359#artifacts).
 The approximately 1.5 GB package includes guided tutorials, a resizable workspace,
 live motor search, launch playback, a local flight map, CAD automatic placement,
-and CFD/FEA setup guidance. See the [validation record](VALIDATION.md) for recorded
+launch-driven transient CFD, load/stress/wind graphs, and X-ray/cutaway flow viewing.
+See the [validation record](VALIDATION.md) for recorded
 checks; require a successful run before using its installer.
 
 1. Sign in to GitHub, then open the linked installer run above and confirm its
@@ -37,9 +38,9 @@ checks; require a successful run before using its installer.
    includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
    **User guide**, **Getting started**, and per-page **Tutorial** buttons.
 5. Optionally check the installer in PowerShell with
-   `Get-FileHash .\RocketWorkbench-0.3.0-windows-x64-setup.exe -Algorithm SHA256`
+   `Get-FileHash .\RocketWorkbench-0.3.1-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
-6. Double-click `RocketWorkbench-0.3.0-windows-x64-setup.exe`. Select a user-local
+6. Double-click `RocketWorkbench-0.3.1-windows-x64-setup.exe`. Select a user-local
    install location and optionally enable the desktop shortcut. No administrator
    privileges are required for the default location.
 7. Open **Rocket Workbench** from Start or the desktop shortcut.
@@ -61,7 +62,7 @@ mean the installer build failed.
 1. Save your open project, then close every Rocket Workbench window.
 2. Extract the new package and run its setup EXE. Use the same installation
    folder as before so your Start menu shortcut opens the new version.
-3. Open the app and check that the header shows **0.3.0**. Your separately saved
+3. Open the app and check that the header shows **0.3.1**. Your separately saved
    projects and the session directory are outside the application installation.
 4. Open **CFD → GPU diagnostics** before a large GPU run. On a supported NVIDIA
    system, the report should identify the GPU and a successful device allocation
@@ -107,7 +108,10 @@ mean the installer build failed.
    convergence and backend; cancelled forces are partial and completed transient
    loads are instantaneous. X-ray/cutaway and high streamline quality help
    inspect the view without changing CAD or the solved field. Compare grid/domain
-   refinements. For FEA, choose a component, material, explicit load and clamp.
+   refinements. A selected flight interval starts from uniform freestream rather
+   than an earlier CFD state; start before your target event and compare earlier
+   starts to assess startup effects. For FEA, choose a component, material,
+   explicit load and clamp.
    Leave **Automatic mesh sizing** on and read **Mesh readiness**; **Use recommended
    mesh** can raise the budget within its permitted limit. Use **Use beam/fin
    estimates** or a smaller externally prepared CAD part when a whole thin solid
@@ -243,10 +247,11 @@ Workbench → Uninstall**. Your separately saved project files are yours to keep
 
 ## Build status
 
-The linked version **0.3.0** installer was built from source
-`893c7274b1932d6496aa2aa509601075a6f66eb0`. Its Windows checks passed frozen and
+The linked version **0.3.1** installer was built from source
+`da4baab51c99911bd648fd3de935c4c9f3033af6`. Its Windows checks passed frozen and
 installed engineering calculations, actual CuPy native imports, bundled CUDA DLL
-and header discovery, offline kernel compilation, silent installation, native
+and header discovery, normal-startup uncached `compute_75` and `compute_89`
+compilation without test-only DLL preloads, silent installation, native
 desktop/API-session/WebGL startup, and preference restoration across fresh
 sessions at a narrow window size. The hosted runner used software WebGL and had
 no physical NVIDIA GPU. Workstation graphics, numerical GPU execution and a
@@ -254,9 +259,12 @@ fresh consumer PC need separate hardware checks. See [VALIDATION.md](VALIDATION.
 for receipts and artifact identity. Documentation-only commits after the binary's
 source revision do not rebuild it; generated binaries are kept out of Git history.
 
-The [independent download/reinstall workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37948824649)
+The [independent download/reinstall workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38009992042)
 also passed. It downloaded the existing package, checked its actual EXE checksum,
 installed it on a fresh Windows runner, and ran the engineering, CUDA packaging,
-and native desktop/API/WebGL checks again. Download the installer from the
+and native desktop/API/WebGL checks again. It also calculated a real launch
+through the installed EXE and used that saved trajectory to drive actual
+transient CFD; finite fields, source identity and changing boundary speeds
+were checked independently. Download the installer from the
 original installer run linked above; this separate verification run contains
 only small evidence files.

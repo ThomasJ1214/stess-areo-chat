@@ -235,10 +235,16 @@ not transient FEA or a resolved parachute-opening load.
    or step-count cutoff. A steady run may continue indefinitely; use **Cancel**
    when needed. Its progress shows measured steps, elapsed time and residuals;
    a tentative ETA requires a consistent residual trend, and otherwise remains
-   unknown. Transient percentage and ETA follow actual integrated physical time.
+   unknown. Transient percentage follows actual integrated physical time; its
+   ETA estimates the remaining integration from measured throughput.
+   Initialization and field extraction are separate phases outside that ETA.
    For transient launch flow, use **Launch history** and choose the whole flight
    or a short interval. The app uses calculated air-relative velocity, wind and
    atmosphere. A fixed-condition transient test is also available.
+   **Each selected interval starts with uniform freestream at its first launch
+   timestamp, rather than resuming an earlier CFD state.** Start before the
+   event you want to inspect and compare earlier start times to assess startup
+   effects; a short window around max Q omits the fluid history before its start.
 5. Click **Solve flow field**. Pressure/velocity fields are actual numerical
    outputs. Check stopping reason, convergence history, wall/force convergence,
    grid spacing and geometry/flow diagnostics before using loads.
@@ -249,12 +255,18 @@ not transient FEA or a resolved parachute-opening load.
    exported domain and conservative wall mask; they do not enter sealed cavities.
    Older saved results show sparse solved vectors until rerun. Display settings
    do not change forces, geometry or the solution. Streamline quality improves
-   display integration and smoothness; it does not refine the CFD grid. X-ray
-   makes the rocket translucent. Cutaway clips the displayed model/field to
-   inspect inner layers; it never cuts saved CAD or opens sealed flow space.
-   For transient results, play, pause or scrub the saved CFD frames. Each
+   display integration and smoothness; it does not refine the CFD grid.
+   **X-ray rocket** makes the rocket translucent. **Cutaway** clips the displayed
+   model/field to inspect inner layers; it never cuts saved CAD or opens sealed
+   flow space.
+   Choose **Cutaway axis**, drag **Cutaway position**, or enable **Reverse cutaway**
+   to inspect the other side. Hidden sealed interiors still contain no solved air.
+   For transient results, use **Play CFD playback**/**Pause CFD playback**, the
+   previous/next snapshot buttons, or the **CFD snapshot timeline**. Each
    timestamp identifies an actual computed state, with no manufactured
-   intermediate flow fields.
+   intermediate flow fields. **Replay → Slow/Normal/Fast** changes visual timing;
+   Normal replays the saved interval in about eight seconds, independently of
+   its physical duration. Read the CFD and launch timestamps to inspect time.
 7. Refine the grid and increase **Farfield padding**, then compare loads. Padding
    is a fraction of each geometry extent; it is not a distance in metres. A numerically
    steady answer alone does not establish resolution independence or physical
@@ -318,7 +330,8 @@ a separate quick reference; they do not validate the CFD field.
    solver JSON and the FEA report.
 
 For CFD pressure transfer, solve CFD first on the same current geometry and select
-that source. Transfer requires numerical convergence and matching geometry.
+that source. Transfer requires a completed, numerically converged **steady-state**
+result and matching geometry; completed transient snapshots remain ineligible.
 Inspect mapped area and distances; the mapper is one-way and not force-conservative.
 The source job is session-local: export its JSON and recorded inputs before
 closing. A downloaded FEA input project alone does not include that solved field;
@@ -376,7 +389,7 @@ does not establish that the clamps, materials or loads match the real rocket.
 | An internal object receives aerodynamic loads | Its **External surface** flag and whether an opening actually connects it to exterior air; refine small gaps |
 | No flight can run | Real assigned motor curve, enabled mount, supported configuration and confirmed recovery |
 | CP is unavailable | Unsupported/reference placeholder geometry, nonpositive normal slope or missing/stale supplied polar |
-| CFD finishes without convergence | Treat force/fields as partial. Inspect stopping reason, work budget, actual backend, wall/load residuals and low-Mach warning; allow more work before a grid/domain comparison |
+| CFD loads are not steady | Check the mode and stopping reason: a completed transient field is instantaneous; a cancelled run is partial. Inspect actual backend, wall/load residuals and low-Mach warnings. Run steady-state separately when settled numerical loads are needed, then compare grids/domains |
 | FEA rejects a thin part's mesh | Keep mesh ≤ thickness/2 for original parts; use the recommended mesh if its budget permits. Otherwise use supported beam/fin estimates or a smaller externally prepared CAD part |
 | Zero FEA stress | Declared load, load direction, selected loaded faces and unloaded-result warning |
 | Extremely high local stress | Clamp idealization, corner singularities, material/units, mesh refinement and reported element versus averaged nodal values |

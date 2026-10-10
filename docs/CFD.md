@@ -140,8 +140,8 @@ Options passed to `cfd.solve`:
 | `backend` | `auto` | `auto`, `cpu`, or `gpu` |
 | `original` | false | Use original OpenRocket geometry instead of attached replacements |
 
-The default grid is a quick experimental run, especially for thin fins; it
-is not sufficient merely because the solver finishes. Compare progressively
+The default grid is a coarse experimental starting point, especially for thin
+fins; it is not sufficient merely because the solver finishes. Compare progressively
 refined grids and enlarged domains. Memory and runtime grow rapidly with
 resolution. Cell budgets always limit grid allocations. There is no wall-clock,
 step-count or domain-crossing timeout in either mode. Old project options
@@ -162,11 +162,13 @@ RMS conserved-state rate of change, raw normalized step change, minimum fluid
 pressure and maximum local Mach. Independently, `wall_pressure_residual` measures
 area-weighted RMS wall-pressure change, `force_residual` measures resultant
 change, and `moment_residual` measures moment change about the geometry bounding
-box center. Pressure rates use incoming dynamic pressure (with a small static
-pressure floor at zero speed); force uses dynamic pressure times projected voxel
+box center. Pressure rates use the initial incoming dynamic pressure (with a
+small static pressure floor at zero speed); force uses dynamic pressure times projected voxel
 area, and moment additionally uses maximum geometry extent. All four changes
 are divided by `dt` and multiplied by domain-crossing time: reducing the time
-step alone cannot improve them. Whole-domain RMS alone could hide changing loads
+step alone cannot improve them. These reference scales remain fixed during a
+changing transient profile; those diagnostic rates do not turn the experiment
+into a steady result. Whole-domain RMS alone could hide changing loads
 among many undisturbed farfield cells. Steady convergence therefore requires
 **all four** rates below tolerance for 20 successive steps after at least half
 a domain crossing time. This criterion does not establish grid convergence or
@@ -189,8 +191,8 @@ integration steps per wall second, and simulated seconds per wall second.
 throughput**, excluding voxelization and extraction. These are estimates of time
 to a given physical flow time, never convergence estimates; changing waves,
 retries and GPU/CPU load can change them. A domain crossing is axial domain
-length divided by resultant freestream speed, with a 0.1-sound-speed floor at
-near-zero inflow. Reaching the minimum only permits the convergence test; all
+length divided by the initial resultant freestream speed, with a 0.1-sound-speed
+floor at near-zero inflow. Reaching the minimum only permits the convergence test; all
 four residuals must still stay below tolerance for 20 successive steps.
 
 The `summary.status` value distinguishes `converged`, `transient_complete` and
@@ -208,6 +210,13 @@ The CFD clock advances with its real acoustic CFL time step; a longer launch
 interval is not accelerated by skipping fluid integration. A whole flight can
 require millions of steps and substantial runtime. Begin with a short interval.
 
+Every selected interval initializes the fluid to uniform freestream at its
+first launch timestamp. It does not resume the CFD state from an earlier part
+of the launch or a previous run. Start sufficiently before the event you want
+to inspect, then compare earlier start times to assess numerical startup
+effects. Selecting a tight window around max Q does not supply the flow history
+that developed before that window.
+
 This is one-way prescribed airflow around fixed rigid geometry. It does not
 solve six-degree-of-freedom attitude, rotating-frame flow, a moving mesh, canopy
 deployment geometry or feedback of CFD loads into the trajectory. The saved
@@ -216,6 +225,9 @@ flight and aerodynamic-coefficient limitations remain applicable. Actual
 transient fields are available at bounded saved timestamps, with frame-specific
 freestream pressure, dynamic pressure, Mach, altitude and flight time. Playback
 selects those computed states; it does not manufacture intermediate flow fields.
+The snapshot timeline steps through saved accepted states. Its replay speed is
+visual: the default full pass takes about eight seconds regardless of physical
+duration. This timing changes neither the solver clock nor the saved fields.
 Only completed, converged **steady** results qualify for the existing CFD-to-FEA
 pressure-transfer workflow.
 
@@ -261,14 +273,15 @@ Display coarsening can lose narrow resolved flow passages and near-wall detail.
 It is reported separately from solver resolution, has no effect on saved CAD,
 pressure loads or FEA, and is not a substitute for numerical grid refinement.
 
-Pressure forces remain visible during transient or budget-limited runs as
+Pressure forces remain visible during completed transient or cancelled runs as
 actual numerical outputs; `pressure_force_steady` explicitly distinguishes a
 converged result and `pressure_force_validated` is false in this release.
 `pressure_output_kind` explicitly calls an unfinished load a partial transient
 numerical pressure resultant, rather than a steady drag prediction. For example,
 a 100 m/s sea-level run with modest lateral wind is approximately Mach 0.294:
 its pressure drag is in the scheme's low-Mach dissipation region. A large force
-after a wall-clock timeout cannot be interpreted as the rocket's real drag.
+in an early or cancelled numerical snapshot cannot be interpreted as the rocket's
+real drag.
 Longer runtime alone does not remove that numerical-method limitation.
 Only a converged result with appreciable lateral force receives `cp_m`, the
 least-squares position on the project X axis satisfying its lateral moment:
@@ -277,6 +290,14 @@ centerline fit**, not the small-angle derivative CP used by Barrowman stability
 analysis. Its moment-fit residual is reported because torsion and forces off
 the centerline cannot always be represented by one point. No CP is inferred
 from pure drag, unconverged startup fields, or negligible lateral force.
+
+**Flow display** controls change visualization only. **Streamline quality**
+changes display integration, not the numerical grid or solver order. **X-ray
+rocket** makes the displayed rocket translucent. **Cutaway** clips the displayed
+rocket and field along the chosen axis and position; **Reverse cutaway** changes
+the visible side. These controls preserve saved CAD, material mass, FEA geometry,
+the exterior-connected flow mask and integrated loads. Sealed interiors remain
+nonflow even when the viewer exposes them.
 
 ## CPU and GPU execution
 

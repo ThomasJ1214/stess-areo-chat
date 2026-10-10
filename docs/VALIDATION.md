@@ -1,6 +1,6 @@
 # Validation checkpoint
 
-## 0.3.1 implementation checks
+## Verified 0.3.1 release
 
 The 0.3.1 changes add error-controlled flight integration and exported force
 vectors, launch-driven physical-time CFD, separate steady/transient states,
@@ -10,8 +10,9 @@ The NVRTC repair preloads the matched bundled builtins through production startu
 the stricter compiler check exercises normal CuPy preprocessing before any
 test-only DLL loads, then compiles uncached `compute_75` and `compute_89` PTX.
 
-The final local Python suite passed **411 tests**. Native Qt shell/WebGL/API/project
-startup and two fresh 900-pixel preference sessions passed. New independent
+The final local suites passed **411 Python tests** and **64 frontend tests**,
+with a successful production build. Native Qt shell/WebGL/API/project startup
+and two fresh 900-pixel preference sessions passed. New independent
 references include variable-mass rocket motion, quadratic drag, actual-time
 transient uniform flow, whole/selected flight-profile consistency and changing
 atmospheric pressure. The streamline review found High-quality lines stopping
@@ -22,11 +23,66 @@ field now produces 11,672 Standard segments and 26,511 High segments, with
 both reaching the full exported domain. This is display verification, not
 grid refinement or hardware performance validation.
 
-Browser and Windows release checks must pass before accepting a new installer.
-The historical 0.3.0 evidence below does not validate the 0.3.1 package or its
-different normal compiler startup path. No physical NVIDIA execution, measured
-flight comparison, resolved turbulence or six-degree-of-freedom validation is
-claimed.
+The clean source `da4baab51c99911bd648fd3de935c4c9f3033af6` also passed all
+**28 browser workflows**, with no JavaScript errors or external page requests;
+`build/browser-smoke-031-final/receipt.json` identifies that source. These include
+an actual launch driving transient CFD with changing saved flow states,
+frame selection/playback, High-quality streamlines, X-ray/cutaway inspection,
+load/stress/wind graphs, converged steady pressure transfer to FEA, cancellation
+and CAD imports. The [cross-platform workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37985799273)
+passed all four engineering, frontend and browser jobs for the same source.
+Its browser evidence artifact is `11642574780` (12.5 MB; ZIP SHA-256
+`4d0794d3e91a225bc969d42c158c5b6cf4e12a361d2eef5285b1581f8d9bc44c`).
+
+The [0.3.1 Windows installer workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37985799359)
+passed all build, frozen-engine, frozen-CUDA, silent-installation,
+installed-engine, installed-CUDA, native desktop/API/WebGL and two-session
+preference checks for that same clean source. Normal CuPy preprocessing ran
+before any smoke-test DLL loads, and uncached compilation succeeded for both
+`compute_75` and `compute_89` (the RTX 4070 Super architecture target). This
+specifically exercises the production path implicated by the reported
+`nvrtc-builtins64_129.dll` error. Both frozen and installed receipts require
+`startup_path_verified:true` and `test_only_preloads_before_compilation:false`.
+
+The [installer artifact](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/37985799359/artifacts/11643897100)
+is `11643897100`, approximately 1.5 GB. Its **ZIP archive** SHA-256 is
+`545dcf1989572c4fcc059df7fd73a543f0b6c3a555f2bfc5b07fdc20c27af9e5`.
+The setup **EXE** SHA-256 is
+`62a656e11dfe6ceca4ccdbb4bcb5666ef71f2e26e5c6b6f8b99df25eb9ef2e45`;
+the archive and executable checksums identify different files.
+
+### Independent 0.3.1 download and fresh installation
+
+The [download verification workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38009992042)
+downloaded the existing uploaded installer without rebuilding it. It checked
+the actual EXE checksum, PE headers, clean-source/version manifest and archived
+receipts, silently installed the EXE on a separate fresh Windows runner, and
+passed actual flight/solid-FEA, normal-startup CUDA preprocessing/uncached PTX
+and native desktop/authenticated API/project/WebGL checks.
+
+The installed EXE also calculated a complete launch through its headless API.
+That saved trajectory then drove real CPU transient Euler CFD over launch time
+1.0–1.0001 seconds. The check required distinct accepted-state frames, finite
+velocity/pressure/density/Mach/force/moment fields, exact physical/start/end
+timestamps, matching source job/project digest and changing freestream speeds.
+Each frame's boundary speed was independently matched to interpolated saved
+vehicle-minus-wind vectors. The completed transient result had to retain
+`converged:false` and `pressure_force_steady:false`. This short interval verifies
+installed solver integration and provenance, not aerodynamic convergence or
+physical launch accuracy.
+
+Compact proof artifact `11652933064` contains `verification.json`, installation
+and native logs, and fresh engine/CUDA/launch-CFD receipts (205 KB ZIP; archive
+SHA-256 `176c6aa349fe85a5859c9fdf9ae5922ddfb131deb27b5ce1bde4768b85b40e04`).
+The verification helper/workflow source is `db89d37`; the downloaded binary
+remains clean source `da4baab51c99911bd648fd3de935c4c9f3033af6`.
+Sign in to GitHub and use the original installer run's **Artifacts** section;
+the small verification artifact contains evidence, not the installer.
+
+The hosted runners used software WebGL without a physical NVIDIA device.
+No physical GPU execution/performance, measured flight comparison, resolved
+turbulence or six-degree-of-freedom validation is claimed. The historical 0.3.0
+evidence below is separate from these stricter 0.3.1 checks.
 
 ## Earlier verified 0.3.0 release
 

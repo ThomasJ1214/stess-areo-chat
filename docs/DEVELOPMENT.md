@@ -235,6 +235,27 @@ The Windows workflow bounds installation to ten minutes and native startup to
 90 seconds, stops a timed-out process tree, and retains installer/application
 diagnostics on failure. These checks are independent of simulation budgets.
 
+### Verify an uploaded installer without rebuilding
+
+Run **Actions → Verify existing Windows installer download → Run workflow**.
+Supply the successful installer run ID, exact application version and full
+source SHA from its manifest. The workflow downloads that existing artifact,
+checks its shipped EXE checksum and clean-source identity, then installs it on
+a fresh Windows runner. It requires actual engine, normal-startup CUDA compiler
+and native desktop/WebGL checks. For 0.3.1 and later, it also calculates a launch
+through the installed API and uses that saved launch to drive real transient
+CFD, checking finite fields and changing boundary speeds independently against
+the trajectory's vehicle-minus-wind vectors.
+
+The small `RocketWorkbench-<version>-download-verification` artifact contains
+receipts, not an installer. `scripts/verify_windows_download.ps1` implements the
+checks; `scripts/installed_launch_cfd_smoke.ps1` tests the actual installed
+headless API without a Python development environment. Its short CFD interval
+is a packaging/integration check, not a convergence or launch-physics benchmark.
+CUDA preprocessing and uncached `compute_75`/`compute_89` compilation exercise
+the production library-loading path without test-only DLL preloads; a physical
+NVIDIA allocation and full solver run remain separate hardware checks.
+
 Check [third-party notices](../THIRD_PARTY_NOTICES.md) before distributing binaries
 outside the requested private use. Build artifacts are unsigned unless a signing
 process is added. Never store signing keys or private credentials in Git.
