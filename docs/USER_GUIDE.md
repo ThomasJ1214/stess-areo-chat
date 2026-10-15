@@ -273,9 +273,14 @@ stored solution fields, and it requires a new actual simulation.
 
 Before launch, select **Dynamic fin bending · 1D beam FEA** under **Flight
 structural model**. Set a justified **Fin modal damping ratio**. In its advanced
-controls, compare **Fin beam elements** and **Steps per fundamental beam period** (legacy Newmark only)
-for sensitivity. Fiberglass/carbon require an explicit **Allow isotropic
-composite approximation** acknowledgement; a scalar stiffness cannot represent
+controls, refine **Fin beam elements** for spatial sensitivity. Keep **Fin time
+integrator → Exact modal** for the default complete-basis response to linearly
+interpolated recorded loads. Refine flight sampling to check load bandwidth and
+sampled stress peaks; exact modal propagation cannot recreate unrecorded loads.
+For a legacy comparison, select **Newmark** and refine **Steps per fundamental
+beam period** too; that setting alone does not resolve every higher mode.
+Fiberglass/carbon require an explicit **Allow isotropic composite approximation**
+acknowledgement; a scalar stiffness cannot represent
 laminate directions or composite failure criteria.
 
 After calculation, inspect **Dynamic fin FEA** graphs and the structural coverage
@@ -481,7 +486,12 @@ does not establish that the clamps, materials or loads match the real rocket.
   the static structural reference angle; rigid-body incidence comes from solved
   attitude and wind, rather than that entered static-test angle.
 - Monte Carlo uses the displayed seed and records failed samples. Statistics
-  exclude failed inputs; examine warnings and validity in the individual rows.
+  exclude failed, incomplete and explicitly out-of-domain flight runs. Inspect
+  **Eligible samples**, **Excluded samples** and the exclusion reasons. A partial
+  ascent is not a completed apogee or landing. CSV/JSON retain its computed
+  partial history under `observed_` names; comparisons label partial values
+  as observations. Extend the flight duration or correct the model inputs, then
+  rerun before comparing completed-flight performance.
 - **Save project** preserves geometry, materials, motors, configuration, units
   and simulation setup. Solved jobs are not restored on restart. Export their
   CSV/JSON/reports and **Run input project** before closing.
@@ -508,5 +518,3 @@ does not establish that the clamps, materials or loads match the real rocket.
 The [validation record](VALIDATION.md) describes reference and integration checks.
 Those checks verify calculations and workflows; they do not establish flight-test
 or wind-tunnel agreement for your particular rocket.
-
-For dynamic fins, **Fin time integrator → Exact modal** is the default. It solves all beam modes for linearly interpolated recorded loads. Refine flight sampling to check load bandwidth and sampled stress peaks; exact modal propagation cannot recreate unrecorded loads. Studies exclude incomplete/out-of-domain flights from completed-flight statistics, retaining partial data with `observed_` names and exclusion reasons.

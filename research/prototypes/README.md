@@ -2,10 +2,11 @@
 
 These drafts preserve unfinished work for the next engineering pass. They are
 text files outside the application package and are not installed solver options.
-Neither has independent validation or production integration.
+Neither has production integration. Initial plate references below cover only
+the tested element and square-plate cases.
 
 - `plate_fea.py.txt`: proposed MITC4 thin-plate element, meshing and static solve.
-  Still requires analytical/patch/locking/convergence checks, an actual component
+  Still requires broader fin-planform/stress/convergence checks, an actual component
   adapter, preflight, supports/load mapping, GUI and installed-executable tests.
 - `cfd_reconstruction.py.txt`: proposed primitive-variable MUSCL face reconstruction.
   Still requires conservative solver/SSPRK2 integration, positivity and boundary

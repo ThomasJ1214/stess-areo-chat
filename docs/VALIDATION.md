@@ -1,6 +1,6 @@
 # Validation checkpoint
 
-## 0.3.3 source accuracy pass
+## Verified 0.3.3 release
 
 The default original-fin beam integrator now propagates the complete modal
 basis exactly for piecewise-linear recorded loads. Independent checks compare
@@ -22,10 +22,47 @@ numerical context; laminar comparisons retain actual viscous/total loads.
 Local checks passed 515 Python tests, 88 frontend tests, and the production
 build. The engine smoke completed a synthetic launch and actual solid FEA. Native Qt
 startup passed shell, software WebGL, API and project checks for 0.3.3.
-Browser and Windows packaging results must be recorded separately before
-calling the 0.3.3 installer verified. The existing verified 0.3.2 download below
-does not contain this source pass. Draft plate/MUSCL work in research/prototypes
-is unintegrated text outside the application package, not a solver capability.
+A clean-source browser run passed all 33 real workflows at
+`fba1524a7e4b4ceb9089ff539969f10f2891c474`, including exact-integrator selection,
+legacy-control visibility and complete-basis result metadata. The
+[full cross-platform CI](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38794768306)
+passed all four jobs: 515 Python tests on each of Windows/Linux, 88 frontend
+tests/build and 33 browser workflows. Browser artifact `12002316718` is 14.4 MB;
+ZIP SHA-256 `9f64209d7fbeab44dfe37305d26608735bbe0a115ad093afde8f88e32b122032`.
+The companion [verification-branch CI](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38796300253)
+also passed all four jobs.
+
+The [Windows installer build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38794768307)
+passed frozen and installed engine/solid FEA, 6DOF/Dryden and causal environment
+changes, complete-basis exact modal fin integration, partial-study exclusion,
+launch-driven Euler/laminar CFD, normal-startup CUDA import/offline compilation,
+native desktop/API/WebGL and preference-restart checks. Binary source is exactly
+`fba1524a7e4b4ceb9089ff539969f10f2891c474`. Uploaded installer artifact
+`12001834964` is approximately 1.5 GB, named
+`RocketWorkbench-windows-x64-installer`. ZIP SHA-256:
+`63a9fec01a4ee071477a5e9c4aa55709611ea010040675322a3f72c5fd8bab9b`.
+The [independent original-download check](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38796300295)
+passed: it downloaded the original uploaded archive without rebuilding, matched
+the shipped installer checksum and exact source identity, installed on a fresh
+Windows runner and repeated real engine/solid FEA, saved-launch Euler CFD,
+6DOF/Dryden/causal changes, exact fin integration, partial-study exclusion,
+launch-driven laminar fields, normal-startup CUDA compiler and native UI/API/WebGL.
+Actual installer EXE SHA-256:
+`4b075cfd39560cdee0a58b6748edfd38dd8d3ad5c945c0a2b90ece8e3f251974`.
+Proof artifact `12002339088` is 179 KB; ZIP SHA-256
+`1e39ab9ae33fa3f4575a25d7bac855c188983348763adf586cb1ad3f5306bede`.
+This is evidence only; download the 1.5 GB installer from the original build.
+Later documentation/research changes do not replace those installer bytes.
+Hosted Windows graphics are software WebGL. CUDA compilation does not establish
+physical NVIDIA solver execution. Measured flight validation, turbulent CFD,
+whole-vehicle/laminate/transient solid FEA remain separate work.
+
+Draft plate/MUSCL work in research/prototypes is outside the application package,
+not a solver capability. The plate draft now has repeatable rigid/constant-curvature,
+distorted-element, geometry-guard, mesh-connectivity and 12 square-plate Navier
+reference checks. See [research evidence](../research/PLATE_REFERENCE.md) for the
+precise source hash, results and still-unverified application/stress integration.
+MUSCL remains unvalidated and unintegrated.
 
 
 ## Verified 0.3.2 release

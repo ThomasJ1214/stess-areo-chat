@@ -15,10 +15,10 @@ Mach setting does not establish validated supersonic accuracy.
 
 ## Install on Windows
 
-Open the [verified version 0.3.2 installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38770023582#artifacts),
+Open the [verified version 0.3.3 installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38794768307#artifacts),
 sign in to GitHub, and download **RocketWorkbench-windows-x64-installer**
 (approximately 1.5 GB). Unzip it, open `release/` if present, and run
-`RocketWorkbench-0.3.2-windows-x64-setup.exe`. No Python, Node.js, separate CAD
+`RocketWorkbench-0.3.3-windows-x64-setup.exe`. No Python, Node.js, separate CAD
 program, Gmsh installation, or CUDA Toolkit installation is required for use.
 
 Artifacts are retained for 30 days. If the download has expired, run the
@@ -27,7 +27,7 @@ again. The artifact's manifest identifies the exact source commit and dependency
 versions. Review [validation evidence](docs/VALIDATION.md); download-documentation
 updates do not change an existing binary's identity.
 
-This installer was built from `26fee162254ee7eaf68095bdf7e25e7ef51edd26`.
+This installer was built from `fba1524a7e4b4ceb9089ff539969f10f2891c474`.
 Frozen and installed CuPy/CUDA imports and normal-startup offline compilation
 for `compute_75` and `compute_89` passed without test-only DLL preloads,
 along with installed engineering, native desktop/WebGL and preference-restart
@@ -35,11 +35,11 @@ checks. Physical NVIDIA execution and performance need a real-device check.
 Close an earlier app version before running the new installer, then open
 **CFD → GPU diagnostics** to check your device.
 
-The [independent download/reinstall check](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38773050948)
-passed: it downloaded the original archive, matched the installer checksum,
-installed it on a fresh Windows runner, and repeated actual flight/FEA, causal
-wind changes, dynamic fin FEM, launch-driven Euler/laminar CFD, CUDA compiler
-and native UI checks. See the validation evidence for hashes and receipts.
+The [independent download/reinstall check](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38796300295)
+passed: the original uploaded installer matched its checksum and passed a fresh
+Windows installation, real numerical jobs, CUDA compiler and native UI checks.
+This includes exact fin integration and exclusion of partial study runs. See
+the validation evidence for hashes and receipts.
 If a direct artifact link returns 404, sign in and click
 **RocketWorkbench-windows-x64-installer** under the original run's **Artifacts**.
 
@@ -58,7 +58,7 @@ to keep the controls and results you need visible.
 
 ## What is implemented
 
-The table describes the 0.3.3 source. The verified installer above remains 0.3.2 until the next Windows build passes. The [validation evidence](docs/VALIDATION.md)
+The table describes version 0.3.3. The [validation evidence](docs/VALIDATION.md)
 records source, packaged and independent download checks separately.
 
 | Workflow | Calculation and practical scope |
