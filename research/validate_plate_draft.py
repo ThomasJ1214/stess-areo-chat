@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 import sys
 
@@ -47,6 +48,45 @@ def navier_center(young, poisson, thickness, pressure, terms=101):
     return float(value)
 
 
+def geometric_references(draft, young, poisson):
+    patches = []
+    for xy in (np.array([[0., 0.], [1., .1], [1.2, .8], [-.1, 1.]]),
+               np.array([[0., 0.], [1., 0.], [.7, .6], [.1, .5]])):
+        model = draft['mitc4_matrices'](xy, young, poisson, .01)
+        curvature = np.array([[.2, .07], [.07, -.1]])
+        state = np.column_stack((.5*np.einsum('ni,ij,nj->n', xy, curvature, xy), xy@curvature)).ravel()
+        c = np.array([.2, -.1, .14])
+        D = young*.01**3/(12*(1-poisson**2))*np.array(
+            [[1., poisson, 0.], [poisson, 1., 0.], [0., 0., (1-poisson)/2]])
+        area = abs(np.sum(xy[:, 0]*np.roll(xy[:, 1], -1)-xy[:, 1]*np.roll(xy[:, 0], -1)))/2
+        reference = .5*area*c@D@c
+        error = abs(.5*state@model['stiffness']@state/reference-1)
+        shear = max(float(np.linalg.norm(p['shear']@state)) for p in model['points'])
+        assert error < 1e-10 and shear < 1e-12
+        patches.append(dict(vertices=xy.tolist(), constant_curvature_energy_error=error, maximum_shear=shear))
+    meshes = []
+    for polygon in (np.array([[0., 0.], [1., .1], [.3, .8]]),
+                    np.array([[0., 0.], [1., 0.], [.8, .5], [.2, .5]])):
+        xy, quads = draft['polygon_quad_mesh'](polygon, .1)
+        edges = Counter(tuple(sorted((int(a), int(b)))) for quad in quads for a, b in zip(quad, np.roll(quad, -1)))
+        assert set(edges.values()) <= {1, 2}
+        assert len(xy)-len(edges)+len(quads) == 1
+        # Every unpaired mesh edge must be on a physical polygon edge, not an
+        # internal crack. Test endpoints against independent segment distances.
+        def on_boundary(point):
+            for a, b in zip(polygon, np.roll(polygon, -1, axis=0)):
+                fraction = np.dot(point-a, b-a)/np.dot(b-a, b-a)
+                if -1e-11 <= fraction <= 1+1e-11 and np.linalg.norm(point-(a+fraction*(b-a))) < 1e-11:
+                    return True
+            return False
+        assert all(on_boundary(xy[a]) and on_boundary(xy[b]) for (a, b), count in edges.items() if count == 1)
+        area = sum(abs(np.sum(xy[q, 0]*np.roll(xy[q, 1], -1)-xy[q, 1]*np.roll(xy[q, 0], -1)))/2 for q in quads)
+        expected = abs(np.sum(polygon[:, 0]*np.roll(polygon[:, 1], -1)-polygon[:, 1]*np.roll(polygon[:, 0], -1)))/2
+        assert abs(area/expected-1) < 1e-12
+        meshes.append(dict(planform=polygon.tolist(), nodes=len(xy), elements=len(quads), area_m2=area))
+    return dict(distorted_constant_curvature_patches=patches, conforming_planform_meshes=meshes)
+
+
 def main():
     draft = load_draft()
     E, nu, pressure = 70e9, .3, 1000.
@@ -70,6 +110,7 @@ def main():
     assert abs(energy/expected-1) < 1e-10
     eigenvalues = np.linalg.eigvalsh(K)
     assert np.count_nonzero(eigenvalues > np.linalg.norm(K)*1e-11) == 9
+    geometry_checks = geometric_references(draft, E, nu)
     rows = []
     for thickness in [.1, .01, .001]:
         # Scale loading with h^3 to keep every case in small deflection.
@@ -106,7 +147,8 @@ def main():
         draft_sha256=hashlib.sha256(DRAFT.read_bytes()).hexdigest(),
         rigid_mode_relative_residuals=rigid, constant_curvature_energy_j=energy,
         constant_curvature_reference_energy_j=expected, cases=rows,
-        unverified=['Distorted/skew/triangular fin meshes', 'Actual component placement/load mapping',
+        geometry_checks=geometry_checks,
+        unverified=['Skew/triangular full-solve convergence', 'Actual component placement/load mapping',
                     'CAD midsurfaces', 'Boundary/support choice', 'Stress convergence',
                     'UI and installed executable integration'])
     destination = ROOT/'build/research-plate-reference.json'

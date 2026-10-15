@@ -17,7 +17,8 @@ nonzero exit status; generated receipts are not committed.
 On 2026-10-15, draft SHA-256
 `6bfc0957fbf149d621daeb6f33e818a3d8a1fbce107ea58a65a4eea410d71102`
 passed three rigid modes, element rank, constant cylindrical curvature energy,
-and 12 square-plate mesh/thickness cases. The independent Navier Fourier series
+12 square-plate mesh/thickness cases, two distorted-element constant-curvature
+patches and triangle/trapezoid mesh area/boundary/manifold checks. The independent Navier Fourier series
 includes bending and transverse shear for a hard simply supported unit square:
 transverse displacement and tangential rotation constrained on each edge.
 Only constraining displacement is a different support problem and must not be
@@ -35,7 +36,8 @@ these cases were below 2.1e-9 / 4.1e-11. Energy/work consistency and free-DOF
 residuals are also checked. These results support the tested element/rectangle
 calculation; they do not validate arbitrary fin meshes or structural stresses.
 
-Before integration, independently check skew/distorted and triangular planforms,
+Before integration, independently check full-solve convergence on skew/distorted
+and triangular planforms,
 root constraints, rigid coordinate transformations, pressure/force conservation,
 stress convergence and thickness/shear sensitivity. Then implement real component
 selection, per-fin orientation and loads, material/preflight contracts, deformation
