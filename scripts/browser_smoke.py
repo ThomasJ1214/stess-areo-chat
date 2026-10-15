@@ -1245,7 +1245,7 @@ def main():
             page.get_by_role("button", name="Component", exact=True).click()
             current_length = float(page.get_by_label("Length", exact=True).input_value())
             page.get_by_label("Length", exact=True).fill(str(current_length + 0.01))
-            with page.expect_response(lambda response: response.url.endswith("/api/project") and response.request.method == "POST") as geometry_saved:
+            with page.expect_response(lambda response: response.url.endswith("/api/project") and response.request.method == "PUT") as geometry_saved:
                 page.get_by_role("button", name="Apply component changes", exact=True).click()
             assert geometry_saved.value.status == 200
             navigate("Flight")
@@ -1269,9 +1269,10 @@ def main():
                                  ("Lateral wind", "0"), ("Turbulence", "0"), ("Angle of attack", "2")]:
                 page.get_by_label(label, exact=True).fill(value)
             laminar = job("Solve flow field", timeout=120)
+            (args.artifacts / "laminar-transient-flow.json").write_text(json.dumps(laminar, indent=2, allow_nan=False), "utf8")
             assert laminar["summary"]["physics_model"] == "laminar"
             assert laminar["summary"]["mode"] == "transient" and not laminar["summary"]["converged"]
-            assert laminar["summary"]["stop_reason"] == "transient_complete"
+            assert laminar["summary"]["status"] == "transient_complete"
             assert not laminar["summary"]["viscous_force_validated"]
             assert laminar["summary"]["transport"]["dynamic_viscosity_pa_s"] > 0
             assert all(math.isfinite(value) for value in laminar["summary"]["total_force_n"])
@@ -1279,7 +1280,6 @@ def main():
             assert "not structural" in laminar["summary"]["viscous_output_kind"]
             expect(page.locator(".workspace-results")).to_contain_text("Laminar Navier–Stokes")
             expect(page.get_by_label("Transient CFD playback", exact=True)).to_be_visible()
-            (args.artifacts / "laminar-transient-flow.json").write_text(json.dumps(laminar, indent=2, allow_nan=False), "utf8")
             page.screenshot(path=str(args.artifacts / "laminar-transient-flow.png"), full_page=True)
             no_errors()
             receipt.append("Real experimental laminar transient CFD exposes molecular transport and finite fluid traction with actual frame playback and explicit no-turbulence/no-structural-stress scope")
