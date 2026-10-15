@@ -1,19 +1,26 @@
-# Experimental compressible Euler solver
+# Experimental compressible CFD
 
 Rocket Workbench includes a real numerical solver for three-dimensional,
-compressible **inviscid** flow. It advances density, three components of momentum,
+compressible flow. **Euler** is the default inviscid model; optional
+**Laminar Navier–Stokes** adds molecular viscosity and heat conduction. Both
+advance density, three components of momentum,
 and total energy. Pressure and velocity visualization come from this solved
 state; pressure colors are not synthetic gradients. The solver is experimental
 and is not a validated production CFD package.
 
 This capability supports studying how a detailed CAD replacement changes the
 discretized external flow, including pressure waves and shock formation up to an
-actual incoming Mach number of 2. It does **not** predict viscous drag, boundary
+actual incoming Mach number of 2. Euler does **not** predict viscous drag, boundary
 layers, transition, turbulent fluctuations, viscous separation, heating, or
-wall shear. Airflow arrows and continuous streamlines use the local solved
+wall shear. Laminar returns resolved numerical wall traction, but has no
+turbulence, transition or wall-function model. On practical high-power rocket
+grids, first-order numerical diffusion can overwhelm molecular viscosity and
+the physical boundary layer can be much thinner than one cell. Selecting
+Laminar does not establish accurate skin friction or high-Reynolds-number drag.
+Airflow arrows and continuous streamlines use the local solved
 velocity. Streamlines trace the stored instantaneous numerical field; they are
-not particle trajectories or a turbulence model. Euler pressure is not a
-structural stress field.
+not particle trajectories or a turbulence model. Fluid pressure and fluid-wall
+traction are distinct from material/structural stress.
 
 ## Equations and discretization
 
@@ -41,6 +48,30 @@ time step uses the full multidimensional bound
 Nonpositive density/pressure states are rejected and the step is retried with
 half the time step. The solver raises an error after repeated failures rather
 than accepting, clipping or displaying a nonphysical fluid state.
+
+Laminar uses the same conservative convective flux and adds the divergence of
+the Newtonian viscous/thermal flux:
+
+```text
+dU/dt + div(F_Euler) = div(F_viscous)
+tau = mu * (grad(u) + transpose(grad(u)) - (2/3)*div(u)*I)
+F_viscous_i = [0, tau[:,i], dot(u,tau[:,i]) + k*dT/dx_i]
+T = p/(rho*R_air), R_air = 287.05287 J/(kg K)
+mu(T) = 1.716e-5 * (T/273.15)^1.5 * (273.15+110.4)/(T+110.4) Pa s
+k(T) = mu(T)*cp/Pr, cp = gamma*R_air/(gamma-1), Pr = 0.72
+```
+
+Interior normal gradients use the two adjacent cell values; transverse velocity
+gradients average their centered cell gradients. The same face flux is shared
+by both cells, conserving mass, momentum and total energy. The explicit laminar
+time step divides CFL by the **sum** of acoustic and viscous/thermal rates,
+rather than taking separately stable time steps. The diffusion rate uses
+`4*max((4/3)*mu_max/rho_min, gamma*mu_max/(Pr*rho_min))*sum_i(1/h_i²)`.
+Global transport/density extrema also include the prescribed farfield;
+this bounds shared-face coefficients even across changing density or temperature.
+The factor four covers the half-cell wall distance and tensor diffusion stencil.
+Strong temperature/density gradients or fine cells can require much smaller
+steps than Euler. Density and pressure positivity checks still apply.
 
 First-order dissipation smears contacts and shocks. It also makes force values
 grid-dependent. This release has neither adaptive refinement nor a higher-order
@@ -84,7 +115,7 @@ binding. `surface_voxel_cells`, `enclosed_nonflow_cells` and
 cavity volume**. `aerodynamic_geometry_policy` records this policy and
 `source_material_mesh_modified` is false.
 
-At a fluid/solid face, the ghost state mirrors normal momentum while preserving
+For Euler at a fluid/solid face, the ghost state mirrors normal momentum while preserving
 density, energy and tangential momentum. The symmetric reflected Euler Riemann
 problem is solved analytically at the wall: compression uses the normal-shock
 Rankine–Hugoniot curve, and expansion uses the isentropic rarefaction curve.
@@ -99,6 +130,24 @@ each grid direction. Returned surface samples are a subset; force integration
 does not subsample the faces. A receding wall-normal flow faster than
 `2*c/(gamma-1)` yields genuine vacuum in the reflected Riemann solution. Such
 zero-pressure faces are counted, warned about, and blocked from FEA transfer.
+
+Laminar preserves that impermeable convective pressure flux and adds a
+**stationary no-slip, adiabatic** viscous wall condition. The wall is half a
+cell from the adjacent fluid center. Its velocity gradient is the reflected
+velocity stencil, with all three wall velocity components zero; tangential
+derivatives of the stationary wall velocity are zero. Normal temperature
+gradient is zero. Wall mechanical work and heat flux are therefore exactly
+zero: kinetic dissipation becomes internal energy without adding or removing
+total energy at the stationary wall. This is not an imposed-temperature wall,
+conjugate heat-transfer solver or rocket-material heating calculation.
+
+The normal points from solid to fluid. Viscous traction on the solid is `tau*n`,
+tangential wall shear removes its normal projection, and full total traction is
+`-(p-p_inf)*n + tau*n`. Normal viscous stress is retained in full viscous traction,
+not silently counted as tangential shear. Pressure and viscous force/moment
+integrals both use every exterior-connected face and its actual area.
+Sealed interiors remain blocked in the separate flow mask in either model;
+adding laminar transport changes no CAD asset, mass or FEA geometry.
 
 The acoustic-speed Rusanov dissipation is not corrected for the incompressible
 limit. At low Mach it can overwhelm the physical pressure differences and cause
@@ -126,6 +175,7 @@ Options passed to `cfd.solve`:
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
+| `physics_model` | `euler` | `euler` inviscid pressure flow or experimental `laminar` molecular-viscosity Navier–Stokes; neither models turbulence |
 | `grid_resolution` | 32 | Cells across geometry's axial extent, 12–256 |
 | `transverse_resolution` | min(24, axial resolution) | Cells across each transverse geometry extent, 12–128 |
 | `domain_padding` | 0.5 | Padding in multiples of corresponding geometry extent; downstream padding is at least 0.65 |
@@ -134,9 +184,9 @@ Options passed to `cfd.solve`:
 | `duration_s` | required for transient | Actual physical flow duration in seconds; this is not a computer runtime limit |
 | `snapshot_count` | 24 | Maximum saved instantaneous display frames, 2–32 |
 | `cfl` | 0.35 | CFL multiplier, 0.01–0.8 |
-| `convergence_tolerance` | 0.00001 | Tolerance for conserved-state, wall-pressure, force and moment rate changes per crossing time |
+| `convergence_tolerance` | 0.00001 | Tolerance for conserved-state, wall-pressure, force and moment rate changes per crossing time; Laminar additionally requires wall-viscous-traction steadiness |
 | `sample_limit` | 4,000 | Maximum fluid field samples returned to the viewer |
-| `surface_limit` | 5,000 | Maximum exposed-wall pressure samples returned |
+| `surface_limit` | 5,000 | Maximum exposed-wall samples; Laminar additionally returns actual viscous/shear/total traction |
 | `backend` | `auto` | `auto`, `cpu`, or `gpu` |
 | `original` | false | Use original OpenRocket geometry instead of attached replacements |
 
@@ -148,6 +198,13 @@ step-count or domain-crossing timeout in either mode. Old project options
 `max_steps`, `max_wall_seconds`, `flow_through_times`, `max_physical_time` and
 `run_until_converged` no longer impose stopping limits; direct solver calls retain
 an explicit migration warning when those keys are supplied.
+
+In the CFD page, choose **CFD physics model** before starting a run. Euler is
+appropriate for experiments that intentionally omit molecular transport.
+Laminar exposes pressure, viscous and total numerical loads separately. Inspect
+its Reynolds number and numerical-to-molecular diffusivity diagnostic before
+interpreting those loads; adding a solver term does not resolve a missing
+boundary layer. Saved project options retain the chosen model.
 
 Choose **Steady-state** to run until the numerical convergence test succeeds or
 you cancel. A flow that does not settle can run indefinitely. Choose **Transient**
@@ -171,14 +228,23 @@ changing transient profile; those diagnostic rates do not turn the experiment
 into a steady result. Whole-domain RMS alone could hide changing loads
 among many undisturbed farfield cells. Steady convergence therefore requires
 **all four** rates below tolerance for 20 successive steps after at least half
-a domain crossing time. This criterion does not establish grid convergence or
+a domain crossing time. For Laminar, a fifth `wall_viscous_residual` measures
+area-weighted RMS full viscous-traction change. Its independent reference scale
+is `max(2*mu_inf*speed_inf/minimum_spacing, p_inf*epsilon*64)`, using the initial
+freestream. It is reported as `viscous_convergence_scale_pa`; dynamic pressure
+would hide a changing viscous load much smaller than pressure loads. Laminar
+force/moment residuals include **both** pressure and full viscous traction.
+All five rates must meet the same tolerance/streak/minimum-time criterion.
+This criterion does not establish grid convergence or
 physical validation. Steady-state has no meaningful completion percentage.
 Its progress text reports accepted steps, physical
 domain crossings, all residuals, and whether the half-crossing minimum time has
 been reached. `progress_basis = convergence_unknown` distinguishes that mode.
 The job layer may show a tentative convergence ETA range only when measured
 residuals consistently decline; insufficient data, stalls or oscillations leave
-the ETA unknown. This prediction is not a convergence guarantee. Transient
+the ETA unknown. All active residuals participate, including viscous traction
+for Laminar; a stalled or unavailable viscous rate prevents a convergence ETA.
+This prediction is not a convergence guarantee. Transient
 percentage is integrated physical time divided by the requested duration; its
 ETA uses recent measured physical-time throughput. Initialization and extraction
 are separate phases, and changing CFL steps or hardware load change the estimate.
@@ -193,7 +259,7 @@ to a given physical flow time, never convergence estimates; changing waves,
 retries and GPU/CPU load can change them. A domain crossing is axial domain
 length divided by the initial resultant freestream speed, with a 0.1-sound-speed
 floor at near-zero inflow. Reaching the minimum only permits the convergence test; all
-four residuals must still stay below tolerance for 20 successive steps.
+active residuals must still stay below tolerance for 20 successive steps.
 
 The `summary.status` value distinguishes `converged`, `transient_complete` and
 `cancelled`. A completed transient experiment is not a converged steady result.
@@ -217,11 +283,18 @@ to inspect, then compare earlier start times to assess numerical startup
 effects. Selecting a tight window around max Q does not supply the flow history
 that developed before that window.
 
-This is one-way prescribed airflow around fixed rigid geometry. It does not
-solve six-degree-of-freedom attitude, rotating-frame flow, a moving mesh, canopy
+This is one-way prescribed airflow around fixed rigid geometry. The CFD solver
+does not integrate vehicle attitude, rotating-frame flow, a moving mesh, canopy
 deployment geometry or feedback of CFD loads into the trajectory. The saved
-profile records its frame assumption and interpolation policy. The point-mass
-flight and aerodynamic-coefficient limitations remain applicable. Actual
+profile records its frame assumption and interpolation policy. The source
+flight model's declared attitude and aerodynamic-coefficient limitations remain
+applicable. For rigid-body flight rows with a saved unit quaternion, the profile
+SLERPs the calculated attitude/roll and rotates air-relative velocity into the
+original CAD frame. `resolved_attitude` records that choice. Older point-mass
+rows retain their declared rail/gravity-turn axis assumption with a warning.
+Using resolved flight attitude to prescribe the boundary does not add moving
+walls, surface rotational velocity, Coriolis/centrifugal terms or a rotating
+CFD mesh. Actual
 transient fields are available at bounded saved timestamps, with frame-specific
 freestream pressure, dynamic pressure, Mach, altitude and flight time. Playback
 selects those computed states; it does not manufacture intermediate flow fields.
@@ -230,6 +303,9 @@ visual: the default full pass takes about eight seconds regardless of physical
 duration. This timing changes neither the solver clock nor the saved fields.
 Only completed, converged **steady** results qualify for the existing CFD-to-FEA
 pressure-transfer workflow.
+This remains **pressure-only**, including when the source run used Laminar.
+Computed shear/full viscous traction is not mapped into the current FEA load
+transfer; its saved result and transfer warning state that omission.
 
 `samples` contain position, absolute pressure, density, solved velocity and
 local Mach. `surface` contains exposed face position, numerical absolute wall
@@ -239,7 +315,30 @@ atmospheric pressure). Absolute solved pressure is always retained.
 `summary` includes pressure force in body axes, pressure drag projected along
 the free stream, moment about project coordinate origin, resource usage and
 the stopping reason. Surface force signs use pressure acting inward onto the
-solid; skin-friction force is absent. JSON exports include fidelity and warnings.
+solid; Euler has no skin-friction force. JSON exports include fidelity and warnings.
+
+Laminar retains `force_n`, `pressure_drag_n` and `moment_about_origin_nm` as
+pressure-only compatibility fields. It adds `viscous_force_n`,
+`viscous_drag_n`, `viscous_moment_about_origin_nm`, `total_force_n`,
+`total_drag_n` and `total_moment_about_origin_nm`; total values add pressure and
+full viscous traction. Surface samples additionally contain
+`viscous_traction_pa`, tangential `shear_traction_pa`, scalar `shear_stress_pa`,
+`total_traction_pa` and `wall_fluid_temperature_k`. Stored transient frames
+contain the corresponding actual force/moment values and `surface_*` arrays,
+aligned to their shared surface topology. Playback uses the selected frame's
+loads, not the final snapshot's loads. `viscous_force_validated` is false.
+
+`summary.transport` reports Sutherland viscosity, molecular kinematic viscosity,
+thermal conductivity, Prandtl number and a Reynolds number based on maximum
+rocket extent. These reference values explicitly identify **initial** freestream
+time zero; a launch profile can later change the boundary conditions. Its
+`estimated_numerical_to_molecular_diffusivity_ratio` uses the characteristic
+first-order estimate `0.5*(sound_speed+speed)*maximum_spacing / (mu/rho)`.
+Large ratios, commonly orders of magnitude above one on coarse rocket grids,
+warn that numerical diffusion can swamp the added physical transport. This is
+a scaling diagnostic, not a measured error bound, turbulence prediction or
+proof of boundary-layer resolution. Neither numerical convergence nor a smooth
+shear field makes high-Reynolds-number drag physically validated.
 
 ### Structured velocity field for visualization
 
@@ -342,6 +441,9 @@ the application's allocation/kernel probe still requires the actual GPU/driver.
 The finite-volume CPU/GPU kernels reuse already recovered primitive states for
 the Rusanov Euler fluxes. This removes redundant full-grid work without changing
 the conservative flux, reflected-wall pressure or positivity checks.
+Laminar transport uses the same NumPy/CuPy array namespace and backend selection.
+Physical GPU execution of the new laminar path still requires a hardware test;
+CPU reference tests and offline CUDA compiler checks do not establish it.
 
 ## Why thin features need refinement
 
@@ -394,6 +496,26 @@ against uniform Euler flow and an analytic affine velocity field in anisotropic
 physical coordinates, safe ray termination at an unsampled one-cell barrier,
 blocked sealed interiors, bounded payload size and unchanged source arrays.
 
+`tests/test_cfd_viscous.py` checks molecular transport independently of rocket
+drag predictions:
+
+- Sutherland reference viscosity and room-temperature dry-air conductivity,
+  invalid-temperature rejection and unchanged uniform oblique flow.
+- Periodic sinusoidal shear against the independent discrete diffusion rate
+  and exponential decay; full coupled conservation of all five quantities.
+- Affine Couette shear and viscous dissipation, rigid-rotation zero stress and
+  zero deviatoric stress under isotropic expansion with the Stokes hypothesis.
+- Fourier conduction under a known linear temperature gradient; exact half-cell
+  Couette traction and distinct normal viscous stress.
+- Zero mass/energy transport at every stationary adiabatic wall face under
+  nonuniform temperature; opposite integrated wall force and fluid momentum loss.
+- A combined acoustic/diffusive CFL bound with changing density/temperature,
+  preserved sealed-cavity source geometry, and actual finite transient
+  pressure/shear/total-load exports with explicit validity warnings.
+
+The progress tests also require viscous-traction decline for a Laminar steady
+ETA and retain unknown ETA when that rate stalls or is missing.
+
 These verify kernel behavior and bounded output storage. They do not validate
 rocket drag, transonic shocks, CP or pressure accuracy. This release has no
 wind-tunnel rocket force benchmark and no claim of production CFD accuracy.
@@ -410,6 +532,11 @@ Reference methods and benchmarks:
 - G. A. Sod, “A survey of several finite difference methods for systems of
   nonlinear hyperbolic conservation laws,” *Journal of Computational Physics*
   27, 1–31 (1978). [Paper](https://doi.org/10.1016/0021-9991(78)90023-2).
+- R. B. Bird, W. E. Stewart and E. N. Lightfoot, *Transport Phenomena*, second
+  edition, Wiley, 2002: Newtonian stress, viscous energy transport and Fourier
+  conduction. The implementation's Sutherland air constants and fixed Prandtl
+  number are stated above; this citation is not a claim of a validated
+  rocket boundary-layer model.
 - [CuPy installation and CUDA compatibility](https://docs.cupy.dev/en/stable/install.html).
 
 The books specify the underlying numerical methods. The implementation is a

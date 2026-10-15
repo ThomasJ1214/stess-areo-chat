@@ -31,7 +31,7 @@ def _validated_motor(project: Project, configuration_id: str | None) -> tuple:
     unsupported = aero._configuration_features(project, configuration_id)
     forbidden = unsupported & {"multistage", "cluster", "parallelstage", "podset", "active_guidance", "motor_ignition_event", "deployment_event"}
     if forbidden:
-        raise ValueError("Point-mass flight does not support this configuration: " + ", ".join(sorted(forbidden)) + ".")
+        raise ValueError("Passive flight models do not support this configuration: " + ", ".join(sorted(forbidden)) + ".")
     motor = next((m for m in project.motors if m.id == cfg.motor_id), None)
     if motor is None:
         raise ValueError("Select/import a motor with a real thrust curve for this flight configuration. ORK motor designations alone are insufficient.")
@@ -55,6 +55,10 @@ def simulate(
     progress: Callable[[float, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> dict:
+    if conditions.flight_model == "rigid_body":
+        from rocket_workbench.solvers.flight_dynamics import simulate as simulate_rigid_body
+        return simulate_rigid_body(project, conditions, configuration_id, progress, cancelled)
+    from rocket_workbench.solvers.wind import WindField
     if cancelled and cancelled():
         raise RuntimeError("Simulation cancelled.")
     if progress:
@@ -75,12 +79,10 @@ def simulate(
         raise ValueError("Motor-ejection deployment needs the configured motor's actual ejection delay. Select an apogee trigger or enter the measured/nominal ejection delay; a plugged/unknown delay cannot be simulated.")
     warnings = prepared["warnings"] + mass0["warnings"] + [
         "Point-mass gravity-turn flight: no attitude dynamics, weathercocking, spin, angle-of-attack history or fin flutter. Stability margin is an original-reference indicator, not a prediction of dynamic stability.",
-        "Recovery uses instantaneous constant Cd×area deployment; opening shock, line stretch, canopy inflation, pendulum motion and component separation are not modeled.",
+        "Recovery uses lumped Cd×area with optional user-assumed linear inflation; opening shock, line stretch, canopy CFD, pendulum motion and component separation are not modeled.",
         "Propellant consumption is proportional to integrated thrust (constant effective specific impulse); motor CG is held at its geometric/measured center.",
         "Post-rail aerodynamic drag uses zero-incidence reference coefficients; normal forces are not applied by this point-mass model.",
     ]
-    if conditions.turbulence:
-        warnings.append("Turbulence is a reproducible smooth sinusoidal gust model, not a calibrated Dryden/von Karman atmosphere or a resolved turbulent flow.")
     if prepared["cp_m"] is not None and (prepared["cp_m"] - mass0["cg_m"]) / prepared["diameter_m"] <= 0:
         warnings.append("Initial static stability is nonpositive. This point-mass model cannot predict tumbling and its trajectory should not be used as a stable-flight prediction.")
     # Import only here: structure itself depends on aero, and absence of supported
@@ -95,14 +97,11 @@ def simulate(
 
     tilt, azimuth = math.radians(conditions.launch_angle), math.radians(conditions.launch_azimuth)
     rail_direction = np.array([math.sin(tilt) * math.sin(azimuth), math.sin(tilt) * math.cos(azimuth), math.cos(tilt)])
-    wind_angle = math.radians(conditions.wind_direction)
-    mean_wind = np.array([conditions.wind_speed * math.sin(wind_angle), conditions.wind_speed * math.cos(wind_angle), 0.0])
-    rng = np.random.default_rng(conditions.seed)
-    gust_phase = rng.uniform(0, 2 * math.pi, (3, 3))
-    gust_frequency = np.array([0.23, 0.71, 1.9])
-    gust_amplitude = max(1.0, conditions.wind_speed) * conditions.turbulence / math.sqrt(3)
-    def wind(time):
-        return mean_wind + gust_amplitude * np.sin(2 * math.pi * gust_frequency[None, :] * time + gust_phase).sum(axis=1)
+    wind_field = WindField(conditions)
+    warnings.extend(wind_field.warnings)
+    def wind(at_time, at_state=None):
+        local_state = state if at_state is None else at_state
+        return wind_field.velocity(at_time, max(0.0, float(local_state[2])), local_state[:3])
 
     def motor_at(time):
         local_time = time - cfg.ignition_delay
@@ -123,6 +122,7 @@ def simulate(
 
     on_rail = True
     chute = "none"
+    chute_start, chute_base_area = None, 0.0
     apogee_time = None
     deploy_time = burnout_time + cfg.motor_ejection_delay + cfg.apogee_delay if cfg.primary_deploy_event == "motor_ejection" else None
     landed = False
@@ -143,16 +143,28 @@ def simulate(
     maximum_accepted_step = None
     maximum_accepted_error_norm = 0.0
     last_body_axis = rail_direction.copy()
+    def canopy(at_time):
+        if chute == "none":
+            return 0.0, 0.0
+        duration = cfg.main_inflation_time if chute == "main" else cfg.drogue_inflation_time
+        fraction = 1.0 if duration == 0 else float(np.clip((at_time-chute_start)/duration, 0, 1))
+        target = cfg.main_cd_area if chute == "main" else cfg.drogue_cd_area
+        return chute_base_area+(target-chute_base_area)*fraction, fraction
+
+    def deploy(mode):
+        nonlocal chute, chute_start, chute_base_area
+        prior_area = canopy(time)[0]
+        chute, chute_start, chute_base_area = mode, time, prior_area
     # Events are located inside accepted error-controlled steps, independently
     # of the trajectory's output sampling grid.
     def dynamics(at_time, at_state, details=False):
         altitude_msl = conditions.altitude + max(0.0, float(at_state[2]))
-        atm = aero.atmosphere(altitude_msl, conditions.temperature_delta)
+        atm = aero.atmosphere(altitude_msl, wind_field.temperature_delta(at_time))
         thrust, mass, cg = motor_at(at_time)
-        relative = at_state[3:] - wind(at_time)
+        relative = at_state[3:] - wind(at_time, at_state)
         speed = float(np.linalg.norm(relative))
         aerodynamic = aero._evaluate(prepared, atm, speed)
-        canopy_area = cfg.main_cd_area if chute == "main" else cfg.drogue_cd_area if chute == "drogue" else 0.0
+        canopy_area = canopy(at_time)[0]
         drag = aerodynamic["drag_n"] + aerodynamic["dynamic_pressure_pa"] * canopy_area
         force_drag = -relative / speed * drag if speed > 1e-10 else np.zeros(3)
         velocity_norm = float(np.linalg.norm(at_state[3:]))
@@ -174,9 +186,9 @@ def simulate(
 
     def pad_balance(at_time):
         """Unclamped axial force at a stationary pad for exact liftoff timing."""
-        atm = aero.atmosphere(conditions.altitude, conditions.temperature_delta)
+        atm = aero.atmosphere(conditions.altitude, wind_field.temperature_delta(at_time))
         thrust, mass, _ = motor_at(at_time)
-        relative = -wind(at_time)
+        relative = -wind(at_time, np.zeros(6))
         speed = float(np.linalg.norm(relative))
         drag = aero._evaluate(prepared, atm, speed)["drag_n"]
         drag_axial = float(np.dot(-relative / speed * drag, rail_direction)) if speed > 1e-10 else 0.0
@@ -191,7 +203,7 @@ def simulate(
         # interval uses the left-hand limit and the next interval uses zero.
         # The same convention handles an ignition thrust step without adding a
         # spurious dt/6 impulse at the discontinuity.
-        curve_boundaries = (cfg.ignition_delay + float(curve[0, 0]), burnout_time)
+        curve_boundaries = [cfg.ignition_delay + float(curve[0, 0]), burnout_time] + [change.time_s for change in conditions.wind_events if change.transition_s == 0]
         if any(abs(end_time - boundary) < 1e-10 and at_time < boundary - 1e-10 for boundary in curve_boundaries):
             end_time = math.nextafter(end_time, -math.inf)
         k4 = dynamics(end_time, at_state + dt * k3)
@@ -260,7 +272,7 @@ def simulate(
         nonlocal exceeded_mach, polar_outside_coverage, any_polar_used, nonpositive_stability, undefined_stability, last_body_axis
         derivative, aerodynamic, thrust, mass, cg, drag, gravity, relative = dynamics(time, state, True)
         altitude_msl = conditions.altitude + max(0.0, float(state[2]))
-        local_atmosphere = aero.atmosphere(altitude_msl, conditions.temperature_delta)
+        local_atmosphere = aero.atmosphere(altitude_msl, wind_field.temperature_delta(time))
         ground_speed = float(np.linalg.norm(state[3:]))
         thrust_axis = rail_direction if on_rail or ground_speed < 1e-10 else state[3:] / ground_speed
         if on_rail:
@@ -303,6 +315,7 @@ def simulate(
             "acceleration_vector": derivative[3:].tolist(), "specific_acceleration": specific_acceleration,
             "specific_acceleration_vector": (derivative[3:] - gravity).tolist(),
             "force_vectors_n": {"body_aerodynamic_drag": body_drag_vector.tolist(),
+                                "aerodynamic_normal": [0.0, 0.0, 0.0],
                                 "recovery_drag": recovery_drag_vector.tolist(), "thrust": thrust_vector.tolist(),
                                 "gravity": gravity_force.tolist(), "rail_reaction": rail_reaction.tolist(),
                                 "net": net_force.tolist()},
@@ -315,6 +328,8 @@ def simulate(
             "stress_fidelity": "Quasi-static beam/fin and axial inertia estimate" if stress is not None else "unavailable",
             "phase": phase(time), "wind_vector": wind(time).tolist(), "polar_applied": aerodynamic["polar_applied"],
             "aerodynamic_basis": "user supplied geometry-matched polar" if aerodynamic["polar_applied"] else "original reference estimate",
+            "recovery_cd_area_m2": canopy(time)[0], "recovery_inflation_fraction": canopy(time)[1],
+            "canopy_load_n": recovery_drag, "canopy_opening_load_n": recovery_drag,
         }
         if trajectory and abs(trajectory[-1]["time"] - time) < 1e-9:
             trajectory[-1] = row
@@ -325,18 +340,30 @@ def simulate(
         if not any(e["name"] == name for e in events):
             events.append({"name": name, "time": time})
 
+    def environment_events():
+        for index, change in enumerate(conditions.wind_events):
+            if abs(time-change.time_s) < 1e-8 and not any(e.get("environment_event_index") == index for e in events):
+                events.append({"name": "environment_change", "time": time, "environment_event_index": index,
+                               "settings": change.model_dump()})
+
     if progress:
         progress(0.0, "Integrating point-mass flight and quasi-static loads on CPU")
     if cfg.ignition_delay == 0:
         record_event("ignition")
     if pad_balance(0.0) > 0:
         record_event("liftoff")
+    environment_events()
     append_row()
     while time < conditions.max_time - 1e-10 and not landed:
         if cancelled and cancelled():
             raise RuntimeError("Simulation cancelled.")
         dt = min(conditions.dt, next_step, conditions.max_time - time)
         pending_times = [t for t in (cfg.ignition_delay, burnout_time, deploy_time) if t is not None and t > time + 1e-9]
+        pending_times.extend(edge for edge in wind_field.event_times if edge > time+1e-9)
+        if chute_start is not None:
+            inflation_end = chute_start+(cfg.main_inflation_time if chute == "main" else cfg.drogue_inflation_time)
+            if inflation_end > time+1e-9:
+                pending_times.append(inflation_end)
         knot_index = int(np.searchsorted(curve[:, 0], time - cfg.ignition_delay + 1e-9, side="right"))
         if knot_index < len(curve):
             pending_times.append(cfg.ignition_delay + float(curve[knot_index, 0]))
@@ -359,11 +386,11 @@ def simulate(
         # Quadratic drag can be stiff for large canopies, high supplied Cd, or
         # light rockets. Account for both body and canopy drag, rather than only
         # stabilizing descent. The user's dt remains an upper bound.
-        atm_now = aero.atmosphere(conditions.altitude + max(0.0, float(state[2])), conditions.temperature_delta)
+        atm_now = aero.atmosphere(conditions.altitude + max(0.0, float(state[2])), wind_field.temperature_delta(time))
         mass_now = motor_at(time)[1]
         speed_now = float(np.linalg.norm(state[3:] - wind(time)))
         body_area = prepared["reference_area_m2"] * aero._evaluate(prepared, atm_now, max(1.0, speed_now))["cd"]
-        canopy_area = cfg.main_cd_area if chute == "main" else cfg.drogue_cd_area if chute == "drogue" else 0.0
+        canopy_area = canopy(time)[0]
         drag_derivative = atm_now["density_kg_m3"] * (body_area + canopy_area) * max(1.0, speed_now)
         if drag_derivative > 0:
             dt = min(dt, 0.5 * mass_now / drag_derivative)
@@ -398,10 +425,10 @@ def simulate(
                 deploy_time = time + cfg.apogee_delay
             record_event(event_name)
             if chute == "drogue" and state[2] <= cfg.main_deploy_altitude:
-                chute = "main"
+                deploy("main")
                 record_event("main_deployment")
         elif event_name == "main_deployment":
-            chute = "main"
+            deploy("main")
             record_event(event_name)
         elif event_name == "recovery":
             landed = True
@@ -413,12 +440,12 @@ def simulate(
         if abs(time - burnout_time) < 1e-8:
             record_event("burnout")
         if deploy_time is not None and abs(time - deploy_time) < 1e-8:
-            chute = "main" if cfg.deployment == "single" else "drogue"
+            deploy("main" if cfg.deployment == "single" else "drogue")
             if cfg.primary_deploy_event == "motor_ejection":
                 record_event("motor_ejection")
             record_event("main_deployment" if chute == "main" else "drogue_deployment")
             if chute == "drogue" and state[2] <= cfg.main_deploy_altitude and state[5] <= 1e-7:
-                chute = "main"
+                deploy("main")
                 record_event("main_deployment")
             deploy_time = None
             if time < burnout_time:
@@ -428,6 +455,7 @@ def simulate(
                 raise ValueError("The motor cannot lift this rocket off the rail at the selected conditions.")
             if np.dot(state[3:], rail_direction) <= 0.0:
                 raise ValueError("The rocket stops or falls back before rail exit; select adequate thrust and rail conditions.")
+        environment_events()
         append_row()
         steps += 1
         if progress and time - last_progress_time >= 0.5:
@@ -478,7 +506,7 @@ def simulate(
         progress(1.0, "Flight simulation complete" if landed else "Flight integration complete; maximum time reached")
     return {"trajectory": trajectory, "events": events, "summary": summary,
             "fidelity": "Adaptive RK4 passive 3D point-mass gravity-turn flight; " + ("user-supplied geometry-matched polar where covered; " if any_polar_used else "original-reference drag; ") + "optional quasi-static beam/fin stress estimates",
-            "warnings": list(dict.fromkeys(warnings)), "backend": "CPU",
+            "warnings": list(dict.fromkeys(warnings)), "backend": "CPU", "wind": wind_field.metadata,
             "conventions": {"altitude": "AGL; altitude_msl is geometric MSL", "wind_direction": "toward; 0 north, 90 east",
                             "acceleration": "inertial magnitude; specific_acceleration excludes gravity", "stress": "quasi-static estimate in Pa; null when unavailable",
                             "air_relative_velocity_vector": "world [east,north,up], vehicle velocity minus the actual ambient wind",

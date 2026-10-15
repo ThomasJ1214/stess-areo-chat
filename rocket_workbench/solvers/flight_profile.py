@@ -1,9 +1,10 @@
-"""Immutable, one-way launch-history boundary inputs for transient Euler CFD.
+"""Immutable, one-way launch-history boundary inputs for transient CFD.
 
 These are prescribed body-equivalent farfield conditions on fixed geometry, not
-moving-vehicle CFD. The point-mass flight model has no resolved attitude or roll;
-its stated rail/gravity-turn nose-axis assumption supplies a coordinate basis.
-No rotating-frame or acceleration source is inferred from that assumption.
+moving-vehicle CFD. Saved rigid-body quaternions provide actual attitude/roll;
+point-mass history instead supplies a disclosed rail/gravity-turn axis assumption.
+Neither path introduces rotating-frame or acceleration source terms, moving
+walls, or feedback into the flight dynamics.
 """
 from __future__ import annotations
 
@@ -59,6 +60,35 @@ def _basis(nose_axis: np.ndarray) -> np.ndarray:
     return np.stack((tail, lateral, np.cross(tail, lateral)))
 
 
+def _quaternion(value):
+    q = np.asarray(value, dtype=float)
+    if q.shape != (4,) or not np.isfinite(q).all() or abs(np.linalg.norm(q) - 1) > 1e-5:
+        raise ValueError("Flight history body_quaternion_world must be a finite unit [w,x,y,z] quaternion.")
+    norm = float(np.linalg.norm(q))
+    return q.copy() if abs(norm - 1) <= 1e-12 else q / norm
+
+
+def _slerp(left, right, fraction):
+    if fraction == 0:
+        return left.copy()
+    if fraction == 1:
+        return right.copy()
+    dot = float(np.dot(left, right))
+    if dot < 0:
+        right, dot = -right, -dot
+    dot = min(1.0, max(-1.0, dot))
+    # atan2 retains small angles that acos(dot) can round to zero. Using true
+    # SLERP also preserves common states when an interval clips this segment;
+    # the usual near-parallel normalized-linear shortcut does not.
+    sine = float(np.linalg.norm(right - dot * left))
+    if sine < 1e-15:
+        q = left + fraction * (right - left)
+    else:
+        angle = math.atan2(sine, dot)
+        q = (math.sin((1 - fraction) * angle) * left + math.sin(fraction * angle) * right) / math.sin(angle)
+    return q / np.linalg.norm(q)
+
+
 def _segment_mach_extrema(v0, v1, rho0, rho1, p0, p1):
     """Exact minimum/maximum of interpolated Mach on one segment.
 
@@ -105,6 +135,7 @@ class FlightFreestreamProfile:
     _altitude: np.ndarray = field(repr=False)
     _temperature: np.ndarray = field(repr=False)
     _trajectory: tuple[dict, ...] = field(repr=False)
+    _quaternions: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def duration_s(self) -> float:
@@ -124,7 +155,15 @@ class FlightFreestreamProfile:
             # Opposite gravity-turn axes can meet at apogee. There is no attitude
             # solution to interpolate; choose the nearest documented sample.
             axis = self._axis_fallbacks[i if fraction <= 0.5 else i + 1]
-        velocity = _basis(axis) @ -relative
+        quaternion = None
+        if self._quaternions is not None:
+            from .attitude import rotation_matrix
+            quaternion = _slerp(self._quaternions[i], self._quaternions[i + 1], fraction)
+            rotation = rotation_matrix(quaternion)
+            axis = rotation[:, 0]
+            velocity = np.diag([-1., 1., -1.]) @ rotation.T @ -relative
+        else:
+            velocity = _basis(axis) @ -relative
         rho = float(self._rho[i] + fraction * (self._rho[i + 1] - self._rho[i]))
         pressure = float(self._pressure[i] + fraction * (self._pressure[i + 1] - self._pressure[i]))
         speed = float(np.linalg.norm(relative))
@@ -143,6 +182,7 @@ class FlightFreestreamProfile:
             "temperature_k": float(self._temperature[i] + fraction * (self._temperature[i + 1] - self._temperature[i])),
             "velocity_world_minus_wind_m_s": relative.tolist(),
             "body_axis_world": (axis / np.linalg.norm(axis)).tolist(),
+            **({"body_quaternion_world": quaternion.tolist()} if quaternion is not None else {}),
         }
 
     def to_dict(self) -> dict:
@@ -153,7 +193,8 @@ class FlightFreestreamProfile:
             "metadata": copy.deepcopy(self.metadata),
             "warnings": list(self.warnings),
             "conventions": {
-                "body_axis_world": "Assumed nose-directed rail/gravity-turn axis, not resolved attitude.",
+                "body_axis_world": "Solved rigid-body nose axis" if self._quaternions is not None else "Assumed nose-directed rail/gravity-turn axis, not resolved attitude.",
+                "body_quaternion_world": "Hamilton [w,x,y,z], nose-body (+X nose,+Y CAD Y,+Z minus CAD Z) to ENU world; actual saved rigid-body state when present.",
                 "air_relative_velocity_vector": "World vehicle velocity minus world wind; east, north, up.",
             },
         }
@@ -189,11 +230,17 @@ def build_flight_profile(
         last = first + 1
     selected = rows[first:last + 1]
     selected_times = times[first:last + 1]
+    resolved_attitude = all(row.get("body_quaternion_world") is not None for row in selected)
+    if not resolved_attitude and any(row.get("body_quaternion_world") is not None for row in selected):
+        raise ValueError("Selected flight history has incomplete rigid-body attitude states.")
+    quaternions = np.asarray([_quaternion(row["body_quaternion_world"]) for row in selected]) if resolved_attitude else None
     warnings = [
         "Launch-driven transient CFD uses actual computed air-relative velocity and atmospheric history as prescribed farfield on fixed rocket geometry; it is one-way coupling, not a moving-vehicle CFD trajectory or a feedback flight solution.",
         "The point-mass rail/gravity-turn nose-axis assumption supplies a body-equivalent airflow convention. Vehicle attitude, roll, moving mesh, rotating/accelerating-frame forces and weathercocking are not resolved.",
         "Flight-history inputs are linearly interpolated between actual computed states. CFD fluid fields still advance through their actual CFL-limited physical time; no flight-time acceleration or independent steady snapshots are substituted.",
     ]
+    if resolved_attitude:
+        warnings[1] = "Actual computed rigid-body attitude and roll rotate the saved world-relative velocity into the fixed CAD frame. The CFD mesh is still fixed: rotating-frame forces, moving boundaries and flight feedback are not resolved."
     # Older saved results did not export an axis. Infer the original model's
     # rail direction from its first nonzero velocity, rather than assuming that
     # an inclined rail was vertical. New runs export the model axis explicitly.
@@ -219,7 +266,7 @@ def build_flight_profile(
     vectors, axes, axis_fallbacks, densities, pressures, altitudes, temperatures, normalized = [], [], [], [], [], [], [], []
     atmosphere_from_rows = True
     axis_from_rows = True
-    for row in selected:
+    for selected_index, row in enumerate(selected):
         velocity = _vector(row.get("velocity_vector"), "velocity_vector")
         wind = _vector(row.get("wind_vector"), "wind_vector")
         relative = velocity - wind
@@ -239,6 +286,10 @@ def build_flight_profile(
         if np.linalg.norm(axis) < _VECTOR_EPS:
             raise ValueError("Flight history body_axis_world must have nonzero length.")
         axis /= np.linalg.norm(axis)
+        if resolved_attitude:
+            from .attitude import rotation_matrix
+            if not np.allclose(axis, rotation_matrix(quaternions[selected_index])[:, 0], atol=1e-6, rtol=1e-6):
+                raise ValueError("Flight history body axis disagrees with its saved rigid-body quaternion.")
         previous_axis = axis.copy()
         if row.get("body_axis_interpolation_vector_world") is not None:
             interpolation_axis = _vector(row["body_axis_interpolation_vector_world"], "body_axis_interpolation_vector_world")
@@ -296,6 +347,17 @@ def build_flight_profile(
     final_temperature = np.interp(final_times, selected_times, temperatures)
     final_ground = interpolate_vector(np.asarray([row["velocity_vector"] for row in normalized]))
     final_wind = interpolate_vector(np.asarray([row["wind_vector"] for row in normalized]))
+    final_quaternions = None
+    if resolved_attitude:
+        final_quaternions = []
+        for at_time in final_times:
+            j = min(len(selected_times) - 2, max(0, int(np.searchsorted(selected_times, at_time, side="right") - 1)))
+            fraction = (at_time - selected_times[j]) / (selected_times[j + 1] - selected_times[j])
+            final_quaternions.append(_slerp(quaternions[j], quaternions[j + 1], fraction))
+        final_quaternions = np.asarray(final_quaternions)
+        for i, q in enumerate(final_quaternions):
+            final_axis_fallbacks[i] = rotation_matrix(q)[:, 0]
+            final_axes[i] = final_axis_fallbacks[i]
     snapshot = []
     for i, at_time in enumerate(final_times):
         row_index = min(len(normalized) - 1, max(0, int(np.searchsorted(selected_times, at_time, side="right") - 1)))
@@ -308,6 +370,7 @@ def build_flight_profile(
             "body_axis_interpolation_vector_world": final_axes[i].tolist(), "density_kg_m3": float(final_rho[i]),
             "pressure_pa": float(final_pressure[i]), "temperature_k": float(final_temperature[i]),
             "phase": normalized[row_index]["phase"],
+            **({"body_quaternion_world": final_quaternions[i].tolist()} if final_quaternions is not None else {}),
         })
     mach_extrema = [_segment_mach_extrema(final_vectors[i], final_vectors[i + 1], final_rho[i], final_rho[i + 1],
                                         final_pressure[i], final_pressure[i + 1]) for i in range(len(final_times) - 1)]
@@ -325,7 +388,7 @@ def build_flight_profile(
         warnings.append("The selected interval includes recovery. CFD retains rigid rocket geometry and does not add parachutes, separated sections, inflation or opening-shock flow; recovered trajectory inputs do not make those aerodynamic loads resolved.")
     if result.get("summary", {}).get("complete") is False:
         warnings.append("The source flight trajectory is incomplete; this CFD profile uses only the available computed history and does not extrapolate it to landing.")
-    if any(np.dot(final_axis_fallbacks[i], final_axis_fallbacks[i + 1]) < -0.9 for i in range(len(final_axes) - 1)):
+    if not resolved_attitude and any(np.dot(final_axis_fallbacks[i], final_axis_fallbacks[i + 1]) < -0.9 for i in range(len(final_axes) - 1)):
         warnings.append("The assumed gravity-turn nose axis reverses near zero velocity; that coordinate change is not a resolved physical rotation. Inspect a pre-apogee interval for ascent-focused CFD.")
     profile_hash = hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
     events = [copy.deepcopy(event) for event in result.get("events", [])
@@ -341,8 +404,14 @@ def build_flight_profile(
         "coordinate_frame": "+X nose-to-tail; +Y world-east projected transverse to assumed nose axis (north fallback when parallel); +Z right-handed cross product. Unresolved roll.",
         "coupling": "One-way prescribed body-equivalent farfield on fixed geometry; no moving/rotating/accelerating frame, canopy geometry or flight-feedback coupling.",
     }
+    if resolved_attitude:
+        metadata["coordinate_frame"] = "+X nose-to-tail, +Y original CAD Y, +Z original CAD Z; actual solved nose-body quaternion transforms world relative wind into this fixed geometry frame."
+        metadata["interpolation"] = "Piecewise linear saved flight velocity/wind/atmosphere; shortest-path quaternion SLERP for solved rigid-body orientation. No extrapolation and no CFD-field interpolation."
+    metadata["resolved_attitude"] = resolved_attitude
     for array in (final_times, final_vectors, final_axes, final_axis_fallbacks, final_rho, final_pressure, final_altitude, final_temperature):
         array.setflags(write=False)
+    if final_quaternions is not None:
+        final_quaternions.setflags(write=False)
     return FlightFreestreamProfile(start, end, metadata, tuple(dict.fromkeys(warnings)), final_times,
                                   final_vectors, final_axes, final_axis_fallbacks, final_rho, final_pressure, final_altitude,
-                                  final_temperature, tuple(snapshot))
+                                  final_temperature, tuple(snapshot), final_quaternions)

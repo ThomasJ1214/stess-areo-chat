@@ -21,7 +21,7 @@ flowchart LR
   MotorCatalog -->|Reviewed curve and provenance| Project
   API --> Project
   API --> Jobs[Job coordinator]
-  Jobs --> Aero[Engineering aero / point-mass flight]
+  Jobs --> Aero[Engineering aero / point-mass or rigid-body flight]
   Jobs --> CFD[Experimental Euler CFD]
   Jobs --> FEA[Beam estimates / tetrahedral FEA]
   Project --> Aero
@@ -47,6 +47,10 @@ flowchart LR
 | `desktop_preferences.py` | Bounded, atomic UI-only preference storage; pre-React restoration and close flushing across ephemeral desktop origins |
 | `solvers/aero.py` | Atmosphere, mass properties, reference-geometry estimates and geometry-bound coefficient-table interpolation |
 | `solvers/flight.py` | Passive launch/recovery integration, trajectory and event summaries |
+| `solvers/attitude.py`, `solvers/flight_dynamics.py` | Quaternion/Euler rigid-body equations, inertia provenance and conservative aerodynamic-domain stopping |
+| `solvers/wind.py` | Reproducible legacy/Dryden gust history, optional shear and causal environment schedule shared by both flight models |
+| `solvers/flight_structure.py` | Original-fin transient beam FEA with real stiffness/mass, recorded loads, coverage and Newmark time integration |
+| `solvers/cfd_viscous.py` | Optional laminar Newtonian/Fourier transport and actual wall traction; no turbulence closure |
 | `solvers/structure.py` | Scoped beam/fin estimates and linear static solid FEA |
 | `solvers/cfd.py` | Actual compressible Euler field solution and convergence output |
 | `jobs.py` | Long-running job lifecycle, callbacks, sweeps, seeded Monte Carlo and export |
@@ -178,12 +182,17 @@ The red **Launch** action starts the same engineering flight job as other runs.
 The application first computes the trajectory, then plays that recorded solution
 from a rail above a flat plane. Trail, event positions and map locations use the
 actual samples. A following camera yields to manual orbit/pan/zoom and resumes
-after five seconds without input in follow mode. Rocket attitude remains
-illustrative because the solver does not integrate attitude.
+after five seconds without input in follow mode. Rigid-body results use the actual
+solved quaternion; point-mass attitude remains labelled illustrative.
 
 The follow view carries its relative framing with the recorded rocket position,
 uses bounded velocity look-ahead and snaps to discontinuous timeline selections.
-It does not smooth or change the trajectory. UI layout, tutorial progress and
+Position/wind interpolation and quaternion SLERP smooth only the rendered pose;
+numeric inspectors and structural fields remain actual saved samples. Conditions
+or geometry edits mark an existing run stale while preserving its immutable
+playback geometry. Live wind/temperature controls append causal scheduled events,
+pause, rerun the solver and resume at the selected flight time; they do not
+rewrite the old trajectory in the renderer. UI layout, tutorial progress and
 named map points persist in a separate whitelisted JSON file. The authenticated
 loopback origin still changes each launch, and the WebEngine profile stays in
 memory; session tokens and unrelated browser storage are never persisted there.
@@ -197,7 +206,7 @@ convert presentation only and do not change the stored physical coordinates.
 
 ## Fidelity and GPU execution
 
-Fast atmosphere/aero and point-mass flight use CPU calculations. The interactive
+Fast atmosphere/aero, flight and dynamic fin beams use CPU calculations. The interactive
 3D viewport uses GPU graphics. CFD and supported FEA linear algebra can use NVIDIA
 CUDA via CuPy; results state the actual backend. Automatic mode may fall back to
 CPU; an explicit GPU request reports missing capability. GPU speed is not a
@@ -214,12 +223,15 @@ The first-release model hierarchy is:
 
 1. Engineering estimates for immediate feedback: small-angle reference geometry,
    drag surrogates and beam/fin formulas.
-2. Passive point-mass flight with explicit single/dual recovery events, uniform
-   wind and seeded perturbations. No attitude integration or weathercocking.
-3. Linear isotropic tetrahedral static FEA with explicit loads and fixed boundaries.
-4. Experimental first-order compressible inviscid Euler CFD on a Cartesian grid.
+2. Passive point-mass or experimental rigid-body flight with declared coefficient
+   limits, explicit recovery/inflation, legacy/Dryden gusts, shear and causal schedules.
+3. Linear isotropic tetrahedral static FEA and separate original-fin dynamic beam
+   FEA with explicit load/support/material assumptions.
+4. Experimental first-order compressible Euler or laminar Navier–Stokes CFD on a
+   Cartesian grid.
 
-No part of the CFD model resolves wall shear or turbulence. FEA does not represent
+Euler omits wall shear; laminar CFD computes molecular traction but typical grids
+do not resolve rocket boundary layers. Neither model resolves turbulence. FEA does not represent
 composite laminate failure, plasticity, contact, buckling or flutter. Aero Mach
 extensions are unvalidated engineering surrogates. These distinctions belong in
 result metadata and the user interface, not only in developer documentation.
@@ -259,7 +271,7 @@ has a wall-clock or step timeout. The UI also shows elapsed time, steps, physica
 domain crossings and residuals. Completed transient fields are instantaneous
 numerical states, with a separate status from steady convergence. Launch-driven
 boundary schedules are snapshots of computed, geometry-matched flight inputs;
-they do not turn the point-mass trajectory into coupled attitude/CFD simulation.
+they do not create coupled moving-body CFD/attitude simulation.
 Cancellation is checked at safe solver boundaries. A grid/cell or tetrahedron
 budget is a resource limit and must be reported instead of fabricating convergence.
 

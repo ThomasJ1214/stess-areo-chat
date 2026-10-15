@@ -1,7 +1,9 @@
-"""Experimental compressible Euler CFD on a uniform, Cartesian cut-free grid.
+"""Experimental compressible CFD on a uniform, Cartesian cut-free grid.
 
-This is a conservative first-order finite-volume solver, not a viscous CFD or
-turbulence model. Solid faces use the analytic reflected slip-wall Riemann flux.
+The default conservative first-order Euler solver has slip walls. The optional
+laminar Navier–Stokes increment uses resolved Newtonian viscosity and Fourier
+conduction with stationary no-slip adiabatic walls. Neither models turbulence.
+Convective solid faces use the analytic reflected wall Riemann pressure flux.
 The staircase surface and coarse-grid numerical dissipation are significant.
 Every field returned by ``solve`` comes from the evolving conserved state.
 """
@@ -122,22 +124,37 @@ def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, x
     return flux, solid_left, solid_right
 
 
-def stable_timestep(state, solid, spacing, cfl=0.35, gamma=GAMMA, xp=np) -> float:
+def stable_timestep(state, solid, spacing, cfl=0.35, gamma=GAMMA, xp=np,
+                    physics_model="euler", farfield=None) -> float:
     """Unsplit positive-state CFL bound including all three characteristic speeds."""
     _, velocity, _, sound = primitives(state, gamma, xp)
     inverse_time = xp.sum((xp.abs(velocity) + sound[..., None]) / xp.asarray(spacing), axis=-1)
     rate = float(xp.max(xp.where(solid, 0.0, inverse_time)))
+    if physics_model == "laminar":
+        from .cfd_viscous import diffusive_inverse_time
+        if farfield is not None:
+            _, incoming_velocity, _, incoming_sound = primitives(xp.asarray(farfield), gamma, xp)
+            rate = max(rate, float(xp.sum((xp.abs(incoming_velocity) + incoming_sound) / xp.asarray(spacing))))
+        rate += diffusive_inverse_time(state, solid, spacing, gamma, xp, farfield)
+    elif physics_model != "euler":
+        raise ValueError("CFD physics_model must be euler or laminar.")
     if not math.isfinite(rate) or rate <= 0:
         raise ValueError("The Euler state is nonphysical or has no fluid cells.")
     return float(cfl / rate)
 
 
-def finite_volume_step(state, solid, spacing, dt, farfield, boundary="farfield", gamma=GAMMA, xp=np):
+def finite_volume_step(state, solid, spacing, dt, farfield, boundary="farfield", gamma=GAMMA, xp=np,
+                       physics_model="euler"):
     """One unsplit conservative forward-Euler step; useful independently for tests."""
     derivative = xp.zeros_like(state)
     for axis in range(3):
         flux, _, _ = _axis_flux(state, solid, axis, farfield, boundary, gamma, xp)
         derivative -= xp.diff(flux, axis=axis) / spacing[axis]
+    if physics_model == "laminar":
+        from .cfd_viscous import viscous_rhs
+        derivative += viscous_rhs(state, solid, spacing, farfield, boundary, gamma, xp)
+    elif physics_model != "euler":
+        raise ValueError("CFD physics_model must be euler or laminar.")
     updated = state + dt * derivative
     return xp.where(solid[..., None], state, updated)
 
@@ -354,7 +371,8 @@ def _wall_pressure(state, wall, xp=np):
     return wall_riemann_pressure(rho, pressure, toward, xp=xp)
 
 
-def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_inf, limit):
+def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_inf, limit,
+             physics_model="euler"):
     """Integrate the same exact wall Riemann flux used by the conservative update."""
     wall = _wall_geometry(solid, spacing, origin)
     positions, normals = wall["positions"], wall["normals"]
@@ -369,6 +387,15 @@ def _surface(state, solid, spacing, origin, farfield, pressure_inf, speed, rho_i
     rows = [dict(position=positions[i].tolist(), pressure_pa=float(pressures[i]),
                  pressure_coefficient=float((pressures[i] - pressure_inf) / q) if coefficient_defined else None,
                  normal=normals[i].tolist()) for i in take]
+    if physics_model == "laminar":
+        from .cfd_viscous import wall_tractions
+        viscous_traction, shear_traction, temperature = wall_tractions(state, wall, spacing)
+        for row, i in zip(rows, take):
+            row.update(viscous_traction_pa=viscous_traction[i].tolist(),
+                       shear_traction_pa=shear_traction[i].tolist(),
+                       shear_stress_pa=float(np.linalg.norm(shear_traction[i])),
+                       total_traction_pa=(-(pressures[i] - pressure_inf) * normals[i] + viscous_traction[i]).tolist(),
+                       wall_fluid_temperature_k=float(temperature[i]))
     return rows, total_force, total_moment, count, int(np.sum(pressures <= 0))
 
 
@@ -426,9 +453,11 @@ class _TransientRecorder:
 
     def __init__(self, state, solid, spacing, origin, wall, pressure_inf,
                  density_inf, velocity_inf, duration, frame_limit,
-                 sample_limit, surface_limit):
+                 sample_limit, surface_limit, physics_model="euler"):
         self.solid = solid
         self.wall = wall
+        self.spacing = spacing
+        self.physics_model = physics_model
         self.duration = duration
         self.frame_limit = frame_limit
         self.pressure_inf = pressure_inf
@@ -498,6 +527,25 @@ class _TransientRecorder:
             altitude_msl_m=environment.get("altitude_msl_m"),
             flight_time_s=environment.get("flight_time_s"),
         )
+        if self.physics_model == "laminar":
+            from .cfd_viscous import wall_tractions
+            traction, shear, temperature = wall_tractions(state, self.wall, self.spacing)
+            viscous_face_force = traction * self.wall["areas"][:, None]
+            viscous_force = viscous_face_force.sum(axis=0)
+            viscous_moment = np.cross(self.wall["positions"], viscous_face_force).sum(axis=0)
+            selected = self.surface_indices
+            frame.update(
+                viscous_force_n=viscous_force.tolist(), total_force_n=(force + viscous_force).tolist(),
+                viscous_drag_n=float(np.dot(viscous_force, incoming_velocity / speed)) if speed else 0.0,
+                total_drag_n=float(np.dot(force + viscous_force, incoming_velocity / speed)) if speed else 0.0,
+                viscous_moment_about_origin_nm=viscous_moment.tolist(),
+                total_moment_about_origin_nm=(moment + viscous_moment).tolist(),
+                surface_viscous_traction_pa=traction[selected].tolist(),
+                surface_shear_traction_pa=shear[selected].tolist(),
+                surface_shear_stress_pa=np.linalg.norm(shear[selected], axis=-1).tolist(),
+                surface_total_traction_pa=(-(wall_pressure - pressure_inf)[:, None] * self.wall["normals"] + traction)[selected].tolist(),
+                surface_wall_fluid_temperature_k=temperature[selected].tolist(),
+            )
         if self.frames and self.frames[-1]["step"] == step:
             self.frames[-1] = frame
         elif len(self.frames) < self.frame_limit:
@@ -513,8 +561,10 @@ class _TransientRecorder:
             duration_s=self.duration, completed=completed, topology=self.topology,
             frames=self.frames, frame_limit=self.frame_limit,
             max_display_nodes=12_000,
-            temporal_sampling="Actual accepted Euler states at their physical timestamps; scheduled capture times snap forward to an accepted step. Initial and final/cancelled states retained. No temporal field interpolation.",
-            scope="Fixed rocket geometry, uniform initial freestream and constant prescribed farfield; inviscid numerical startup/evolution, without moving geometry or modeled turbulence.",
+            physics_model=self.physics_model,
+            temporal_sampling="Actual accepted conservative states at their physical timestamps; scheduled capture times snap forward to an accepted step. Initial and final/cancelled states retained. No temporal field interpolation.",
+            scope=("Fixed rocket geometry, uniform initial freestream and constant prescribed farfield; resolved laminar numerical startup/evolution without moving geometry or modeled turbulence." if self.physics_model == "laminar" else
+                   "Fixed rocket geometry, uniform initial freestream and constant prescribed farfield; inviscid numerical startup/evolution, without moving geometry or modeled turbulence."),
         )
 
 
@@ -567,7 +617,7 @@ def _accelerating_frame_update(state, solid, acceleration, dt, xp=np):
 def solve(project, conditions, configuration_id: str | None = None,
           options: dict | None = None, progress=None, cancelled=None,
           telemetry=None, freestream_provider=None) -> dict[str, Any]:
-    """Run real Euler flow on current/original combined project geometry.
+    """Run real Euler or resolved laminar flow on combined project geometry.
 
     Steady mode has no wall-clock, step or physical-time stopping budget. It
     stops only at numerical convergence or cancellation. Transient mode solves
@@ -580,6 +630,11 @@ def solve(project, conditions, configuration_id: str | None = None,
     from .aero import atmosphere, freestream
 
     options = dict(options or {})
+    physics_model = options.get("physics_model", "euler")
+    if not isinstance(physics_model, str) or physics_model not in {"euler", "laminar"}:
+        raise ValueError("CFD physics_model must be euler or laminar.")
+    laminar = physics_model == "laminar"
+    solver_label = "Laminar Navier–Stokes" if laminar else "Euler"
     mode = options.get("mode", "steady")
     if not isinstance(mode, str) or mode not in {"steady", "transient"}:
         raise ValueError("CFD mode must be steady or transient.")
@@ -615,7 +670,7 @@ def solve(project, conditions, configuration_id: str | None = None,
                        elapsed_seconds=0.0, integration_elapsed_seconds=0.0,
                        done=False, status="running"))
     if progress:
-        progress(0.0, "Voxelizing the external rocket geometry for the Euler grid")
+        progress(0.0, f"Voxelizing the external rocket geometry for the {solver_label} grid")
     mesh = project_mesh(project, configuration_id, original=original)
     mesh_digest = hashlib.sha256()
     mesh_digest.update(np.asarray(mesh.vertices, dtype="<f8").tobytes())
@@ -649,30 +704,62 @@ def solve(project, conditions, configuration_id: str | None = None,
         pressure_inf = environment["pressure_pa"]
         velocity = np.asarray(environment["velocity_m_s"], dtype=float)
         warnings.append("Time-varying transient CFD is one-way prescribed boundary forcing of fixed geometry. A launch profile supplies body-equivalent air-relative flow, not a solved moving/rotating vehicle. Translation-only frame acceleration is included only when explicitly supplied; rotating-frame forces, changing attitude, moving boundaries and CFD feedback into the flight are not modeled.")
-        warnings.append("A time-varying profile may pass through low Mach below 0.3. This Euler scheme has no all-speed preconditioning: acoustic numerical dissipation can dominate physical pressure differences, and low-Mach pressure drag is especially unreliable.")
+        warnings.append("A time-varying profile may pass through low Mach below 0.3. This acoustic-speed scheme has no all-speed preconditioning: numerical dissipation can dominate physical pressure differences, and low-Mach pressure drag is especially unreliable.")
     sound_inf = math.sqrt(GAMMA * pressure_inf / rho_inf)
     speed = float(np.linalg.norm(velocity))
     actual_mach = speed / sound_inf
     if actual_mach > 2.05 + 1e-12:
         raise ValueError("The actual freestream including lateral wind exceeds the supported Mach 2 range.")
     if conditions.turbulence:
-        warnings.append("The turbulence input is not modeled by inviscid Euler; no turbulent or viscous fluctuations are synthesized.")
+        warnings.append("The turbulence input is not a CFD turbulence model; no turbulent fluctuations, eddy viscosity or transition are synthesized. Launch-driven CFD may receive changing freestream from the separately declared flight wind model.")
     if 0 < actual_mach < 0.3:
         warnings.append("Low-Mach flow below 0.3: this acoustic-speed Rusanov scheme has no all-speed preconditioning. Numerical dissipation can dominate the small physical pressure differences; pressure drag is especially unreliable even if the residual converges.")
     warnings.extend([
-        "Experimental inviscid Euler: no skin friction, boundary layers, transition, viscous separation, heat transfer, turbulence or wall/shear stress.",
+        ("Experimental resolved laminar Navier–Stokes: Newtonian viscosity and Fourier heat conduction with no-slip adiabatic walls. No transition, turbulence closure, wall functions, wall heat-transfer boundary condition or validated high-Reynolds-number drag. High-power rocket boundary layers are generally far thinner than this Cartesian grid; unresolved shear/viscous drag must not be treated as accurate skin friction." if laminar else
+         "Experimental inviscid Euler: no skin friction, boundary layers, transition, viscous separation, heat transfer, turbulence or wall/shear stress."),
         "Unvalidated first-order stair-step grid. Supersonic shocks can be represented, but transonic/drag predictions need grid/domain convergence and comparison to trusted measurements or a validated viscous solver.",
         "Prescribed freestream on all six domain faces can reflect disturbances, especially for subsonic flow; enlarge the domain and inspect sensitivity.",
-        "Surface pressure uses the exact reflected Euler slip-wall Riemann momentum flux; absolute pressure and gauge pressure forces are available, but these are not structural stress results.",
+        ("Pressure uses the reflected Euler wall Riemann flux and viscous traction uses the exact resolved half-cell no-slip stencil. Gauge-pressure, tangential fluid shear and full viscous traction are distinct from material/structural stress. Existing pressure-transfer FEA does not transfer viscous shear." if laminar else
+         "Surface pressure uses the exact reflected Euler slip-wall Riemann momentum flux; absolute pressure and gauge pressure forces are available, but these are not structural stress results."),
     ])
     farfield_cpu = conserved(rho_inf, velocity, pressure_inf)
     farfield = xp.asarray(farfield_cpu)
     solid = xp.asarray(solid_cpu)
     state = xp.broadcast_to(farfield, solid_cpu.shape + (5,)).copy()
+    transport_diagnostics = None
+    viscous_scale = None
+    if laminar:
+        from .cfd_viscous import AIR_GAS_CONSTANT, PRANDTL, air_viscosity, thermal_conductivity
+        temperature_inf = pressure_inf / (rho_inf * AIR_GAS_CONSTANT)
+        viscosity_inf = float(air_viscosity(temperature_inf))
+        kinematic_viscosity_inf = viscosity_inf / rho_inf
+        viscous_scale = max(2 * viscosity_inf * speed / float(np.min(spacing)),
+                            pressure_inf * np.finfo(float).eps * 64)
+        length_reference = float(np.max(np.ptp(np.asarray(mesh.vertices), axis=0)))
+        numerical_diffusivity = 0.5 * (sound_inf + speed) * float(np.max(spacing))
+        transport_diagnostics = dict(
+            reference_time_s=0.0, reference_flight_time_s=environment.get("flight_time_s"),
+            reference_state="Initial freestream; prescribed transient conditions may subsequently change",
+            freestream_temperature_k=temperature_inf,
+            dynamic_viscosity_pa_s=viscosity_inf,
+            kinematic_viscosity_m2_s=kinematic_viscosity_inf,
+            thermal_conductivity_w_m_k=float(thermal_conductivity(temperature_inf)),
+            prandtl_number=PRANDTL, reference_length_m=length_reference,
+            reynolds_number=rho_inf * speed * length_reference / viscosity_inf,
+            estimated_numerical_diffusivity_m2_s=numerical_diffusivity,
+            estimated_numerical_to_molecular_diffusivity_ratio=numerical_diffusivity / kinematic_viscosity_inf,
+            estimate_scope="Characteristic first-order Rusanov estimate 0.5*(freestream sound speed+speed)*maximum cell spacing divided by molecular kinematic viscosity. Diagnostic scaling only; not a measured error bound, turbulence model or resolved boundary-layer proof.",
+        )
+        warnings.append(f"Laminar transport resolution: initial freestream Reynolds number based on rocket extent is {transport_diagnostics['reynolds_number']:.3g}. Characteristic Rusanov numerical-to-molecular diffusivity ratio is approximately {transport_diagnostics['estimated_numerical_to_molecular_diffusivity_ratio']:.3g}; on coarse rocket grids numerical diffusion can vastly dominate physical viscosity. Adding viscosity does not validate boundary-layer thickness, transition, skin friction or drag. Perform grid/domain studies against independent reference data.")
     fluid_count = int(np.sum(~solid_cpu))
     wall_cpu = _wall_geometry(solid_cpu, spacing, origin)
     wall = {key: xp.asarray(value) for key, value in wall_cpu.items()}
     previous_wall_pressure = _wall_pressure(state, wall, xp)
+    previous_wall_traction = None
+    wall_viscous_residual = None
+    if laminar:
+        from .cfd_viscous import wall_tractions
+        previous_wall_traction = wall_tractions(state, wall, spacing, xp=xp)[0]
     # A whole-domain RMS can be diluted by many nearly undisturbed farfield
     # cells. Independently require surface pressure, force and moment rates to
     # settle on dynamic-pressure scales before accepting pressure-transfer FEA.
@@ -704,7 +791,7 @@ def solve(project, conditions, configuration_id: str | None = None,
         initial_state = xp.asnumpy(state) if backend == "cupy-cuda" else np.asarray(state)
         recorder = _TransientRecorder(initial_state, solid_cpu, spacing, origin, wall_cpu,
                                       pressure_inf, rho_inf, velocity, duration,
-                                      frame_limit, sample_limit, surface_limit)
+                                      frame_limit, sample_limit, surface_limit, physics_model)
         recorder.capture(initial_state, 0.0, 0, environment)
     integration_start = time.perf_counter()
 
@@ -716,6 +803,7 @@ def solve(project, conditions, configuration_id: str | None = None,
                 domain_crossings_completed=physical_time / flow_time,
                 minimum_convergence_time_s=minimum_convergence_time,
                 residual=residual, wall_pressure_residual=wall_pressure_residual,
+                wall_viscous_residual=wall_viscous_residual, physics_model=physics_model,
                 force_residual=force_residual, moment_residual=moment_residual,
                 convergence_tolerance=tolerance, stable_streak=stable_streak,
                 required_stable_steps=20, rejected_steps=rejected_steps,
@@ -745,7 +833,8 @@ def solve(project, conditions, configuration_id: str | None = None,
             farfield_cpu = conserved(rho_inf, velocity, pressure_inf)
             farfield = xp.asarray(farfield_cpu)
         step = steps + 1
-        dt = stable_timestep(state, solid, spacing, cfl, xp=xp)
+        dt = stable_timestep(state, solid, spacing, cfl, xp=xp,
+                             physics_model=physics_model, farfield=farfield if laminar else None)
         # A changing prescribed boundary may be faster than the current domain.
         # Include its characteristic speeds in the same multidimensional CFL.
         incoming_dt = cfl / float(np.sum((np.abs(velocity) + sound_inf) / spacing))
@@ -756,7 +845,8 @@ def solve(project, conditions, configuration_id: str | None = None,
             raise RuntimeError("The CFD physical timestep cannot advance finite time. No duplicate-time or nonphysical state was accepted.")
         accepted = False
         for _ in range(9):
-            candidate = finite_volume_step(state, solid, spacing, dt, farfield, xp=xp)
+            candidate = finite_volume_step(state, solid, spacing, dt, farfield, xp=xp,
+                                           physics_model=physics_model)
             acceleration = environment.get("frame_acceleration_m_s2", [0, 0, 0])
             if any(acceleration):
                 candidate = _accelerating_frame_update(candidate, solid, acceleration, dt, xp)
@@ -766,7 +856,7 @@ def solve(project, conditions, configuration_id: str | None = None,
             rejected_steps += 1
             dt *= 0.5
         if not accepted:
-            raise RuntimeError("Euler update lost positive density/pressure even after CFL reduction. No nonphysical pressure field was accepted; refine the geometry or lower CFL.")
+            raise RuntimeError(f"{solver_label} update lost positive density/pressure even after CFL reduction. No nonphysical pressure field was accepted; refine the geometry or lower CFL.")
         relative_delta = (candidate - state) / scales
         state_change = float(xp.sqrt(xp.sum(xp.where(solid[..., None], 0.0, relative_delta**2)) / (fluid_count * 5)))
         # Normalize by dt in crossing-time units. A smaller time step must not
@@ -776,6 +866,12 @@ def solve(project, conditions, configuration_id: str | None = None,
         pressure_change = wall_pressure - previous_wall_pressure
         wall_pressure_residual = float(xp.sqrt(xp.sum(wall["areas"] * (pressure_change / pressure_scale)**2) / xp.sum(wall["areas"]))) * flow_time / dt
         force_change = -pressure_change[..., None] * wall["normals"] * wall["areas"][..., None]
+        if laminar:
+            wall_traction = wall_tractions(candidate, wall, spacing, xp=xp)[0]
+            traction_change = wall_traction - previous_wall_traction
+            wall_viscous_residual = float(xp.sqrt(xp.sum(wall["areas"] * xp.sum((traction_change / viscous_scale)**2, axis=-1)) / xp.sum(wall["areas"]))) * flow_time / dt
+            force_change += traction_change * wall["areas"][..., None]
+            previous_wall_traction = wall_traction
         force_residual = float(xp.linalg.norm(xp.sum(force_change, axis=0))) / force_scale * flow_time / dt
         moment_residual = float(xp.linalg.norm(xp.sum(xp.cross(relative_wall_positions, force_change), axis=0))) / moment_scale * flow_time / dt
         previous_wall_pressure = wall_pressure
@@ -790,12 +886,15 @@ def solve(project, conditions, configuration_id: str | None = None,
         if step == 1 or step % 5 == 0 or (mode == "transient" and physical_time >= target_time):
             _record_history(history, dict(step=step, time_s=physical_time, dt_s=dt, residual=residual,
                                 wall_pressure_residual=wall_pressure_residual,
+                                wall_viscous_residual=wall_viscous_residual,
                                 force_residual=force_residual, moment_residual=moment_residual,
                                 normalized_state_change=state_change,
                                 min_pressure_pa=min_pressure, max_mach=max_mach))
         # Avoid labeling the initially undisturbed far field converged before a
         # disturbance has had time to traverse the body/domain.
         rates = (residual, wall_pressure_residual, force_residual, moment_residual)
+        if laminar:
+            rates += (wall_viscous_residual,)
         stable_streak = stable_streak + 1 if max(rates) < tolerance and physical_time >= minimum_convergence_time else 0
         integration_elapsed = max(time.perf_counter() - integration_start, 1e-12)
         physical_rate = physical_time / integration_elapsed
@@ -810,7 +909,7 @@ def solve(project, conditions, configuration_id: str | None = None,
             deadline = ("Completion time unknown; waiting for numerical convergence" if mode == "steady" else
                         f"{physical_time:.6g}/{target_time:.6g} s physical flow time; completion follows the requested duration")
             completion = 0.0 if mode == "steady" else min(0.95, physical_time / target_time * 0.95)
-            progress(completion, f"Euler step {step}; {physical_time / flow_time:.3f} domain crossings; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; {timing}. {deadline}.")
+            progress(completion, f"{solver_label} step {step}; {physical_time / flow_time:.3f} domain crossings; fluid residual {residual:.3g}, wall residual {max(rates[1:]):.3g}; {timing}. {deadline}.")
         if step == 1 or step % 5 == 0:
             emit_telemetry()
         if mode == "steady" and stable_streak >= 20:
@@ -823,6 +922,7 @@ def solve(project, conditions, configuration_id: str | None = None,
     if steps and history[-1]["step"] != steps:
         _record_history(history, dict(step=steps, time_s=physical_time, dt_s=dt, residual=residual,
                             wall_pressure_residual=wall_pressure_residual,
+                            wall_viscous_residual=wall_viscous_residual,
                             force_residual=force_residual, moment_residual=moment_residual,
                             normalized_state_change=state_change,
                             min_pressure_pa=min_pressure, max_mach=max_mach))
@@ -857,7 +957,7 @@ def solve(project, conditions, configuration_id: str | None = None,
         warnings.append(f"Streamline visualization samples the solved velocity at stride {flow_grid['stride']}, capped at 100,000 display nodes. A conservative display mask stops lines near unresolved thin walls; it changes neither the solved field nor integrated pressure loads. Inspect solver-grid refinement separately.")
     surface, force, moment, face_count, negative_wall_faces = _surface(
         state_cpu, solid_cpu, spacing, origin, farfield_cpu, pressure_inf,
-        speed, rho_inf, surface_limit)
+        speed, rho_inf, surface_limit, physics_model)
     if negative_wall_faces:
         warnings.append(f"{negative_wall_faces} wall Riemann expansions reach vacuum (zero pressure). These loads cannot be transferred to FEA; inspect the flow and refine before interpreting them.")
     if status == "transient_complete":
@@ -875,6 +975,7 @@ def solve(project, conditions, configuration_id: str | None = None,
     elif status == "converged":
         warnings.append("Pressure-resultant CP is undefined at negligible lateral force; no CP is inferred from axial drag.")
     summary = dict(status=status, mode=mode, completed=status in {"converged", "transient_complete"},
+                   physics_model=physics_model,
                    converged=status == "converged", steps=steps,
                    physical_time_s=physical_time, target_physical_time_s=target_time,
                    elapsed_seconds=time.perf_counter() - start, flow_through_time_s=flow_time,
@@ -900,14 +1001,18 @@ def solve(project, conditions, configuration_id: str | None = None,
                    estimated_seconds_to_target_flow_time=max(0.0, target_time - physical_time) * integration_elapsed / physical_time if target_time is not None and physical_time > 0 else None,
                    timing_estimate_basis="Measured integration throughput; startup/voxelization and extraction excluded. Not an estimate of convergence time.",
                    wall_pressure_residual=wall_pressure_residual,
+                   wall_viscous_residual=wall_viscous_residual,
                    force_residual=force_residual, moment_residual=moment_residual,
                    convergence_tolerance=tolerance,
                    pressure_convergence_scale_pa=pressure_scale,
                    force_convergence_scale_n=force_scale,
                    moment_convergence_scale_nm=moment_scale,
-                   wall_flux="Exact symmetric reflected Euler Riemann solution",
+                   wall_flux=("Exact symmetric reflected Euler pressure plus conservative Newtonian no-slip traction; stationary adiabatic wall energy flux zero" if laminar else
+                              "Exact symmetric reflected Euler Riemann solution"),
+                   wall_condition="Stationary no-slip adiabatic" if laminar else "Stationary inviscid slip",
                    low_mach_preconditioned=False,
-                   convergence_requires="Global conserved-state, wall-pressure, resultant-force and centered-moment rates all below tolerance for 20 steps after half a crossing time",
+                   convergence_requires=("Global conserved-state, wall-pressure, wall-viscous-traction, total resultant-force and total centered-moment rates all below tolerance for 20 steps after half a crossing time" if laminar else
+                                         "Global conserved-state, wall-pressure, resultant-force and centered-moment rates all below tolerance for 20 steps after half a crossing time"),
                    cp_m=cp_m, cp_kind="Condition-specific pressure-resultant centerline fit; not Barrowman derivative CP",
                    cp_fit_moment_residual_nm=cp_fit_residual,
                    cell_count=int(solid_cpu.size), solid_cells=int(solid_cpu.sum()),
@@ -929,6 +1034,29 @@ def solve(project, conditions, configuration_id: str | None = None,
                    configuration_id=configuration_id or project.active_configuration_id,
                    original_geometry=original, mesh_sha256=mesh_digest.hexdigest(),
                    max_steps=None, max_wall_seconds=0, cfl=cfl)
+    if laminar:
+        from .cfd_viscous import wall_tractions
+        viscous_traction, shear_traction, wall_temperature = wall_tractions(state_cpu, wall_cpu, spacing)
+        viscous_face_force = viscous_traction * wall_cpu["areas"][:, None]
+        viscous_force = viscous_face_force.sum(axis=0)
+        viscous_moment = np.cross(wall_cpu["positions"], viscous_face_force).sum(axis=0)
+        summary.update(
+            pressure_force_n=force.tolist(), force_n_scope="Pressure-only compatibility field; total_force_n includes full viscous traction",
+            viscous_force_n=viscous_force.tolist(), total_force_n=(force + viscous_force).tolist(),
+            viscous_drag_n=float(np.dot(viscous_force, velocity / speed)) if speed else 0.0,
+            total_drag_n=float(np.dot(force + viscous_force, velocity / speed)) if speed else 0.0,
+            viscous_moment_about_origin_nm=viscous_moment.tolist(),
+            total_moment_about_origin_nm=(moment + viscous_moment).tolist(),
+            max_wall_shear_stress_pa=float(np.max(np.linalg.norm(shear_traction, axis=-1))),
+            viscous_convergence_scale_pa=viscous_scale,
+            viscous_convergence_scale_basis="Initial freestream half-cell traction scale 2*mu*speed/minimum spacing, floored only at atmospheric-pressure floating-point precision",
+            wall_heat_flux_w_m2=0.0,
+            viscous_force_steady=status == "converged", viscous_force_validated=False,
+            viscous_output_kind="Resolved numerical fluid-wall traction; not structural stress, validated skin friction or a turbulence prediction",
+            pressure_to_fea_scope="Pressure only; viscous traction and wall shear are not transferred",
+            transport=transport_diagnostics,
+            timestep_policy="CFL divided by summed acoustic and conservative viscous/thermal diffusion rates; includes boundary transport and half-cell no-slip wall spacing",
+        )
     if options.get("backend", "auto") != "cpu":
         from ..backenddiagnostics import cuda_diagnostics
         summary["cuda_diagnostics"] = cuda_diagnostics()
@@ -938,9 +1066,13 @@ def solve(project, conditions, configuration_id: str | None = None,
         summary["transient_frame_limit"] = frame_limit
     emit_telemetry("complete", done=True)
     if progress:
-        progress(1.0, f"Euler solve finished: {status}; {steps} conservative steps")
+        progress(1.0, f"{solver_label} solve finished: {status}; {steps} conservative steps")
+    fidelity = FIDELITY
+    if laminar:
+        from .cfd_viscous import FIDELITY as laminar_fidelity
+        fidelity = laminar_fidelity
     result = dict(samples=samples, flow_grid=flow_grid, surface=surface, history=history, summary=summary,
-                  fidelity=FIDELITY, warnings=warnings, backend=backend)
+                  fidelity=fidelity, warnings=warnings, backend=backend)
     if recorder:
         result["transient"] = recorder.result(status == "transient_complete")
         if freestream_provider is not None:

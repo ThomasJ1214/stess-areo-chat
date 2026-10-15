@@ -89,3 +89,40 @@ def test_no_progress_and_invalid_telemetry_have_unknown_eta():
         assert progress.update(transient_event(wall, 0))["eta_seconds"] is None
     assert progress.update(transient_event(float("nan"), 2))["eta_seconds"] is None
     assert progress.update(transient_event(10, 2) | {"target_physical_time_s": float("inf")})["eta_seconds"] is None
+
+
+@pytest.mark.parametrize("wall_viscous", [None, .1])
+def test_laminar_eta_is_unknown_if_wall_traction_is_unmeasured_or_stalled(wall_viscous):
+    progress = CfdProgress()
+    for wall in range(16):
+        answer = progress.update(steady_event(wall, [math.exp(-.2 * wall)] * 4) | {
+            "physics_model": "laminar", "wall_viscous_residual": wall_viscous,
+        })
+    # Pressure and global residuals declining cannot establish a completion
+    # estimate while the independently required fluid-wall traction does not.
+    assert answer["eta_seconds"] is None
+    assert answer["eta_basis"] is None
+
+
+def test_laminar_eta_includes_slower_wall_traction_threshold_crossing():
+    progress = CfdProgress()
+    for wall in range(1, 17):
+        answer = progress.update(steady_event(wall, [math.exp(-.8 * wall)] * 4) | {
+            "physics_model": "laminar", "wall_viscous_residual": .2 * math.exp(-.1 * wall),
+        })
+    remaining = math.log(.2 / 1e-4) / .1 - wall
+    assert answer["eta_seconds"] == pytest.approx(remaining + .2)
+    assert answer["eta_basis"] == "convergence_trend"
+
+
+def test_eta_discards_observations_when_physics_model_changes():
+    progress = CfdProgress()
+    for wall in range(1, 17):
+        answer = progress.update(steady_event(wall, [math.exp(-.2 * wall)] * 4))
+    assert answer["eta_seconds"] is not None
+    assert progress.update(steady_event(17, [math.exp(-3.4)] * 4) | {
+        "physics_model": "laminar", "wall_viscous_residual": .1,
+    })["eta_seconds"] is None
+    # Switching back also starts a fresh fit; the earlier Euler trajectory
+    # does not provide evidence for the new solve.
+    assert progress.update(steady_event(18, [math.exp(-3.6)] * 4))["eta_seconds"] is None

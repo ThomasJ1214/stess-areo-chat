@@ -62,6 +62,60 @@ frame. Reference incidence/Mach coefficients are held constant even when flight
 Mach changes. Flight playback therefore does not establish transient structural
 strength through transonic flight or recovery opening shock.
 
+## Dynamic original-fin beam FEA during flight
+
+Flight options `structural_mode:dynamic_fins` run a separate, one-way structural
+pass over the actual accepted trajectory. The default `quasi_static` option
+retains the preceding estimates. Only original procedural trapezoidal finsets
+are supported: replacing a fin with arbitrary CAD does not silently turn it into
+a bounding-box beam. Materials require finite positive density/E and an
+appropriate strength value. Fiberglass/carbon labels require explicit acceptance
+of an isotropic surrogate; the reported strength ratio is not laminate failure.
+
+Each individual fin is a clamped Euler–Bernoulli beam along its semispan, with
+linearly varying chord, `I(s)=chord(s) thickness³/12` and distributed mass
+`ρ chord(s) thickness`. Cubic Hermite elements assemble actual bending stiffness
+and consistent mass matrices. All free bending modes are retained; there is no
+hidden single-mode truncation. A uniform assumed modal damping ratio is supplied
+by the user (default 0.01). Average-acceleration Newmark integration uses substeps
+bounded by the shortest modal period and the requested steps per period.
+
+Loads project recorded original-reference aerodynamic force onto each fin's
+actual normal, using the solved quaternion when available. Point-mass runs use
+their disclosed assumed axis and an original-reference incidence reconstruction.
+Distributed aerodynamic load follows the chord; translational base inertia uses
+the actual specific-acceleration vector (D'Alembert load). Free fall therefore
+does not create fictitious gravitational root loading. Rotational centrifugal,
+gyroscopic and angular-acceleration base forcing are excluded. Neither flight
+nor this pass supplies resolved local fin pressure, plate/torsional modes,
+attachment compliance, flutter or deformation feedback to the flow.
+
+At each valid trajectory time, outputs include signed nodal displacement and
+bending stress along span, actual root reaction force/moment, elastic/kinetic
+energy, modal frequencies and peak component stress/deflection. The initial
+supported state assumes static equilibrium under its first load. Unsupported
+high-incidence, Mach-above-2, recovery or missing-load intervals are nullable and
+never interpolated across. Coverage counts and reasons are displayed separately
+from job completion. Reaching `max_substeps` returns an explicit partial pass.
+The flight model's own limitations still apply to every imposed load.
+
+| Flight structural option | Default and range |
+| --- | --- |
+| `elements` | 12 span elements; 2–64 |
+| `damping_ratio` | 0.01 assumed modal ratio; 0–0.2 |
+| `steps_per_period` | 30; 12–100 |
+| `max_substeps` | 300,000; 1–2,000,000 |
+| `max_incidence_deg` | 10°; may narrow the small-angle load domain |
+| `allow_isotropic_surrogate` | false; explicit acknowledgement required for composite-labelled material |
+
+The result is `dynamic_structural_analysis`, with separate per-row
+`dynamic_stress`, `dynamic_structural_components` and a declared fidelity string.
+Default quasi-static fields are preserved. A component-level viewer colour uses
+its solved peak bending stress; it is not a resolved three-dimensional volume
+heatmap. Inspect the exported nodal beam values for the actual span distribution.
+This capability does not remove solid-FEA thickness/mesh guards or create bonds
+between merely touching CAD parts.
+
 ## Actual solid finite element analysis
 
 `structure.solve_fea` runs linear static 3D elasticity on the selected component
@@ -265,6 +319,14 @@ warns. Deformation exceeding 5% of component scale and supplied strength
 exceedance also produce warnings, not simulated nonlinear failure.
 
 ## Validation included in the repository
+
+Dynamic-fin references independently exercise exact cantilever tip deflection,
+Euler–Bernoulli natural frequencies, tapered virtual work, exact damped oscillator
+response, undamped energy, damped decay and full-beam harmonic resonance. Checks
+also cover free-fall inertia, individual-fin direction, immutable geometry/mass,
+unsupported intervals and work limits. These verify the discretized model, not
+rocket laminate strength or actual flight loads. Run
+`uv run --no-sync pytest tests/test_flight_structure.py` to reproduce them.
 
 `tests/test_structure.py` verifies:
 

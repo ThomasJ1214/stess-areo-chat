@@ -29,9 +29,14 @@ across file readers, solvers, API persistence and frontend types.
 * `aero.mass_properties(project: Project, configuration_id: str | None = None, time: float = 0) -> dict`
 * `aero.analyze(project: Project, conditions: Conditions, configuration_id: str | None = None) -> dict`
 * `flight.simulate(project: Project, conditions: Conditions, configuration_id: str | None = None, progress=None, cancelled=None) -> dict`
+  Dispatches `Conditions.flight_model` between legacy `point_mass` and experimental
+  `rigid_body`. Both use `WindField`, configured inflation and causal `wind_events`.
+* `flight_structure.analyze_flight_structure(project, trajectory, configuration_id=None, options=None, progress=None, cancelled=None) -> dict`
+  Independent original-fin transient beam pass; immutable input, aligned nullable
+  rows, full FEM/modal metadata, coverage, reactions, bending stresses and energy.
 * `structure.analyze(project: Project, conditions: Conditions, configuration_id: str | None = None) -> dict` (beam/fin estimates)
 * `structure.solve_fea(project: Project, component_id: str, conditions: Conditions, options: dict, progress=None, cancelled=None) -> dict`
-* `cfd.solve(project: Project, conditions: Conditions, configuration_id: str | None = None, options: dict | None = None, progress=None, cancelled=None) -> dict`
+* `cfd.solve(project: Project, conditions: Conditions, configuration_id: str | None = None, options: dict | None = None, progress=None, cancelled=None, telemetry=None, freestream_provider=None) -> dict`
 
 Callbacks: `progress(fraction: float, message: str)`; `cancelled() -> bool`.
 Raise ValueError for invalid physical inputs and RuntimeError for unavailable
@@ -47,8 +52,11 @@ stress, phase), events (name,time,index), summary, fidelity, warnings.
 Structure estimates: components [{component_id,name,stress_pa,deflection_m,
 safety_factor, ...}], warnings, fidelity. FEA: vertices, tetrahedra,
 displacements, von_mises_pa, summary, fidelity, warnings, backend.
-CFD: samples [{position:[x,y,z],pressure_pa,velocity:[x,y,z]}],
-surface [{position:[x,y,z],pressure_pa}], history, summary, fidelity,warnings,backend.
+CFD: samples [{position:[x,y,z],pressure_pa,velocity:[x,y,z],density_kg_m3,mach}],
+surface [{position:[x,y,z],pressure_pa,pressure_coefficient,normal:[x,y,z]}],
+flow_grid, history, summary, fidelity,warnings,backend; optional transient
+topology/frames. Euler is default; experimental Laminar returns additional
+actual viscous/shear/total traction fields described below.
 
 ## HTTP interface (local session, single project)
 
@@ -92,10 +100,11 @@ completed, numerically converged CFD job with matching geometry.
 
 FEA options include explicit support axis/side/tolerance, tetrahedron/mesh budgets,
 body acceleration and pressure or prescribed traction loading. CFD options
-include lengthwise/transverse grid dimensions, cell budget, CFL, flow-through
-time, residual tolerance, iteration and elapsed-time budgets. See method docs
-and solver argument validation for bounds; a job budget is not a claimed
-physical convergence criterion.
+include lengthwise/transverse grid dimensions, allocation budget, physics model,
+CFL, residual tolerance, steady/transient mode and requested transient physical
+duration. Wall-clock, iteration and domain-crossing stopping budgets are no
+longer enforced. See [CFD.md](CFD.md) and solver validation for bounds;
+numerical convergence does not establish physical accuracy.
 
 CAD alignment options are `axis:"auto"|"x"|"y"|"z"` (default `auto`),
 `reverse:false`, `fit_length:false`, and `anchor:"start"|"center"` (default
@@ -107,6 +116,14 @@ Default rigid placement preserves source dimensions. Explicit fit applies one
 uniform scale; no source mesh edit, material union or structural joint is inferred.
 With `auto_align:true`, attachment derives this transform from `alignment_options`
 rather than using a supplied manual transform.
+
+CFD `physics_model` is `euler` (default) or `laminar`. Euler uses inviscid slip
+walls. Experimental Laminar adds conservative Newtonian viscous momentum/energy
+flux, Sutherland air viscosity and Fourier conduction with Prandtl number 0.72.
+Its stationary no-slip wall is adiabatic: wall mass/energy flux is zero and
+kinetic dissipation becomes internal energy. Neither model includes transition,
+turbulence closure or wall functions. Acoustic plus viscous/thermal rates set
+the Laminar explicit CFL step; a separate diffusion-only bound is insufficient.
 
 CFD `mode` is `steady` (default) or `transient`. Steady runs stop only at
 numerical convergence or cancellation. Transient runs integrate positive
@@ -127,6 +144,45 @@ Job polling exposes the same mode distinction; ordinary jobs use
 bounded actual-time `transient.frames` with field arrays and frame-specific
 freestream pressure/velocity, altitude and flight time. No intermediate flow
 states are inferred by the frontend.
+
+Laminar steady convergence additionally requires area-weighted full wall-viscous
+traction steadiness (`wall_viscous_residual`) using its reported independent
+`viscous_convergence_scale_pa`. Total pressure-plus-viscous force/moment rates
+also participate. All five rates must remain below tolerance for 20 steps after
+the minimum flow time; the convergence ETA requires decline in every active
+rate, including viscous traction.
+
+Compatibility fields `summary.force_n`, `pressure_drag_n` and
+`moment_about_origin_nm` remain **pressure-only**. Laminar adds
+`viscous_force_n`, `viscous_drag_n`, `viscous_moment_about_origin_nm`,
+`total_force_n`, `total_drag_n`, `total_moment_about_origin_nm`,
+`max_wall_shear_stress_pa`, `wall_heat_flux_w_m2:0`,
+`viscous_force_steady` and `viscous_force_validated:false`.
+Each Laminar surface row additionally contains `viscous_traction_pa:[x,y,z]`,
+tangential `shear_traction_pa:[x,y,z]`, `shear_stress_pa`,
+`total_traction_pa:[x,y,z]` and `wall_fluid_temperature_k`.
+Normals point from solid to fluid: total traction is
+`-(pressure_pa-freestream_pressure_pa)*normal + viscous_traction_pa`.
+This fluid-wall traction is not material/structural stress.
+
+Laminar transient frames carry corresponding force/drag/moment values and
+`surface_viscous_traction_pa`, `surface_shear_traction_pa`,
+`surface_shear_stress_pa`, `surface_total_traction_pa` and
+`surface_wall_fluid_temperature_k` arrays aligned with shared surface topology.
+The renderer selects actual stored frames rather than borrowing final-frame
+loads. `summary.transport` contains initial-freestream viscosity, kinematic
+viscosity, conductivity, Prandtl number, reference length/Reynolds number and
+`estimated_numerical_to_molecular_diffusivity_ratio`. It explicitly identifies
+`reference_time_s:0`; changing launch boundaries can subsequently differ.
+The ratio is the characteristic first-order Rusanov estimate
+`0.5*(sound_speed+speed)*maximum_spacing/(mu/rho)`, not an error bound or
+proof of boundary-layer resolution. Numerical diffusion can dominate molecular
+transport on typical rocket grids; viscous loads remain unvalidated.
+
+CFD-to-FEA transfer remains pressure-only for either physics model. It omits
+computed viscous/shear traction and records that limitation. Both models share
+the exterior-connected-air flow mask and preserve source CAD, mass and FEA
+geometry. Sealed interiors generate no fluid-wall traction faces.
 
 Preflight `can_run` concerns current solid-validity/thickness/resource checks,
 not validated FEA loading/supports. Original thin parts retain mesh size no
@@ -165,7 +221,7 @@ force/CG/CP), flight (launch job + playback/timeline/events/graphs), structures
 ## Portable settings and run provenance
 
 `Project.analysis_settings` stores validated conditions, extensible JSON option
-dictionaries for CFD/FEA/studies, and the study mode. Older schema-1 projects
+dictionaries for flight/CFD/FEA/studies, and the study mode. Older schema-1 projects
 receive defaults; saving with this version includes these fields. The UI restores
 and autosaves them, and flushes pending settings before saving a project or
 starting a calculation. Display units never change their SI values. Settings
@@ -183,6 +239,25 @@ assets, transforms and settings, while the separate geometry signature binds
 only aerodynamic shape. These records support reproducibility, not physical
 validation. Jobs/results remain session-local; export them before closing.
 
+`Conditions` adds `flight_model:point_mass|rigid_body`,
+`initial_angular_velocity_body_rad_s`, `wind_model:legacy_gust|dryden`,
+`turbulence_length_scale_m`, fixed `turbulence_transport_speed_m_s`,
+`turbulence_sample_interval_s`, `wind_reference_height_m`,
+`wind_shear_exponent` and ordered nonoverlapping `wind_events`.
+An event contains `time_s,wind_speed,wind_direction,turbulence,transition_s` and
+optional `temperature_delta`; null temperature preserves the preceding offset.
+`FlightConfiguration` adds drogue/main inflation durations, optional supplied Cmq
+and a symmetric positive-definite complete dry inertia tensor with required
+source text. See [PHYSICS.md](PHYSICS.md) for frames and physical assumptions.
+
+Flight job `options.structural_mode` is `quasi_static` or `dynamic_fins`.
+Dynamic fin options/limits are in [STRUCTURAL.md](STRUCTURAL.md). The job attaches
+aligned `dynamic_stress`/`dynamic_structural_components` without rewriting default
+estimates and retains `dynamic_structural_analysis` metadata. Completion of the
+flight job is separate from structural coverage or an unfinished work-limited
+structural pass; unsupported fields remain null. Quaternion/rate/inertia/moment
+fields are present for rigid-body rows only, not fabricated for point-mass runs.
+
 Pressure-transfer FEA also records `inputs.cfd_source`, including the source run's
 inputs and mesh/wall-field hashes. A run input project contains the source job ID,
 not its complete solved CFD field. That ID expires across sessions: export the
@@ -195,13 +270,18 @@ the underlying solver's limits. Sweeps share a gust seed to change one input at
 a time; Monte Carlo uses its recorded study seed for sampling and distinct gust
 seeds per sample. Flight speed/Mach are integrated outputs and cannot be swept as
 independent flight inputs. Static angle-of-attack flight sweeps vary the structural
-reference loading angle; this point-mass model does not integrate attitude.
+reference loading angle; rigid-body incidence is an integrated result rather than
+an independently prescribed static angle.
 Failed samples are reported and excluded from statistics. Completed runs outside
 method limits remain visibly flagged estimates in the exported rows.
 
 Current scientific scope: Barrowman small-angle stability and documented Mach
-corrections up to 2; passive point-mass trajectory with rail/apogee/main events;
-beam/fin calculations and tetrahedral linear static FEA with defined root clamp;
-experimental compressible inviscid Cartesian Euler CFD. Euler is NOT RANS or
-viscous CFD and does NOT predict skin friction or validated transonic drag.
+corrections up to 2; passive point-mass or small-angle quaternion rigid-body
+trajectory with rail/apogee/main events, Dryden/shear and causal wind schedules;
+beam/fin estimates, original-fin dynamic beam FEA and tetrahedral linear static
+FEA with defined root clamp;
+experimental compressible Cartesian CFD with default inviscid Euler and optional
+resolved laminar Navier–Stokes. Neither CFD model is RANS/LES or predicts
+validated transonic/high-Reynolds-number rocket drag. Euler omits skin friction;
+Laminar molecular transport does not establish boundary-layer resolution.
 Explicit unsupported component and solver limitations must be visible.

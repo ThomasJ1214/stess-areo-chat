@@ -33,6 +33,8 @@ class CfdProgress:
         self.observations = deque(maxlen=32)
         self.phase = None
         self.stage = None
+        self.physics_model = None
+        self.residual_names = _RESIDUALS
 
     def update(self, event: dict) -> dict:
         result = {
@@ -40,9 +42,13 @@ class CfdProgress:
             "eta_basis": None, "eta_confidence": None,
         }
         phase, stage = event.get("phase"), event.get("comparison_stage")
-        if stage != self.stage or phase == "voxelization":
+        physics_model = event.get("physics_model", "euler")
+        if stage != self.stage or phase == "voxelization" or physics_model != self.physics_model:
             self.observations.clear()
         self.phase, self.stage = phase, stage
+        self.physics_model = physics_model
+        self.residual_names = (_RESIDUALS + ("wall_viscous_residual",)
+                               if physics_model == "laminar" else _RESIDUALS)
         if phase != "integration" or event.get("done"):
             return result
         elapsed = _finite(event.get("integration_elapsed_seconds"))
@@ -50,7 +56,7 @@ class CfdProgress:
         steps = _finite(event.get("integration_steps"))
         if elapsed is None or physical is None or steps is None or min(elapsed, physical, steps) < 0:
             return result
-        point = (elapsed, physical, steps, tuple(_finite(event.get(name)) for name in _RESIDUALS))
+        point = (elapsed, physical, steps, tuple(_finite(event.get(name)) for name in self.residual_names))
         if self.observations and elapsed <= self.observations[-1][0]:
             return result
         self.observations.append(point)
@@ -105,7 +111,7 @@ class CfdProgress:
         sxx = float(np.dot(centered, centered))
         if sxx <= 0:
             return result
-        for index in range(len(_RESIDUALS)):
+        for index in range(len(self.residual_names)):
             values = [value[3][index] for value in trend_points]
             if any(value is None or value < 0 for value in values):
                 return result

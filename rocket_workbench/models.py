@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 from uuid import uuid4
+import math
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -117,6 +118,48 @@ class FlightConfiguration(Model):
     ignition_delay: float = Field(default=0, ge=0)
     primary_deploy_event: Literal["apogee", "motor_ejection"] = "apogee"
     motor_ejection_delay: float | None = Field(default=None, ge=0)
+    drogue_inflation_time: float = Field(default=0, ge=0, le=60, description="User-assumed linear Cd-area inflation duration in seconds; zero is instantaneous.")
+    main_inflation_time: float = Field(default=0, ge=0, le=60, description="User-assumed linear Cd-area inflation duration in seconds; zero is instantaneous.")
+    inertia_override_kg_m2: list[list[float]] | None = Field(default=None, description="Complete DRY rocket tensor about dry CG in nose-body axes [+nose,+geometryY,-geometryZ]; remaining propellant adds a motor-cylinder estimate.")
+    inertia_override_source: str = ""
+    pitch_damping_coefficient: float | None = Field(default=None, le=0, description="User/source-supplied nonpositive Cmq for pitch and yaw; normalized rate omega*reference_length/(2*airspeed). None applies no empirical damping.")
+
+    @model_validator(mode="after")
+    def validate_inertia(self):
+        tensor = self.inertia_override_kg_m2
+        if tensor is None:
+            return self
+        if len(tensor) != 3 or any(len(row) != 3 for row in tensor):
+            raise ValueError("Inertia override must be a 3 by 3 tensor.")
+        if not all(math.isfinite(value) for row in tensor for value in row):
+            raise ValueError("Inertia tensor entries must be finite.")
+        scale = max(abs(value) for row in tensor for value in row)
+        if any(abs(tensor[i][j] - tensor[j][i]) > max(1e-12, scale*1e-10) for i in range(3) for j in range(3)):
+            raise ValueError("Inertia tensor must be symmetric.")
+        # Scaling avoids overflowing determinant tests for otherwise finite
+        # entries. Principal moments of a positive-mass distribution must also
+        # satisfy the triangle inequality; SPD alone permits impossible tensors.
+        import numpy as np
+        if scale == 0:
+            raise ValueError("Inertia tensor must be positive definite.")
+        normalized = np.asarray(tensor, dtype=float) / scale
+        moments = np.linalg.eigvalsh((normalized + normalized.T) / 2)
+        if moments[0] <= 0:
+            raise ValueError("Inertia tensor must be positive definite.")
+        if moments[2] > moments[0] + moments[1] + 1e-10:
+            raise ValueError("Inertia tensor principal moments must satisfy the physical triangle inequality (largest moment cannot exceed the sum of the other two).")
+        if not self.inertia_override_source.strip():
+            raise ValueError("An inertia override requires a nonempty measurement/source description.")
+        return self
+
+
+class WindEvent(Model):
+    time_s: float = Field(ge=0)
+    wind_speed: float = Field(ge=0, le=150)
+    wind_direction: float = Field(ge=0, le=360)
+    turbulence: float = Field(ge=0, le=1)
+    transition_s: float = Field(default=1, ge=0, le=60)
+    temperature_delta: float | None = Field(default=None, ge=-80, le=80)
 
 
 class Conditions(Model):
@@ -135,11 +178,33 @@ class Conditions(Model):
     dt: float = Field(default=0.025, ge=0.001, le=0.2)
     max_time: float = Field(default=300, gt=0, le=1200)
     seed: int = Field(default=42, ge=0)
+    flight_model: Literal["point_mass", "rigid_body"] = "point_mass"
+    initial_angular_velocity_body_rad_s: list[float] = Field(default_factory=lambda: [0, 0, 0], min_length=3, max_length=3)
+    wind_model: Literal["legacy_gust", "dryden"] = "legacy_gust"
+    turbulence_length_scale_m: float = Field(default=50, gt=0)
+    wind_reference_height_m: float = Field(default=10, gt=0)
+    wind_shear_exponent: float = Field(default=0, ge=0, le=1)
+    turbulence_sample_interval_s: float = Field(default=0.02, gt=0, le=0.2)
+    turbulence_transport_speed_m_s: float | None = Field(default=None, gt=0)
+    wind_events: list[WindEvent] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_wind_events(self):
+        for event in self.wind_events:
+            if event.time_s > self.max_time:
+                raise ValueError("Wind event time must not exceed maximum simulation time.")
+        for previous, current in zip(self.wind_events, self.wind_events[1:]):
+            if current.time_s <= previous.time_s:
+                raise ValueError("Wind event times must increase strictly.")
+            if current.time_s < previous.time_s+previous.transition_s:
+                raise ValueError("Scheduled wind-event transition windows must not overlap.")
+        return self
 
 
 class AnalysisSettings(Model):
     """Portable solver inputs; optional option dictionaries preserve solver extensibility."""
     conditions: Conditions = Field(default_factory=Conditions)
+    flight_options: dict[str, JsonValue] = Field(default_factory=dict)
     cfd_options: dict[str, JsonValue] = Field(default_factory=dict)
     fea_options: dict[str, JsonValue] = Field(default_factory=dict)
     study_options: dict[str, JsonValue] = Field(default_factory=dict)

@@ -24,7 +24,7 @@ launch level (AGL); `altitude_msl` also includes the geometric launch altitude.
 The target is passive, single-stage, single-motor high-power rockets through Mach
 2, including single or dual deployment. Multistage, clustered motors, parallel
 stages, pod assemblies, active guidance, and custom ignition/deployment event
-semantics are rejected by the point-mass solver. Imported unsupported components
+semantics are rejected by both flight solvers. Imported unsupported components
 remain visible and are identified in warnings. Speeds above Mach 2 are explicitly
 out of scope; the trajectory may complete using extrapolated estimates, but its
 validity flag is false. A point-mass solver cannot determine if a rocket tumbles.
@@ -170,8 +170,8 @@ Its transonic/supersonic drag is not validated for the user's exact rocket.
 Replacing an external ORK component updates actual solid mass and CG. Empirical
 drag/CP still describe the **original reference shape**, and the result exposes
 `cp_valid=false`, `cad_resolved=false` and a visible warning. Rendering a detailed
-mesh does not create physical aerodynamic coefficients. Mesh-resolved Euler CFD
-is a separate solver with its own inviscid/pressure-only and convergence limits;
+mesh does not create physical aerodynamic coefficients. Mesh-resolved CFD
+is a separate solver with its own Euler/laminar and convergence limits;
 see [CFD.md](CFD.md). It is not silently used to overwrite flight coefficients.
 
 Users may explicitly import a Mach table with `mach,cd,cna,cp_m` and provenance.
@@ -217,7 +217,7 @@ stability-based step cap (including large supplied Cd and light vehicles);
 user `dt` is an upper bound. A thrust curve ending at nonzero measured thrust uses
 left/right limits at burnout so an extra numerical impulse is not introduced.
 
-After rail exit, the thrust axis follows inertial velocity, giving a passive
+In the default point-mass model, after rail exit the thrust axis follows inertial velocity, giving a passive
 point-mass gravity turn. It does **not** solve attitude, angular rates, restoring
 moments, weathercocking, sideslip, fin loading angle through flight, or instability
 tumbling. Flight drag uses zero-incidence reference coefficients; entered static
@@ -230,19 +230,20 @@ may occur during ascent; its event is independently recorded. Single deployment
 applies main canopy Cd×area at the selected primary event. Dual deployment
 applies drogue then main at the specified descending AGL altitude. If the rocket
 is already below main altitude at delayed drogue deployment, main deploys
-immediately. Recovery uses constant fully deployed Cd×area; canopy inflation,
-opening shock, cord loads, separated components and pendulum motion require a
-different model. `max_acceleration` is the sampled maximum inertial magnitude
-over the whole flight, including the idealized canopy-force step; it should not
-be treated as a resolved recovery opening shock.
+immediately. Optional drogue/main inflation durations ramp effective Cd×area
+linearly from the preceding canopy area to the target area. Zero duration retains
+the original instantaneous deployment. This is a user-assumed inflation law:
+opening shock, line stretch, cord loads, separated components and pendulum motion
+are not solved. Exported `recovery_inflation_fraction`, `recovery_cd_area_m2` and
+`canopy_load_n` describe that lumped drag calculation. `max_acceleration` is the
+sampled maximum inertial magnitude over the whole flight; it should not be treated
+as a resolved recovery opening shock.
 An imported configuration without supported, positive-Cd×area recovery is marked
 undefined and cannot silently use the application's default canopy values. The
 user must enter and confirm a recovery setup before flight is allowed.
 
-Uniform wind uses the supplied toward azimuth. Turbulence is a deterministic
-seeded sum of three smooth sinusoidal gust frequencies (.23, .71, 1.9 Hz) on each
-axis with amplitude tied to wind speed/intensity (1 m/s floor). It supports
-repeatable sensitivity studies, not a calibrated Dryden/von Karman wind spectrum.
+Uniform wind uses the supplied toward azimuth. Wind models and causal changes
+are documented below; both flight solvers use the same reproducible field.
 
 Events include ignition, liftoff, rail exit, burnout, apogee, drogue/main deployment,
 max acceleration, max Q, max velocity, max airspeed, max Mach, max specific
@@ -265,7 +266,7 @@ axial inertial stress based on forward component masses. Inertial input uses
 specific acceleration `|dv/dt - g_vector|`: a vacuum ballistic freefall has zero
 applied acceleration load, rather than incorrectly treating gravity as stress.
 Every row labels these as quasi-static estimates; absent support returns null.
-They are not transient FEA, aeroelasticity, recovery shock, joint loads, laminate
+These default estimates are not transient FEA, aeroelasticity, recovery shock, joint loads, laminate
 failure or a material fatigue calculation. Imported total polar coefficients do
 not supply component pressure/load distributions, so structural load estimates
 retain their original-reference limitations.
@@ -274,8 +275,95 @@ Every trajectory row also records actual body drag, recovery drag, thrust,
 gravity and ideal rail/pad reaction vectors in world east/north/up axes.
 Their resultant equals mass times the recorded inertial acceleration; gravity
 is excluded from specific acceleration. Body/recovery drag are separated so
-the instantaneous canopy-load assumption remains visible. Flight graphs offer
+the selected canopy-inflation assumption remains visible. Flight graphs offer
 overview, loads/stress and wind/air groups using those calculated samples.
+
+An optional **Dynamic fin beam FEA** pass integrates real mass/stiffness matrices
+against the recorded flight loads. It writes separate `dynamic_stress` and
+`dynamic_structural_components` fields without replacing the default estimates.
+See [STRUCTURAL.md](STRUCTURAL.md) for supported geometry, load provenance,
+missing intervals, damping and model limits.
+
+## Experimental rigid-body flight
+
+Selecting `flight_model:rigid_body` integrates position, velocity, Hamilton
+quaternion and three body angular rates. Body axes are [+nose,+geometryY,
+−geometryZ]; a `[w,x,y,z]` quaternion maps this right-handed frame to world
+east/north/up. The rail constrains translation and attitude until root-located
+rail exit; entered initial angular rates are applied at that release. The
+integrator uses RK4 step doubling, relative tolerance 10⁻⁷, position/velocity
+absolute tolerance 10⁻⁵, quaternion tolerance 10⁻⁸ and rate tolerance 10⁻⁷ rad/s.
+It normalizes accepted quaternions and reports numerical diagnostics.
+
+Drag opposes actual air-relative velocity. Small-angle normal force opposes its
+component transverse to the nose, with magnitude q A CNa α. Its moment is the
+cross product of the actual CP-to-CG arm and force. Thrust acts along the nose
+from the assigned motor center. Euler's body equation is
+`I ω̇ = M − ω × (I ω)`; quaternion kinematics use `q̇ = ½ q ⊗ [0,ω]`.
+Optional supplied Cmq adds pitch/yaw damping using rate scale ωL/(2V). Missing
+Cmq means **zero empirical damping**, with a visible warning. No invented roll,
+fin-cant, roll-damping or post-stall coefficients are applied.
+
+Closed component mesh volume moments are normalized to assigned masses and
+combined about the actual three-dimensional dry CG. Unresolved hardware uses
+disclosed point-mass/cylinder surrogates. A measured symmetric positive-definite
+dry tensor can replace this estimate; supply its provenance. Principal moments
+must also satisfy the physical triangle inequality. Closed topology alone is
+insufficient: imported meshes marked as ambiguous material volume cannot supply
+trusted volume moments and receive disclosed fallback estimates. The override is
+about the **complete dry rocket's dry CG**, expressed in nose-body axes, in kg m².
+The motor's remaining propellant adds a uniform cylinder at its fixed center;
+the tensor and CG are recentered as propellant burns. This assumes co-rotating
+symmetric mass removal and omits jet damping, grain geometry and slosh. It is not
+a measured variable-mass exhaust angular-momentum model.
+
+The aerodynamic slopes remain preliminary reference coefficients. Unrecovered
+free flight stops at the first 10° resultant-incidence crossing when the
+normal force at that boundary exceeds 1% of weight. The result is explicitly
+partial with an aerodynamic-model-limit event; it does not predict a tumble.
+At smaller loads, on the rail, or under recovery, unsupported high-incidence
+normal forces/moments are omitted and the limits remain visible. Recovery is
+lumped drag at CG, with no suspension or canopy attitude moment model. Supplied
+total polar coefficients do not establish detailed component loading.
+
+Actual quaternions, rates, inertia, moments, forces and component reference loads
+are exported. The viewer interpolates position/wind and uses quaternion SLERP
+only to render smooth playback; numeric inspectors remain tied to saved solver
+samples. Point-mass attitude remains labelled illustrative. Launch-driven CFD
+uses the solved attitude when available to transform freestream into CAD axes,
+but keeps geometry fixed and omits moving walls, rotating-frame forces and
+two-way CFD/flight feedback.
+
+## Wind, gusts and changes during flight
+
+The default `legacy_gust` retains three seeded smooth sinusoidal frequencies
+(.23, .71, 1.9 Hz). Optional `dryden` uses a stationary Gaussian temporal
+surrogate with length L and fixed transport speed V. Let a=V/L. Its normalized
+filters are `H_u=√(2a)/(s+a)` and
+`H_v=H_w=√a(√3s+a)/(s+a)²`. Each axis is scaled to the entered turbulence
+intensity times max(1 m/s, mean wind speed). Equal-axis RMS is a user assumption,
+not an altitude-dependent military weather standard.
+
+Exact stationary state/covariance transitions generate the fixed seeded sample
+grid (default 0.02 s); queries interpolate that realization without advancing
+random state. Adaptive-step order therefore cannot rewrite prior gusts. The
+fixed transport speed defaults to max(1 m/s, initial wind speed); the longitudinal
+direction is the initial horizontal wind axis. This is not a three-dimensional
+spatial field, resolved turbulence, von Kármán model or variable-encounter-speed
+Dryden simulation. A sample/correlation-scale study is necessary before using
+high-frequency gust loads. Optional mean/gust power-law shear scales velocity
+by `(AGL/reference_height)^exponent`; exponent zero preserves uniform wind.
+
+Scheduled `wind_events` specify start time, toward azimuth, speed, turbulence,
+transition duration and optional temperature offset. They must be strictly
+ordered and nonoverlapping. Mean wind vectors, gust RMS and temperature change
+causally across each interval; the same seeded gust realization and earlier
+physical history are retained. The integrators split at event boundaries.
+The live panel pauses playback, adds a future change at the selected flight
+time, recalculates the actual trajectory and resumes there. It never edits saved
+result samples to simulate a wind change. Design/geometry changes require a
+fresh launch. Adaptive output timestamps can differ near a newly introduced
+event; causality does not promise byte-identical exported rows.
 
 ## Validation performed and references
 

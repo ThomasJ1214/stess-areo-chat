@@ -40,6 +40,8 @@ class JobManager:
         if kind not in {"flight", "cfd", "fea", "sweep", "monte_carlo", "comparison"}:
             raise ValueError("Unknown simulation kind")
         options = copy.deepcopy(options or {})
+        if kind == "flight" and options.get("structural_mode", "quasi_static") not in {"quasi_static", "dynamic_fins"}:
+            raise ValueError("Flight structural mode must be quasi_static or dynamic_fins.")
         progress_basis = "completion_fraction"
         uses_cfd = kind == "cfd" or kind == "comparison" and bool(options.get("use_cfd"))
         if uses_cfd:
@@ -58,7 +60,9 @@ class JobManager:
         snapshot = project.model_copy(deep=True)
         snapshot.active_configuration_id = configuration_id or project.active_configuration_id
         snapshot.analysis_settings.conditions = conditions.model_copy(deep=True)
-        if kind == "cfd":
+        if kind == "flight":
+            snapshot.analysis_settings.flight_options = copy.deepcopy(options)
+        elif kind == "cfd":
             snapshot.analysis_settings.cfd_options = copy.deepcopy(options)
         elif kind == "fea":
             snapshot.analysis_settings.fea_options = copy.deepcopy(options)
@@ -84,9 +88,12 @@ class JobManager:
                 if prior.get("geometry_signature") != signature or _physical_project_hash(source_project) != _physical_project_hash(snapshot):
                     raise ValueError("Rocket configuration, motor, recovery or geometry changed after this launch. Recompute the launch before using its history.")
                 source_conditions = prior["result"].get("inputs", {}).get("conditions", {})
-                launch_fields = ("altitude", "wind_speed", "wind_direction", "turbulence", "temperature_delta",
-                                 "rail_length", "launch_angle", "launch_azimuth", "dt", "max_time", "seed")
-                if any(source_conditions.get(name) != getattr(conditions, name) for name in launch_fields):
+                # Aerodynamic bench inputs do not drive the launch. Every other
+                # declared condition, including attitude/wind/event models, does.
+                launch_fields = set(Conditions.model_fields) - {"speed", "mach", "angle_of_attack", "sideslip"}
+                defaults = Conditions().model_dump(mode="json")
+                current_conditions = conditions.model_dump(mode="json")
+                if any(source_conditions.get(name, defaults[name]) != current_conditions[name] for name in launch_fields):
                     raise ValueError("Launch conditions changed after this flight. Recompute the launch to drive CFD with the current conditions.")
                 flight_result = copy.deepcopy(prior["result"])
                 flight_source = {"job_id": prior["id"], "generated_for_cfd": False,
@@ -123,6 +130,10 @@ class JobManager:
                 cfd_freestream_pressure_pa=cfd["summary"]["freestream_pressure_pa"],
                 cfd_cell_spacing_m=cfd["summary"]["cell_spacing_m"],
                 cfd_fidelity=cfd["fidelity"], cfd_warnings=cfd["warnings"])
+            if cfd["summary"].get("physics_model") == "laminar":
+                options["cfd_warnings"] = list(options["cfd_warnings"]) + [
+                    "This FEA transfer applies scalar gauge pressure only. Laminar CFD viscous normal/tangential traction is excluded; the structural result is not a total-traction solution."
+                ]
         with self.lock:
             if self.closed:
                 raise RuntimeError("Simulation workers are shutting down.")
@@ -228,7 +239,33 @@ class JobManager:
         try:
             if kind == "flight":
                 from .solvers.flight import simulate
-                result = simulate(project, conditions, configuration_id, progress, cancelled)
+                dynamic_fins = options.get("structural_mode", "quasi_static") == "dynamic_fins"
+                flight_progress = (lambda fraction, message: progress(.55 * fraction, message)) if dynamic_fins else progress
+                result = simulate(project, conditions, configuration_id, flight_progress, cancelled)
+                if dynamic_fins:
+                    from .solvers.flight_structure import analyze_flight_structure
+                    structural = analyze_flight_structure(project, result["trajectory"], configuration_id, options,
+                        lambda fraction, message: progress(.55 + .44 * fraction, message), cancelled)
+                    structural_rows = structural.pop("trajectory")
+                    if len(structural_rows) != len(result["trajectory"]):
+                        raise RuntimeError("Dynamic fin analysis did not return one state for each actual flight timestamp.")
+                    for row, response in zip(result["trajectory"], structural_rows):
+                        if abs(row["time"] - response["time"]) > 1e-10:
+                            raise RuntimeError("Dynamic fin analysis timestamps disagree with the actual flight trajectory.")
+                        row["dynamic_stress"] = response["max_stress_pa"]
+                        row["dynamic_structural_components"] = response["components"]
+                        row["dynamic_stress_fidelity"] = structural["fidelity"]
+                    result["dynamic_structural_analysis"] = structural
+                    result["warnings"] = list(dict.fromkeys(result.get("warnings", []) + structural.get("warnings", [])))
+                    candidates = [(index, row["dynamic_stress"]) for index, row in enumerate(result["trajectory"])
+                                  if row["dynamic_stress"] is not None]
+                    if candidates:
+                        index, value = max(candidates, key=lambda item: item[1])
+                        result["summary"]["max_dynamic_fin_stress_pa"] = value
+                        result["events"].append({"name": "max_dynamic_fin_stress", "time": result["trajectory"][index]["time"], "index": index})
+                        result["events"].sort(key=lambda event: event["time"])
+                    else:
+                        result["summary"]["max_dynamic_fin_stress_pa"] = None
             elif kind == "cfd":
                 from .solvers.cfd import solve
                 profile = None
