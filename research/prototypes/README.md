@@ -14,3 +14,8 @@ Neither has independent validation or production integration.
 No thin-shell/plate or higher-order CFD capability should be advertised from
 these files. Preserve the existing solid-FEA thickness guards and current CFD
 accuracy warnings until verified replacements are integrated.
+
+Initial rectangular plate references are now repeatable through
+`../validate_plate_draft.py`; see [the evidence and remaining limits](../PLATE_REFERENCE.md).
+The prototype still has no application integration. The MUSCL draft remains
+unvalidated.
