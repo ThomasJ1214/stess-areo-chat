@@ -49,6 +49,16 @@ def navier_center(young, poisson, thickness, pressure, terms=101):
 
 
 def geometric_references(draft, young, poisson):
+    rejected = 0
+    for invalid in ([[0, 0], [1, 0], [.45, .45], [0, 1]],
+                    [[0, 0], [1, 1], [1, 0], [0, 1]],
+                    [[0, 0], [1, 0], [1, 0], [0, 1]]):
+        try:
+            draft['mitc4_matrices'](invalid, young, poisson, .01)
+        except ValueError:
+            rejected += 1
+        else:
+            raise AssertionError('Concave, crossed or duplicate-corner element was accepted')
     patches = []
     for xy in (np.array([[0., 0.], [1., .1], [1.2, .8], [-.1, 1.]]),
                np.array([[0., 0.], [1., 0.], [.7, .6], [.1, .5]])):
@@ -84,7 +94,7 @@ def geometric_references(draft, young, poisson):
         expected = abs(np.sum(polygon[:, 0]*np.roll(polygon[:, 1], -1)-polygon[:, 1]*np.roll(polygon[:, 0], -1)))/2
         assert abs(area/expected-1) < 1e-12
         meshes.append(dict(planform=polygon.tolist(), nodes=len(xy), elements=len(quads), area_m2=area))
-    return dict(distorted_constant_curvature_patches=patches, conforming_planform_meshes=meshes)
+    return dict(invalid_quadrilaterals_rejected=rejected, distorted_constant_curvature_patches=patches, conforming_planform_meshes=meshes)
 
 
 def main():

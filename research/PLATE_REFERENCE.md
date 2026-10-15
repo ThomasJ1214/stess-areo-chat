@@ -15,10 +15,13 @@ receipt to `build/research-plate-reference.json`. An assertion failure gives a
 nonzero exit status; generated receipts are not committed.
 
 On 2026-10-15, draft SHA-256
-`6bfc0957fbf149d621daeb6f33e818a3d8a1fbce107ea58a65a4eea410d71102`
+`6eeefd01ec5fa51f00a874bf80aba28790c49fabb76d8377ea64dff9b205c30a`
 passed three rigid modes, element rank, constant cylindrical curvature energy,
 12 square-plate mesh/thickness cases, two distorted-element constant-curvature
-patches and triangle/trapezoid mesh area/boundary/manifold checks. The independent Navier Fourier series
+patches, triangle/trapezoid mesh area/boundary/manifold checks, and rejection of
+concave, crossed and duplicate-corner elements. A concave element with positive
+Jacobian determinants at the Gauss points was accepted by the earlier draft;
+explicit corner convexity checks now reject it. The independent Navier Fourier series
 includes bending and transverse shear for a hard simply supported unit square:
 transverse displacement and tangential rotation constrained on each edge.
 Only constraining displacement is a different support problem and must not be
