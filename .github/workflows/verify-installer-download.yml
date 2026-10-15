@@ -29,7 +29,7 @@ permissions:
 jobs:
   verify:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Validate requested source run and release identity
@@ -52,6 +52,29 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('run_id=' + $env:REQUESTED_RUN_ID)
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('version=' + $env:REQUESTED_VERSION)
           Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('source_commit=' + $env:REQUESTED_SOURCE_COMMIT.ToLowerInvariant())
+      - name: Wait for the selected source build and verify its identity
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+          EXPECTED_SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = 'Bearer ' + $env:GH_TOKEN; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          while ($timer.Elapsed.TotalMinutes -lt 20) {
+            $run = Invoke-RestMethod -Uri ('https://api.github.com/repos/${{ github.repository }}/actions/runs/' + $env:SOURCE_RUN_ID) -Headers $headers -TimeoutSec 30
+            if ($run.head_sha -ne $env:EXPECTED_SOURCE_COMMIT -or $run.name -ne 'Windows offline installer') {
+              throw 'Selected source run does not match the expected installer workflow and exact source commit.'
+            }
+            if ($run.status -eq 'completed') {
+              if ($run.conclusion -ne 'success') { throw ('Source installer build ended with ' + $run.conclusion) }
+              break
+            }
+            Write-Output ('Source installer build is ' + $run.status + '; waiting for its uploaded original artifact.')
+            Start-Sleep -Seconds 30
+          }
+          if ($run.status -ne 'completed' -or $run.conclusion -ne 'success') { throw 'Verification wait expired before the source installer build completed.' }
       - name: Download the existing installer artifact
         uses: actions/download-artifact@v4
         with:
