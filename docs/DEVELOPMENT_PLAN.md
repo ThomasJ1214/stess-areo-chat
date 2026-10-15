@@ -54,10 +54,12 @@ separate engineering validation includes:
   with complete conditions, motor/recovery data and quantitative error metrics.
 - RANS or other validated viscous compressible CFD, boundary layers, turbulence
   closure, improved body-fitted meshing and transonic/shock grid convergence.
-- Six-degree-of-freedom flight, attitude and aerodynamic moments, weathercocking,
-  damping derivatives, gust spectra and aeroelastic coupling.
-- Composite laminates, shell buckling, nonlinear/contact/transient FEA, recovery
-  shock and fin flutter with mesh/time-step studies.
+- Validation of the experimental rigid-body small-angle moments, measured inertia
+  and damping derivatives; high-incidence/roll aerodynamics, spatial gust fields,
+  actual weather/flight correlation and aeroelastic coupling. Temporal Dryden
+  gusts and original-fin beam dynamics now have independent model checks.
+- Composite laminates, shell buckling, nonlinear/contact/whole-rocket transient
+  FEA, rotating-base loads, recovery shock and fin flutter with mesh/time-step studies.
 - Genuine multistage/cluster/pod event semantics and more complete OpenRocket
   feature parity, tested against real versioned project fixtures.
 - Preserved CAD solid topology and richer assembly/material mapping when needed.

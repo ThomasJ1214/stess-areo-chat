@@ -7,8 +7,9 @@ replace selected parts with detailed geometry, and compare results. Work happens
 locally; engineering calculations and saved projects work offline. An optional
 user-requested motor search retrieves real curve data from ThrustCurve.org.
 
-The implementation distinguishes fast engineering estimates, a point-mass flight
-model, experimental inviscid CFD, and linear static solid FEA. Results and warnings
+The implementation distinguishes fast engineering estimates, point-mass and
+experimental rigid-body flight, Euler/laminar CFD, dynamic fin beam FEA and
+linear static solid FEA. Results and warnings
 identify the method used. This is a design and learning tool: matching a maximum
 Mach setting does not establish validated supersonic accuracy.
 
@@ -57,6 +58,10 @@ to keep the controls and results you need visible.
 
 ## What is implemented
 
+The table describes the 0.3.2 source. Until its Windows checks finish, the
+verified installer linked above remains 0.3.1; [validation evidence](docs/VALIDATION.md)
+distinguishes source checks from packaged release checks.
+
 | Workflow | Calculation and practical scope |
 | --- | --- |
 | OpenRocket import | `.ork` XML/ZIP/GZIP, hierarchy, component geometry, overrides, configurations, recovery settings, supported motor assignments; import warnings preserve unsupported features |
@@ -65,10 +70,11 @@ to keep the controls and results you need visible.
 | 3D inspection | GPU-rendered scene, component selection, original/replacement geometry, CG/CP and aerodynamic force visualization; resizable/collapsible panels |
 | Motor lookup | Explicit ThrustCurve.org search, curve/source preview and review before import; local ENG/RSE remains available offline |
 | Fast aerodynamics | Standard atmosphere, mass/CG, small-angle Barrowman reference geometry, drag/loading estimates and transparent unvalidated Mach corrections; import signature-bound coefficient CSV |
-| Flight | Passive point-mass launch with error-controlled integration, changing motor mass, single/dual recovery, wind and deterministic gusts; red Launch button, rail/flat-ground scene, playback, load/stress/wind graphs, following camera and north-up landing map |
+| Flight | Passive point-mass or experimental quaternion 6DOF launch, adaptive integration, changing motor mass/inertia, single/dual recovery with assumed inflation, legacy/Dryden gusts and shear; causal live wind/temperature recalculation, smooth playback, actual attitude when solved, following camera and landing map |
+| Dynamic flight structures | Actual original-fin tapered beam mass/stiffness matrices and transient Newmark response to recorded directional/inertial loads; scope/coverage, reactions, stresses, deflection, energy and modal frequencies |
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
 | Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
-| CFD | Experimental 3D compressible inviscid Euler finite volumes; steady-state and actual time-resolved transient modes, launch-driven airflow, saved frame playback, cancellation and qualified ETA; no runtime/step ceilings |
+| CFD | Experimental 3D compressible Euler or laminar Navier–Stokes finite volumes; steady-state and actual transient modes, launch-driven airflow/attitude transforms, saved frame playback, molecular traction diagnostics, cancellation and qualified ETA; no runtime/step ceilings |
 | Pressure-transfer FEA | One-way mapping from a completed, numerically converged and geometry-matched CFD job; mapped coverage/distances are reported |
 | Studies | Parameter/wind sweeps, seeded Monte Carlo, configuration and original/replacement comparisons |
 | Data | Self-contained project JSON with imported mesh assets; simulation JSON/CSV and HTML reports; metric and US customary display units |
@@ -82,19 +88,23 @@ The default fast model retains OpenRocket reference geometry for CP and stabilit
 it flags estimates that do not resolve arbitrary CAD changes. A supplied
 Mach/CD/CNa/CP table can drive current-geometry aerodynamics and flight within
 its Mach coverage. The table is bound to the selected configuration and exact
-geometry; source accuracy still requires independent validation. CFD excludes
-viscosity, skin friction and physical turbulence. Low-Mach pressure drag is
+geometry; source accuracy still requires independent validation. Default Euler
+CFD excludes viscosity and skin friction. Optional laminar CFD computes molecular
+viscous/thermal transport and wall traction, but does not establish resolved
+boundary layers or physical turbulence. Low-Mach pressure drag is
 particularly unreliable with this scheme, even after numerical convergence.
 A cancelled run returns a labeled partial field. Unlimited runtime does not
 guarantee convergence or physical accuracy. Transient launch flow prescribes a
-one-way boundary history around fixed geometry; it does not solve moving-body
-attitude or feedback into flight. Solid FEA may need
+one-way boundary history around fixed geometry; solved attitude transforms the
+freestream but does not create moving walls or feedback into flight. Solid FEA may need
 more elements than the budget permits for whole thin parts; use supported beam/fin
 estimates or a smaller physical CAD part. Shell FEA and region cutting are not
-included. Flight
-does not integrate attitude, weathercocking, active guidance or fin flutter. FEA
-does not model composite layups, yielding, contact, buckling or transient recovery
-shock. Imported unsupported configurations cannot become reliable simulations by
+included. Rigid-body flight integrates attitude with small-angle reference
+moments, stopping rather than predicting unsupported high-incidence flight.
+Roll/cant aerodynamics, active guidance, fin flutter and suspension dynamics are
+not solved. Dynamic fin FEA excludes CAD fins, torsion, rotating-base loads and
+whole-rocket dynamics. FEA does not model composite layups, yielding, contact,
+buckling or transient recovery shock. Imported unsupported configurations cannot become reliable simulations by
 silently omitting their physics.
 
 Read the method-specific documentation before interpreting results:

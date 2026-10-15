@@ -245,7 +245,9 @@ a fresh Windows runner. It requires actual engine, normal-startup CUDA compiler
 and native desktop/WebGL checks. For 0.3.1 and later, it also calculates a launch
 through the installed API and uses that saved launch to drive real transient
 CFD, checking finite fields and changing boundary speeds independently against
-the trajectory's vehicle-minus-wind vectors.
+the trajectory's vehicle-minus-wind vectors. For 0.3.2 and later, it also runs
+`installed_advanced_flight_smoke.ps1`: actual installed rigid-body/Dryden flight,
+causal scheduled wind, original-fin transient FEA and laminar CFD traction checks.
 
 The small `RocketWorkbench-<version>-download-verification` artifact contains
 receipts, not an installer. `scripts/verify_windows_download.ps1` implements the
@@ -305,7 +307,7 @@ check. A live download is service-integration evidence, not motor certification.
 
 Guided tutorials, engineering definitions and the user guide are shipped with
 the frontend. Keep them synchronized with visible control names. Flight animation
-plays the computed point-mass solution; camera/rail/map changes must not introduce
+plays a computed point-mass or rigid-body solution; camera/rail/map changes must not introduce
 engineering equations or invented samples into the frontend. Map coordinates
 and event points of interest are local north/east offsets, not GPS coordinates.
 

@@ -67,6 +67,15 @@ jobs:
           $evidence = Get-Content $receipt -Raw | ConvertFrom-Json
           if ($evidence.status -ne 'ok' -or $evidence.fea_elements -le 0 -or $evidence.flight_samples -le 0) { throw 'Installed engine smoke receipt is incomplete' }
           Get-Content $receipt
+      - name: Test installed 6DOF, causal wind changes, dynamic fin FEM and laminar CFD
+        shell: pwsh
+        run: |
+          $installed = Join-Path $env:RUNNER_TEMP 'RocketWorkbench-installed'
+          $manifest = Get-Content 'build/bundle_manifest.json' -Raw | ConvertFrom-Json
+          & ./scripts/installed_advanced_flight_smoke.ps1 -Executable (Join-Path $installed 'RocketWorkbench.exe') -OutputPath build/installed-advanced-flight-smoke.json -ExpectedVersion $manifest.application_version
+          $evidence = Get-Content 'build/installed-advanced-flight-smoke.json' -Raw | ConvertFrom-Json
+          if ($evidence.status -ne 'ok' -or $evidence.dynamic_fin_fem.substeps -le 0 -or $evidence.laminar_cfd.frame_count -lt 2) { throw 'Installed advanced physics receipt is incomplete' }
+          Get-Content 'build/installed-advanced-flight-smoke.json'
       - name: Test installed bundled CUDA import and offline kernel compiler
         shell: pwsh
         run: |
@@ -116,6 +125,7 @@ jobs:
             build/live-motor-smoke.json
             build/frozen-cuda-bundle-smoke.json
             build/installed-cuda-bundle-smoke.json
+            build/installed-advanced-flight-smoke.json
             build/installed-preferences-smoke.json
             build/installed-preferences-smoke-diagnostics/*
             ${{ runner.temp }}/RocketWorkbench-desktop-smoke/*.log
@@ -134,6 +144,7 @@ jobs:
             build/frozen-smoke.json
             build/frozen-cuda-bundle-smoke.json
             build/installed-engine-smoke.json
+            build/installed-advanced-flight-smoke.json
             build/installed-cuda-bundle-smoke.json
             build/installed-desktop-smoke.log
             build/installed-preferences-smoke.json

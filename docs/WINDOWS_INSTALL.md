@@ -141,7 +141,7 @@ reference estimates with warnings and `polar_applied=false` in exported data.
 Import binds the table to that configuration and exact shape. Shape/alignment
 edits make it stale and require deliberate re-import. That binding establishes
 the selected shape; it cannot verify coefficient accuracy. Results from an
-experimental, unconverged Euler job must not be presented as a validated polar.
+experimental, unconverged Euler/laminar job must not be presented as a validated polar.
 
 ## Apply CFD pressure to structures
 
@@ -154,8 +154,11 @@ FEA receives gauge wall pressures through nearest compatible surface samples.
 It reports mapped area coverage and transfer distances; unmapped faces receive
 zero gauge pressure. Check force resultants and refine the grids. This is a
 one-way, quasi-static load transfer, not coupled fluid-structure interaction or
-transient stress simulation at every launch frame. A numerically converged Euler
-field can still have significant physical-model and discretization error.
+whole-rocket transient stress simulation at every launch frame. The optional
+dynamic original-fin beam pass is a separate model with its own load/support
+limits. Pressure transfer excludes laminar viscous tractions; it does not claim
+to transfer total wall traction. A numerically converged CFD field can still
+have significant physical-model and discretization error.
 
 ## Troubleshooting
 

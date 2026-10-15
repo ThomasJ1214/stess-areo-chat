@@ -1,5 +1,34 @@
 # Validation checkpoint
 
+## 0.3.2 source checkpoint — Windows validation pending
+
+This update adds optional adaptive quaternion/Euler rigid-body flight with actual
+mass-normalized inertia and declared small-angle aerodynamic limits; stationary
+seeded temporal Dryden gusts, optional shear, causal wind/temperature schedules
+and assumed finite canopy inflation. Original-fin dynamics use genuine tapered
+Hermite beam mass/stiffness matrices and complete-basis Newmark integration.
+Experimental laminar CFD adds conservative molecular viscosity/heat conduction
+and real wall tractions, without claiming resolved rocket boundary layers or
+turbulence. Smooth display interpolation changes no engineering samples.
+
+Local verification passed the final **503-test full Python suite** after review
+tightened physical inertia validation and excluded ambiguous CAD volumes from
+inertia estimation. The frontend suite passed **87
+tests**; the production build and native Qt shell/WebGL/API/project startup also
+passed. Independent checks include rigid-body angular momentum/energy, exact
+constant-torque and vacuum-thrust motion, step refinement, dual recovery,
+Dryden covariance/statistics, quaternion profile SLERP consistency, beam static/
+modal/transient references, viscous conservation and adiabatic-wall force/energy.
+These are equation/discretization checks, not measured flight validation.
+
+The PowerShell installed-API procedure passed against the source executable
+wrapper: actual 104/118-row rigid-body trajectories, unchanged physical prefix
+before a scheduled change, 4,571 fin substeps with explicit unavailable rows,
+and four computed launch-driven laminar fields. This verifies the harness;
+frozen/installed Windows execution still requires the Windows workflow.
+Integrated browser and new Windows release results will be recorded after they
+complete. The previously verified 0.3.1 package below remains available.
+
 ## Verified 0.3.1 release
 
 The 0.3.1 changes add error-controlled flight integration and exported force
@@ -342,12 +371,18 @@ fabricated success or automatic configuration assignment.
 ## Remaining engineering limits
 
 No real flight-log/wind-tunnel correlation or validated arbitrary-CAD transonic
-drag benchmark has been completed. Euler CFD lacks viscosity/boundary layers
-and turbulence; its steadiness is separate from grid/domain convergence. FEA is
-isotropic linear static elasticity with declared support/load assumptions;
-pressure transfer is nearest-sample, one-way and not force-conservative. Flight
-is a passive point-mass model without attitude/weathercocking or transient
-recovery shock. Supplied coefficient tables retain their source uncertainty.
+drag benchmark has been completed. Default Euler CFD lacks viscosity; optional
+laminar CFD adds molecular transport but typical rocket grids do not establish
+resolved boundary layers. Neither includes physical turbulence closure.
+Steadiness is separate from grid/domain convergence. Solid FEA is isotropic
+linear static elasticity; dynamic beam FEA supports original fins with declared
+loads/materials/root support, excluding rotating-base forcing, plates/torsion,
+whole-rocket dynamics and flutter. Pressure transfer is pressure-only,
+nearest-sample, one-way and not force-conservative. Optional rigid-body flight
+integrates attitude using small-angle reference moments and explicitly stops at
+meaningful unsupported high incidence. Roll aerodynamics, canopy suspension and
+recovery shock remain absent. Dryden gusts are a seeded temporal surrogate rather
+than measured/resolved weather. Supplied coefficient tables retain their source uncertainty.
 Those model limits remain even when every automated test passes.
 
 

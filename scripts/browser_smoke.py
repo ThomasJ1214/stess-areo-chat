@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import csv
 import hashlib
 import json
+import math
 import re
 import socket
 import subprocess
@@ -503,7 +504,8 @@ def main():
             def seek_camera(time_s):
                 selected_time = timeline.evaluate("(el, time) => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,String(time));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return Number(el.value);}", time_s)
                 target_row = min(flight["trajectory"], key=lambda sample: abs(sample["time"] - selected_time))
-                page.wait_for_function("time => Math.abs(Number(document.querySelector('.viewport').dataset.cameraSampleTime) - time) < 1e-6", arg=target_row["time"], timeout=3000)
+                page.wait_for_function("time => Math.abs(Number(document.querySelector('.viewport').dataset.cameraSampleTime) - time) < 1e-6", arg=selected_time, timeout=3000)
+                assert abs(float(viewport.get_attribute("data-flight-actual-time")) - target_row["time"]) < 1e-8
 
             def camera_snapshot():
                 return viewport.evaluate("el => ({time: Number(el.dataset.cameraSampleTime), position: el.dataset.cameraPosition.split(',').map(Number), ndc: el.dataset.cameraRocketNdc.split(',').map(Number), distance: Number(el.dataset.cameraDistance), automatic: el.dataset.autoFollow === 'true'})")
@@ -1115,6 +1117,172 @@ def main():
             expect(page.locator("canvas")).to_be_visible()
             no_errors()
             receipt.append("Real upstream ORK import, all six configurations and explicit unresolved motors")
+
+            # New models run on the real saved rocket, with a deliberately short
+            # recorded interval. This validates execution/state/UI plumbing, not
+            # a complete launch or measured six-DOF aerodynamic accuracy.
+            upload('input[accept=".json,.rocket"]', args.artifacts / "reviewed-motor.rocket.json", "project/load")
+            navigate("Flight")
+            for label, value in [("Duration limit", "2"), ("Time step", "0.05"),
+                                 ("Lateral wind", "0.2"), ("Wind direction", "90"),
+                                 ("Turbulence", "20")]:
+                page.get_by_label(label, exact=True).fill(value)
+            page.get_by_label("Flight dynamics model", exact=True).select_option("rigid_body")
+            page.get_by_label("Wind model", exact=True).select_option("dryden")
+            page.get_by_label("Flight structural model", exact=True).select_option("dynamic_fins")
+            page.get_by_text("Dynamic fin discretization and material scope", exact=True).click()
+            page.get_by_label("Fin beam elements", exact=True).fill("4")
+            page.get_by_role("button", name="Allow isotropic composite approximation", exact=True).click()
+            rigid = job("Launch", timeout=120)
+            assert not rigid["summary"]["complete"] and rigid["summary"]["flight_time_s"] == 2
+            assert rigid["validity"]["six_dof"] and not rigid["validity"]["cad_resolved_aerodynamics"]
+            assert rigid["wind"]["model"] == "dryden" and rigid["inputs"]["conditions"]["wind_model"] == "dryden"
+            assert rigid["inputs"]["options"]["structural_mode"] == "dynamic_fins"
+            assert all(abs(sum(value * value for value in row["body_quaternion_world"]) - 1) < 1e-10 for row in rigid["trajectory"])
+            assert all(len(row["inertia_tensor_body_kg_m2"]) == 3 for row in rigid["trajectory"])
+            assert max(math.dist(rigid["trajectory"][0]["body_axis_world"], row["body_axis_world"]) for row in rigid["trajectory"]) > 1e-7
+            assert max(row["load_breakdown"]["aerodynamic_normal_n"] for row in rigid["trajectory"]) > 0
+            supported_fin_states = [component for row in rigid["trajectory"]
+                                    for component in row["dynamic_structural_components"] if component["supported"]]
+            assert supported_fin_states and all(math.isfinite(component["stress_pa"]) for component in supported_fin_states)
+            assert all(component["relative_dynamic_equilibrium_residual"] < 1e-5 for component in supported_fin_states)
+            assert any(abs(fin["aerodynamic_force_n"]) > 0 for component in supported_fin_states for fin in component["fins"])
+            assert all("beam" in component["fidelity"].lower() for component in supported_fin_states)
+            expect(viewport).to_have_attribute("data-attitude-source", "solved")
+            expect(page.locator(".flight-scene-note")).to_contain_text("Solved rigid-body attitude")
+            expect(page.get_by_test_id("flight-run-status")).to_have_attribute("data-stale", "false")
+            if page.get_by_role("button", name="Pause flight playback", exact=True).count():
+                page.get_by_role("button", name="Pause flight playback", exact=True).click()
+            timeline = page.get_by_label("Flight timeline", exact=True)
+
+            def seek_advanced(time_s):
+                selected_time = timeline.evaluate("(el,value) => {Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,String(value));el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return Number(el.value);}", time_s)
+                expect(page.get_by_role("button", name="Play flight playback", exact=True)).to_be_visible()
+                page.wait_for_function("value => Math.abs(Number(document.querySelector('.viewport').dataset.flightDisplayTime)-value)<1e-7", arg=selected_time)
+                return selected_time
+
+            interval = next((a, b) for a, b in zip(rigid["trajectory"], rigid["trajectory"][1:])
+                            if a["time"] > 0.5 and b["time"] - a["time"] > 0.0001)
+            display_time = (interval[0]["time"] + interval[1]["time"]) / 2
+            display_time = seek_advanced(display_time)
+            expect(viewport).to_have_attribute("data-flight-presentation", "true")
+            actual_time = float(viewport.get_attribute("data-flight-actual-time"))
+            assert any(abs(row["time"] - actual_time) < 1e-10 for row in rigid["trajectory"])
+            assert abs(actual_time - display_time) > 1e-6, "Smooth display time must not be passed off as a computed sample"
+            expect(viewport).to_have_attribute("data-flight-stress-source", "dynamic_fins")
+            expect(viewport).to_have_attribute("data-flight-stress-available", "true")
+            expect(page.locator(".heat-legend")).to_contain_text("Dynamic fin beam FEA")
+            unavailable_row = next((row for row in rigid["trajectory"]
+                                    if not any(component["supported"] for component in row["dynamic_structural_components"])), None)
+            if unavailable_row is not None:
+                seek_advanced(unavailable_row["time"])
+                expect(viewport).to_have_attribute("data-flight-stress-available", "false")
+                expect(page.locator(".heat-legend")).to_have_count(0)
+                expect(page.locator(".flight-stress-note")).to_contain_text("unavailable is not zero")
+                seek_advanced(display_time)
+            (args.artifacts / "rigid-dryden-dynamic-fin.json").write_text(json.dumps(rigid, indent=2, allow_nan=False), "utf8")
+            page.screenshot(path=str(args.artifacts / "rigid-dryden-dynamic-fin.png"), full_page=True)
+            receipt.append("Real short 6DOF/Dryden flight has changing solved attitude, applied normal loads and dynamic fin beam-FEA equilibrium; smooth presentation remains separate from stored numerical timestamps")
+
+            # Edits preserve the prior completed job; recomputation creates a new
+            # immutable source snapshot instead of relabelling old data.
+            original_rigid = json.dumps(rigid, sort_keys=True, allow_nan=False)
+            page.get_by_label("Lateral wind", exact=True).fill("0.25")
+            expect(page.get_by_test_id("flight-run-status")).to_have_attribute("data-stale", "true")
+            expect(page.get_by_role("button", name="Apply environment from selected time", exact=True)).to_be_disabled()
+            assert abs(float(viewport.get_attribute("data-flight-actual-time")) - actual_time) < 1e-10
+            recalculated = job("Recalculate flight", timeout=120)
+            assert recalculated["inputs"]["conditions"]["wind_speed"] == 0.25
+            assert recalculated["inputs"]["project_sha256"] != rigid["inputs"]["project_sha256"]
+            assert json.dumps(rigid, sort_keys=True, allow_nan=False) == original_rigid
+            expect(page.get_by_test_id("flight-run-status")).to_have_attribute("data-stale", "false")
+            if page.get_by_role("button", name="Pause flight playback", exact=True).count():
+                page.get_by_role("button", name="Pause flight playback", exact=True).click()
+            receipt.append("Changed launch setup preserves saved geometry/results and marks them stale; explicit Recalculate creates new condition provenance and restores live controls")
+
+            seek_advanced(0.5)
+            page.get_by_label("Live lateral wind", exact=True).fill("0.4")
+            page.get_by_label("Live wind direction", exact=True).fill("120")
+            page.get_by_label("Environment transition time", exact=True).fill("0.2")
+            page.get_by_label("Live temperature deviation", exact=True).fill("2")
+            updated = job("Apply environment from selected time", timeout=120)
+            schedule = updated["inputs"]["conditions"]["wind_events"]
+            assert len(schedule) == 1 and schedule[0]["time_s"] == 0.5
+            assert schedule[0]["wind_speed"] == 0.4 and schedule[0]["transition_s"] == 0.2
+            assert updated["wind"]["events"] == schedule
+            assert any(event["name"] == "environment_change" and abs(event["time"] - 0.5) < 1e-8 for event in updated["events"])
+            before_rows = {round(row["time"], 10): row for row in recalculated["trajectory"] if row["time"] < 0.4}
+            matched = 0
+            for row in updated["trajectory"]:
+                prior = before_rows.get(round(row["time"], 10))
+                if prior is not None:
+                    matched += 1
+                    for key in ("velocity_vector", "wind_vector", "body_quaternion_world"):
+                        assert math.dist(prior[key], row[key]) < 1e-8, f"A future environment change altered prior {key}"
+            assert matched >= 5
+            after = min(updated["trajectory"], key=lambda row: abs(row["time"] - 1.5))
+            prior_after = min(recalculated["trajectory"], key=lambda row: abs(row["time"] - after["time"]))
+            assert math.dist(after["wind_vector"], prior_after["wind_vector"]) > 0.05
+            expect(page.locator(".flight-live-environment .flight-wind-schedule").get_by_role("listitem")).to_contain_text(
+                "0.5 s · 0.4 m/s")
+            # The job helper waits for the UI poll, so playback may have advanced
+            # after the selected resume moment; it must never restart at zero.
+            assert float(timeline.input_value()) >= 0.5
+            if page.get_by_role("button", name="Pause flight playback", exact=True).count():
+                page.get_by_role("button", name="Pause flight playback", exact=True).click()
+            seek_advanced(0.55)
+            before_conflict_requests = len(job_requests)
+            page.get_by_role("button", name="Apply environment from selected time", exact=True).click()
+            expect(page.locator(".flight-live-environment").get_by_role("alert")).to_contain_text("transition ends")
+            assert len(job_requests) == before_conflict_requests, "Overlapping schedule edits must not launch a job"
+            (args.artifacts / "live-environment-flight.json").write_text(json.dumps(updated, indent=2, allow_nan=False), "utf8")
+            page.screenshot(path=str(args.artifacts / "live-environment-flight.png"), full_page=True)
+            receipt.append("Live wind/temperature schedule reruns the actual 6DOF flight, retains causal pre-event states, changes later loads, resumes selected playback and rejects overlapping events before submission")
+
+            saved_sample_time = float(viewport.get_attribute("data-flight-actual-time"))
+            navigate("Design")
+            page.get_by_role("button", name="Main airframe", exact=True).click()
+            page.get_by_role("button", name="Component", exact=True).click()
+            current_length = float(page.get_by_label("Length", exact=True).input_value())
+            page.get_by_label("Length", exact=True).fill(str(current_length + 0.01))
+            with page.expect_response(lambda response: response.url.endswith("/api/project") and response.request.method == "POST") as geometry_saved:
+                page.get_by_role("button", name="Apply component changes", exact=True).click()
+            assert geometry_saved.value.status == 200
+            navigate("Flight")
+            expect(page.get_by_test_id("flight-run-status")).to_have_attribute("data-stale", "true")
+            expect(page.get_by_role("button", name="Apply environment from selected time", exact=True)).to_be_disabled()
+            expect(page.get_by_test_id("flight-run-status")).to_contain_text("original inputs")
+            assert abs(float(viewport.get_attribute("data-flight-actual-time")) - saved_sample_time) < 1e-10
+            no_errors()
+            receipt.append("Editing real rocket geometry retains the original flight record and prevents applying live wind against a stale physical model")
+
+            # Experimental molecular-viscosity flow uses a real short transient
+            # solve. Numerical traction must be labelled fluid traction, and no
+            # claim of turbulent skin friction or structural stress is accepted.
+            navigate("CFD")
+            page.get_by_label("CFD physics model", exact=True).select_option("laminar")
+            page.get_by_label("Simulation mode", exact=True).select_option("transient")
+            page.get_by_label("Transient source", exact=True).select_option("fixed")
+            page.get_by_label("Transient duration", exact=True).fill("0.0001")
+            for label, value in [("Lengthwise grid cells", "12"), ("Transverse grid cells", "12"),
+                                 ("Primary stream speed", "100"), ("Mach override", ""),
+                                 ("Lateral wind", "0"), ("Turbulence", "0"), ("Angle of attack", "2")]:
+                page.get_by_label(label, exact=True).fill(value)
+            laminar = job("Solve flow field", timeout=120)
+            assert laminar["summary"]["physics_model"] == "laminar"
+            assert laminar["summary"]["mode"] == "transient" and not laminar["summary"]["converged"]
+            assert laminar["summary"]["stop_reason"] == "transient_complete"
+            assert not laminar["summary"]["viscous_force_validated"]
+            assert laminar["summary"]["transport"]["dynamic_viscosity_pa_s"] > 0
+            assert all(math.isfinite(value) for value in laminar["summary"]["total_force_n"])
+            assert laminar["surface"] and any("viscous_traction_pa" in face for face in laminar["surface"])
+            assert "not structural" in laminar["summary"]["viscous_output_kind"]
+            expect(page.locator(".workspace-results")).to_contain_text("Laminar Navier–Stokes")
+            expect(page.get_by_label("Transient CFD playback", exact=True)).to_be_visible()
+            (args.artifacts / "laminar-transient-flow.json").write_text(json.dumps(laminar, indent=2, allow_nan=False), "utf8")
+            page.screenshot(path=str(args.artifacts / "laminar-transient-flow.png"), full_page=True)
+            no_errors()
+            receipt.append("Real experimental laminar transient CFD exposes molecular transport and finite fluid traction with actual frame playback and explicit no-turbulence/no-structural-stress scope")
             assert not external, external
             browser.close()
         (args.artifacts / "receipt.json").write_text(json.dumps({"status": "passed", "checks": receipt,

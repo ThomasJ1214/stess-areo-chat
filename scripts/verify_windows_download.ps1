@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $expectedSource = $ExpectedSourceCommit.ToLowerInvariant()
 $requiresStartupCompilerGate = [version] $ExpectedVersion -ge [version] '0.3.1'
+$requiresAdvancedFlightGate = [version] $ExpectedVersion -ge [version] '0.3.2'
 $artifact = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $output -Force | Out-Null
@@ -114,6 +115,11 @@ try {
     $preferences = Read-Receipt 'build/installed-preferences-smoke.json'
     Require ($preferences.fresh_processes -eq 2 -and $preferences.different_loopback_origins -eq $true) 'Archived preference receipt did not verify two fresh desktop sessions.'
     $checks.Add('archived_engine_cuda_and_preference_receipts_pass')
+    if ($requiresAdvancedFlightGate) {
+        $advanced = Read-Receipt 'build/installed-advanced-flight-smoke.json'
+        Require ($advanced.application_version -eq $ExpectedVersion -and $advanced.causal_environment.checked_prefix_samples -ge 10 -and $advanced.dynamic_fin_fem.substeps -gt 0 -and $advanced.laminar_cfd.frame_count -ge 2) 'Archived advanced flight/dynamic fin/laminar CFD receipt is incomplete.'
+        $checks.Add('archived_installed_6dof_causal_environment_dynamic_fin_and_laminar_cfd_receipt_pass')
+    }
 
     $installed = Join-Path $env:RUNNER_TEMP ('RocketWorkbench-download-check-' + [Guid]::NewGuid().ToString('N'))
     $installLog = Join-Path $output 'install.log'
@@ -159,6 +165,14 @@ try {
         $proof.launch_cfd_boundary_speed_matches = $launchCfd.boundary_speed_matches
         $checks.Add('fresh_installed_saved_launch_drives_real_transient_cfd_with_independently_matched_changing_boundary_speeds')
     }
+    if ($requiresAdvancedFlightGate) {
+        $advancedPath = Join-Path $output 'installed-advanced-flight-smoke.json'
+        & (Join-Path $PSScriptRoot 'installed_advanced_flight_smoke.ps1') -Executable $executable -OutputPath $advancedPath -ExpectedVersion $ExpectedVersion
+        $advanced = Get-Content -LiteralPath $advancedPath -Raw | ConvertFrom-Json
+        Require ($advanced.status -eq 'ok' -and $advanced.application_version -eq $ExpectedVersion -and $advanced.causal_environment.checked_prefix_samples -ge 10 -and $advanced.dynamic_fin_fem.substeps -gt 0 -and $advanced.laminar_cfd.frame_count -ge 2) 'Freshly installed advanced physics returned incomplete actual solver evidence.'
+        $proof.advanced_physics = [ordered]@{ baseline = $advanced.baseline; causal_environment = $advanced.causal_environment; dynamic_fin_fem = $advanced.dynamic_fin_fem; laminar_cfd = $advanced.laminar_cfd }
+        $checks.Add('fresh_installed_6dof_dryden_causal_environment_dynamic_fin_and_launch_driven_laminar_fields_pass')
+    }
 
     $desktopData = Join-Path $env:RUNNER_TEMP ('RocketWorkbench-download-desktop-' + [Guid]::NewGuid().ToString('N'))
     try {
@@ -176,7 +190,7 @@ try {
     }
     $checks.Add('fresh_installed_native_ui_authenticated_api_project_and_webgl_pass')
     $proof.status = 'ok'
-    Notice "Downloaded original $ExpectedVersion installer from run $SourceRunId; SHA-256 $actualHash matches shipped checksum. Fresh installation, real flight/FEA engine, launch-driven transient CFD where supported, bundled CUDA imports/offline compiler and native UI/API/WebGL passed. Physical NVIDIA device execution is not tested."
+    Notice "Downloaded original $ExpectedVersion installer from run $SourceRunId; SHA-256 $actualHash matches shipped checksum. Fresh installation, real flight/FEA engine, launch-driven transient CFD and advanced physics where supported, bundled CUDA imports/offline compiler and native UI/API/WebGL passed. Physical NVIDIA device execution is not tested."
 } catch {
     $proof.error = $_.Exception.Message
     Notice $proof.error 'error'
