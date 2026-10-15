@@ -1,6 +1,6 @@
 # Validation checkpoint
 
-## 0.3.2 source checkpoint — Windows validation pending
+## 0.3.2 source and installed Windows checks — download verification pending
 
 This update adds optional adaptive quaternion/Euler rigid-body flight with actual
 mass-normalized inertia and declared small-angle aerodynamic limits; stationary
@@ -26,7 +26,30 @@ wrapper: actual 104/118-row rigid-body trajectories, unchanged physical prefix
 before a scheduled change, 4,571 fin substeps with explicit unavailable rows,
 and four computed launch-driven laminar fields. This verifies the harness;
 frozen/installed Windows execution still requires the Windows workflow.
-Integrated browser and new Windows release results will be recorded after they
+The [corrected full CI run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38770788126)
+passed all four jobs: 503 engineering/API tests on each of Windows and Linux,
+87 frontend tests, production build and **33 real browser workflows**. Those
+workflows include actual 6DOF/Dryden/fin dynamics, stale input protection, causal
+live environment changes, selected-time resume and actual laminar CFD playback.
+The browser evidence artifact is `11991966791` (14.4 MB; ZIP SHA-256
+`441f5093c26cff4cfddaeba83a786bea8c569fae862562a0856ef86f170479c5`).
+
+Binary source is `26fee162254ee7eaf68095bdf7e25e7ef51edd26`. CI source
+`454828d36c8ecdde8519507a440d3efd1c699c1d` corrects two browser assertions
+to match the existing component PUT endpoint and transient `summary.status`.
+The earlier browser run failed those assertions; application behavior was
+unchanged. A Git comparison confirms identical `rocket_workbench/`, `web/`,
+dependency declarations/locks, assets and installer/build inputs between these
+commits.
+
+The [Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38770023582)
+passed frozen and installed engine tests, actual installed 6DOF/Dryden/causal
+wind changes, dynamic fin FEM, launch-driven laminar CFD, bundled CUDA
+normal-startup import and offline compiler checks, native desktop/API/WebGL and
+preference restoration across fresh sessions. It compiles uncached `compute_75`
+and `compute_89` PTX without test-only library preloads. The hosted VM uses
+software WebGL and does not establish physical NVIDIA solver execution.
+Independent download/reinstallation results will be recorded after they
 complete. The previously verified 0.3.1 package below remains available.
 
 ## Verified 0.3.1 release
