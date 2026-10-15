@@ -1,6 +1,6 @@
 # Validation checkpoint
 
-## 0.3.2 source and installed Windows checks — download verification pending
+## Verified 0.3.2 release
 
 This update adds optional adaptive quaternion/Euler rigid-body flight with actual
 mass-normalized inertia and declared small-angle aerodynamic limits; stationary
@@ -13,8 +13,8 @@ turbulence. Smooth display interpolation changes no engineering samples.
 
 Local verification passed the final **503-test full Python suite** after review
 tightened physical inertia validation and excluded ambiguous CAD volumes from
-inertia estimation. The frontend suite passed **87
-tests**; the production build and native Qt shell/WebGL/API/project startup also
+inertia estimation. The frontend suite passed **87 tests**; the production build
+and native Qt shell/WebGL/API/project startup also
 passed. Independent checks include rigid-body angular momentum/energy, exact
 constant-torque and vacuum-thrust motion, step refinement, dual recovery,
 Dryden covariance/statistics, quaternion profile SLERP consistency, beam static/
@@ -24,8 +24,8 @@ These are equation/discretization checks, not measured flight validation.
 The PowerShell installed-API procedure passed against the source executable
 wrapper: actual 104/118-row rigid-body trajectories, unchanged physical prefix
 before a scheduled change, 4,571 fin substeps with explicit unavailable rows,
-and four computed launch-driven laminar fields. This verifies the harness;
-frozen/installed Windows execution still requires the Windows workflow.
+and four computed launch-driven laminar fields. These source checks were
+followed by the frozen/installed Windows checks below.
 The [corrected full CI run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38770788126)
 passed all four jobs: 503 engineering/API tests on each of Windows and Linux,
 87 frontend tests, production build and **33 real browser workflows**. Those
@@ -49,8 +49,28 @@ normal-startup import and offline compiler checks, native desktop/API/WebGL and
 preference restoration across fresh sessions. It compiles uncached `compute_75`
 and `compute_89` PTX without test-only library preloads. The hosted VM uses
 software WebGL and does not establish physical NVIDIA solver execution.
-Independent download/reinstallation results will be recorded after they
-complete. The previously verified 0.3.1 package below remains available.
+The uploaded installer artifact is `11991868302`, approximately 1.5 GB, named
+`RocketWorkbench-windows-x64-installer`. Its ZIP SHA-256 is
+`bc2692e98f40b7d4b43ad4c56592235d2399ffac5b48a0ef99ab13c9b5ff9d11`.
+
+The [independent download/reinstall verification](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38773050948)
+also passed. It downloaded the original uploaded archive without rebuilding,
+checked its shipped EXE checksum and exact clean source identity, installed on a
+fresh Windows runner, and repeated real flight/solid FEA, saved-launch Euler
+CFD, 6DOF/Dryden, causal wind/temperature changes, dynamic original-fin FEM,
+launch-driven laminar fields, normal-startup CUDA preprocessing/compiler and
+native desktop/API/WebGL checks. The actual installer EXE SHA-256 is
+`3f9e10b234d0645baa6d9c710ca290723254cdb9f8619a5aabf1b69068528ad5`.
+Its compact proof artifact is `11992378078` (206 KB; ZIP SHA-256
+`81ceff36fd9a872b83fd60f6386d3e3f9104785b7061cb6ea8f74218b15c8a7a`).
+That proof is not the installer: download `RocketWorkbench-windows-x64-installer`
+from the original build run's Artifacts section after signing in.
+
+All prescribed numerical jobs in the installed advanced smoke use CPU backends.
+CUDA compilation/software WebGL checks do not establish real NVIDIA execution,
+VRAM limits or performance. No measured flight-log/wind-tunnel correlation,
+validated turbulent rocket CFD, whole-vehicle transient FEA, laminate failure or
+recovery opening-shock validation is claimed. These remain engineering work.
 
 ## Verified 0.3.1 release
 
