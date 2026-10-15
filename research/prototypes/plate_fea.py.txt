@@ -1,0 +1,277 @@
+"""Linear static MITC4 plate bending on actual original-fin planforms.
+
+The four-node mixed-interpolated transverse shear (MITC4) construction follows
+the covariant edge-midpoint tying of Bathe & Dvorkin, IJNME 21 (1985), 367–383.
+Both bending and tied shear use full 2x2 Gauss integration. There is no reduced
+integration, artificial hourglass stiffness, inferred CAD midsurface, membrane,
+joint or curved-shell model. Rotations beta are positive transverse slopes:
+u(x,y,z)=-z beta_x, v(x,y,z)=-z beta_y, transverse displacement w.
+"""
+from __future__ import annotations
+
+import math
+import warnings
+
+import numpy as np
+from scipy import sparse
+from scipy.sparse.linalg import MatrixRankWarning, spsolve
+from scipy.spatial.transform import Rotation
+
+from ..models import Conditions, Material, Project
+
+FIDELITY = "Linear-static isotropic MITC4 Reissner–Mindlin plate FEA; original fin midsurfaces"
+_SUPPORTED = {"trapezoidfinset", "finset", "fin"}
+_GAUSS = (-1 / math.sqrt(3), 1 / math.sqrt(3))
+
+
+def _check(cancelled):
+    if cancelled and cancelled():
+        raise RuntimeError("Plate FEA cancelled.")
+
+
+def _shape(xi, eta):
+    signs = np.array([[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]])
+    n = (1 + signs[:, 0]*xi) * (1 + signs[:, 1]*eta) / 4
+    derivative = np.column_stack((signs[:, 0]*(1 + signs[:, 1]*eta),
+                                  signs[:, 1]*(1 + signs[:, 0]*xi))) / 4
+    return n, derivative
+
+
+def _kinematics(xy, xi, eta):
+    # xy is always element-local: distant project origins cannot corrupt J.
+    n, derivative = _shape(xi, eta)
+    jacobian = xy.T @ derivative
+    determinant = float(np.linalg.det(jacobian))
+    scale = float(np.ptp(xy, axis=0).max())
+    if determinant <= scale*scale*1e-12:
+        raise ValueError("Plate mesh has an inverted or degenerate quadrilateral.")
+    gradient = derivative @ np.linalg.inv(jacobian)
+    curvature = np.zeros((3, 12))
+    curvature[0, 1::3] = gradient[:, 0]
+    curvature[1, 2::3] = gradient[:, 1]
+    curvature[2, 1::3] = gradient[:, 1]
+    curvature[2, 2::3] = gradient[:, 0]
+    return n, jacobian, determinant, curvature
+
+
+def _covariant_shear(xy, xi, eta, direction):
+    n, derivative = _shape(xi, eta)
+    tangent = xy.T @ derivative[:, direction]
+    row = np.zeros(12)
+    row[0::3] = derivative[:, direction]
+    row[1::3] = -n*tangent[0]
+    row[2::3] = -n*tangent[1]
+    return row
+
+
+def mitc4_matrices(vertices, youngs_modulus, poisson_ratio, thickness):
+    """Return 12x12 element K and the physical Gauss-point B operators.
+
+    General convex bilinear quadrilaterals are supported. Tied covariant shear
+    components interpolate along the complementary natural coordinate before
+    the inverse-transpose Jacobian transforms them into Cartesian shear.
+    """
+    xy = np.asarray(vertices, dtype=float)
+    if xy.shape != (4, 2) or not np.isfinite(xy).all():
+        raise ValueError("A plate quadrilateral requires four finite 2D vertices.")
+    if (not all(math.isfinite(v) for v in (youngs_modulus, poisson_ratio, thickness))
+            or youngs_modulus <= 0 or thickness <= 0 or not -1 < poisson_ratio < .5):
+        raise ValueError("Plate E and thickness must be positive; -1 < Poisson ratio < 0.5.")
+    xy = xy - xy[0]
+    elastic = youngs_modulus/(1 - poisson_ratio**2) * np.array(
+        [[1., poisson_ratio, 0], [poisson_ratio, 1., 0], [0, 0, (1 - poisson_ratio)/2]])
+    bending = elastic * thickness**3 / 12
+    shear = np.eye(2) * (5/6) * youngs_modulus/(2*(1 + poisson_ratio))*thickness
+    bottom = _covariant_shear(xy, 0, -1, 0)
+    top = _covariant_shear(xy, 0, 1, 0)
+    left = _covariant_shear(xy, -1, 0, 1)
+    right = _covariant_shear(xy, 1, 0, 1)
+    stiffness = np.zeros((12, 12))
+    points = []
+    for eta in _GAUSS:
+        for xi in _GAUSS:
+            n, jacobian, determinant, bc = _kinematics(xy, xi, eta)
+            covariant = np.vstack(((1 - eta)/2*bottom + (1 + eta)/2*top,
+                                    (1 - xi)/2*left + (1 + xi)/2*right))
+            bs = np.linalg.solve(jacobian.T, covariant)
+            stiffness += (bc.T @ bending @ bc + bs.T @ shear @ bs)*determinant
+            points.append({"shape": n, "bending": bc, "shear": bs,
+                           "weight_m2": determinant, "natural": [xi, eta]})
+    return {"stiffness": stiffness, "points": points, "bending_tensor": bending,
+            "shear_tensor": shear, "plane_stress_tensor": elastic,
+            "area_m2": sum(p["weight_m2"] for p in points)}
+
+
+def polygon_quad_mesh(polygon, mesh_size, max_elements=20000):
+    """Conforming Q4 mesh of a convex triangle/trapezoid, with exact boundary.
+
+    Vertex/edge-midpoint/centroid patches avoid collapsed elements at a triangular
+    tip. Equal subdivisions on every patch ensure shared edges have no hanging
+    nodes. No planform is truncated to obtain a rectangular element grid.
+    """
+    polygon = np.asarray(polygon, dtype=float)
+    if (polygon.ndim != 2 or polygon.shape[1] != 2 or len(polygon) not in {3, 4}
+            or not np.isfinite(polygon).all() or not math.isfinite(mesh_size) or mesh_size <= 0):
+        raise ValueError("Plate meshing requires a convex triangle/trapezoid and positive mesh size.")
+    edges = np.roll(polygon, -1, axis=0) - polygon
+    cross = edges[:, 0]*np.roll(edges, -1, axis=0)[:, 1] - edges[:, 1]*np.roll(edges, -1, axis=0)[:, 0]
+    if np.all(cross < 0):
+        polygon = polygon[::-1]
+    elif not np.all(cross > 0):
+        raise ValueError("Plate planform must be strictly convex with distinct vertices.")
+    center = polygon.mean(axis=0)
+    mids = (polygon + np.roll(polygon, -1, axis=0))/2
+    patches = [np.array([polygon[i], mids[i], center, mids[i-1]]) for i in range(len(polygon))]
+    length = max(float(np.linalg.norm(np.roll(p, -1, axis=0) - p, axis=1).max()) for p in patches)
+    subdivisions = max(1, math.ceil(length/mesh_size))
+    if len(patches)*subdivisions**2 > max_elements:
+        raise ValueError(f"Plate mesh exceeds the {max_elements:,}-element budget. Increase mesh size or the declared budget.")
+    vertices, quads, lookup = [], [], {}
+    tolerance = max(float(np.ptp(polygon, axis=0).max())*1e-12, 1e-15)
+    for patch in patches:
+        grid = np.empty((subdivisions + 1, subdivisions + 1), dtype=int)
+        for j in range(subdivisions + 1):
+            for i in range(subdivisions + 1):
+                n, _ = _shape(2*i/subdivisions - 1, 2*j/subdivisions - 1)
+                point = n @ patch
+                key = tuple(np.rint(point/tolerance).astype(np.int64))
+                if key not in lookup:
+                    lookup[key] = len(vertices)
+                    vertices.append(point)
+                grid[j, i] = lookup[key]
+        for j in range(subdivisions):
+            for i in range(subdivisions):
+                quads.append([grid[j, i], grid[j, i+1], grid[j+1, i+1], grid[j+1, i]])
+    return np.asarray(vertices), np.asarray(quads, dtype=np.int64)
+
+
+def solve_plate(vertices, quads, youngs_modulus, poisson_ratio, thickness,
+                transverse_load_pa, fixed_dofs, nodal_loads=None, progress=None, cancelled=None):
+    """Solve a 2D plate for signed uniform/element/Gauss transverse loading.
+
+    ``transverse_load_pa`` is scalar, (nelements,), or (nelements,4). Optional
+    nodal loads use work-conjugate [normal force, beta_x couple, beta_y couple].
+    Actual resultants include both force lever arms and independent couples.
+    """
+    xy = np.asarray(vertices, dtype=float)
+    elements = np.asarray(quads)
+    if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 4 or not np.isfinite(xy).all():
+        raise ValueError("Plate nodes must be finite 2D coordinates.")
+    if (elements.ndim != 2 or elements.shape[1] != 4 or not np.issubdtype(elements.dtype, np.integer)
+            or len(elements) == 0 or elements.min() < 0 or elements.max() >= len(xy)):
+        raise ValueError("Plate elements require four valid integer node indices.")
+    ndof = 3*len(xy)
+    fixed = np.asarray(fixed_dofs)
+    if (fixed.ndim != 1 or not np.issubdtype(fixed.dtype, np.integer) or len(fixed) < 3
+            or fixed.min() < 0 or fixed.max() >= ndof):
+        raise ValueError("Plate constraints require valid integer DOF indices and sufficient supports.")
+    fixed = np.unique(fixed)
+    free = np.setdiff1d(np.arange(ndof), fixed)
+    if not len(free):
+        raise ValueError("Plate constraints fix every degree of freedom.")
+    pressure = np.asarray(transverse_load_pa, dtype=float)
+    if not np.isfinite(pressure).all() or pressure.shape not in {(), (len(elements),), (len(elements), 4)}:
+        raise ValueError("Plate transverse loading must be finite scalar, element or four-Gauss-point values.")
+    pressure = np.broadcast_to(pressure[:, None] if pressure.ndim == 1 else pressure, (len(elements), 4))
+    force = np.zeros(ndof) if nodal_loads is None else np.asarray(nodal_loads, dtype=float).copy().reshape(-1)
+    if force.shape != (ndof,) or not np.isfinite(force).all():
+        raise ValueError("Plate nodal loads must provide three finite values per node.")
+    rows, columns, data, models = [], [], [], []
+    area = 0.
+    for index, nodes in enumerate(elements):
+        if index % 128 == 0:
+            _check(cancelled)
+            if progress:
+                progress(.1 + .5*index/len(elements), "Assembling MITC4 plate stiffness and consistent loads")
+        model = mitc4_matrices(xy[nodes], youngs_modulus, poisson_ratio, thickness)
+        models.append(model)
+        dofs = (3*nodes[:, None] + np.arange(3)).ravel()
+        rows.extend(np.repeat(dofs, 12))
+        columns.extend(np.tile(dofs, 12))
+        data.extend(model["stiffness"].ravel())
+        for j, point in enumerate(model["points"]):
+            force[3*nodes] += point["shape"]*pressure[index, j]*point["weight_m2"]
+        area += model["area_m2"]
+    stiffness = sparse.coo_matrix((data, (rows, columns)), shape=(ndof, ndof)).tocsr()
+    _check(cancelled)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MatrixRankWarning)
+        try:
+            displacement = np.zeros(ndof)
+            displacement[free] = spsolve(stiffness[free][:, free], force[free])
+        except (MatrixRankWarning, RuntimeError) as error:
+            raise ValueError("Plate stiffness is singular; verify connected elements and physical supports.") from error
+    if not np.isfinite(displacement).all():
+        raise ValueError("Plate solution is nonfinite; inspect supports and mesh quality.")
+    residual = stiffness @ displacement - force
+    # A rotation is dimensionless and its load a moment: normalize with scale.
+    scale = float(np.ptp(xy, axis=0).max())
+    load_scale = np.tile([1., 1/scale, 1/scale], len(xy))
+    denominator = max(float(np.linalg.norm(force*load_scale)), 1e-30)
+    relative_residual = float(np.linalg.norm(residual[free]*load_scale[free])/denominator)
+    if relative_residual > 1e-5:
+        raise ValueError("Plate free-DOF residual exceeds 1e-5; ill-conditioning prevents a reliable solution.")
+    reactions = np.zeros(ndof)
+    reactions[fixed] = residual[fixed]
+    reference = xy.mean(axis=0)
+
+    def resultant(load):
+        load = load.reshape(-1, 3)
+        # physical couple: [beta_y load, -beta_x load, 0]
+        arm = xy - reference
+        moment = np.array([np.sum(arm[:, 1]*load[:, 0] + load[:, 2]),
+                           np.sum(-arm[:, 0]*load[:, 0] - load[:, 1]), 0.])
+        return float(load[:, 0].sum()), moment
+
+    applied_force, applied_moment = resultant(force)
+    reaction_force, reaction_moment = resultant(reactions)
+    gauss_stress, gauss_shear, moments, shear_resultants, element_vm = [], [], [], [], []
+    nodal_vm, nodal_weight = np.zeros(len(xy)), np.zeros(len(xy))
+    for index, (nodes, model) in enumerate(zip(elements, models)):
+        if index % 256 == 0:
+            _check(cancelled)
+        local = displacement[(3*nodes[:, None] + np.arange(3)).ravel()]
+        bending_rows, shear_rows, m_rows, q_rows, values = [], [], [], [], []
+        for point in model["points"]:
+            curvature = point["bending"] @ local
+            top = -thickness/2*model["plane_stress_tensor"] @ curvature
+            q = model["shear_tensor"] @ (point["shear"] @ local)
+            m = model["bending_tensor"] @ curvature
+            # Reissner–Mindlin Q implies an assumed parabolic transverse stress
+            # through thickness; top/bottom bending and centre shear are distinct.
+            maximum = 0.
+            for normalized_z in np.linspace(-1, 1, 9):
+                sx, sy, txy = top*normalized_z
+                txz, tyz = 1.5*q/thickness*(1 - normalized_z**2)
+                maximum = max(maximum, math.sqrt(max(0., sx*sx - sx*sy + sy*sy + 3*(txy*txy + txz*txz + tyz*tyz))))
+            bending_rows.append(top)
+            shear_rows.append(q/thickness)
+            m_rows.append(m)
+            q_rows.append(q)
+            values.append(maximum)
+        peak = max(values)
+        gauss_stress.append(bending_rows)
+        gauss_shear.append(shear_rows)
+        moments.append(m_rows)
+        shear_resultants.append(q_rows)
+        element_vm.append(peak)
+        nodal_vm[nodes] += peak*model["area_m2"]
+        nodal_weight[nodes] += model["area_m2"]
+    force_norm = max(abs(applied_force), float(np.abs(force[0::3]).sum()), 1e-30)
+    moment_norm = max(float(np.linalg.norm(applied_moment)), force_norm*scale, 1e-30)
+    return {"dofs": displacement.reshape(-1, 3), "nodal_loads": force.reshape(-1, 3),
+            "nodal_reactions": reactions.reshape(-1, 3), "von_mises_pa": nodal_vm/nodal_weight,
+            "element_von_mises_pa": np.asarray(element_vm),
+            "gauss_top_stress_pa": np.asarray(gauss_stress),
+            "gauss_average_transverse_shear_pa": np.asarray(gauss_shear),
+            "gauss_bending_moments_n": np.asarray(moments),
+            "gauss_shear_resultants_n_m": np.asarray(shear_resultants),
+            "area_m2": area, "applied_transverse_force_n": applied_force,
+            "reaction_transverse_force_n": reaction_force,
+            "applied_moment_nm": applied_moment, "reaction_moment_nm": reaction_moment,
+            "moment_balance_reference_m": reference,
+            "force_balance_relative_error": abs(applied_force + reaction_force)/force_norm,
+            "moment_balance_relative_error": float(np.linalg.norm(applied_moment + reaction_moment))/moment_norm,
+            "relative_equilibrium_residual": relative_residual,
+            "strain_energy_j": float(displacement @ (stiffness @ displacement))/2,
+            "external_work_j": float(displacement @ force), "backend": "scipy-cpu"}
