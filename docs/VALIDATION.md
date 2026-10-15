@@ -1,5 +1,33 @@
 # Validation checkpoint
 
+## 0.3.3 source accuracy pass
+
+The default original-fin beam integrator now propagates the complete modal
+basis exactly for piecewise-linear recorded loads. Independent checks compare
+unforced phase/energy, a damped ramp against adaptive DOP853 integration, and
+split-interval composition, including very small intervals and high frequencies.
+This removes modal time-integration error for that prescribed load model; it
+does not recover unrecorded forcing or stress extrema between output samples.
+Legacy Newmark remains selectable with its fundamental-period discretization
+clearly labeled. One/two-fin directional load partitions are unavailable until
+an independently justified model is implemented.
+
+Incomplete flights retain observed-history numbers and termination/coverage
+flags. They cannot contribute to completed-flight statistics or final flight
+comparison deltas. Completed flights with explicitly invalid operating/static
+stability flags are also excluded from aggregates. Each statistic declares its
+actual sample count. CSV/HTML retain wind, inertia, structural coverage and
+numerical context; laminar comparisons retain actual viscous/total loads.
+
+Local checks passed 515 Python tests, 88 frontend tests, and the production
+build. The engine smoke completed a synthetic launch and actual solid FEA. Native Qt
+startup passed shell, software WebGL, API and project checks for 0.3.3.
+Browser and Windows packaging results must be recorded separately before
+calling the 0.3.3 installer verified. The existing verified 0.3.2 download below
+does not contain this source pass. Draft plate/MUSCL work in research/prototypes
+is unintegrated text outside the application package, not a solver capability.
+
+
 ## Verified 0.3.2 release
 
 This update adds optional adaptive quaternion/Euler rigid-body flight with actual

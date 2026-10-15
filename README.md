@@ -58,7 +58,7 @@ to keep the controls and results you need visible.
 
 ## What is implemented
 
-The table describes version 0.3.2. The [validation evidence](docs/VALIDATION.md)
+The table describes the 0.3.3 source. The verified installer above remains 0.3.2 until the next Windows build passes. The [validation evidence](docs/VALIDATION.md)
 records source, packaged and independent download checks separately.
 
 | Workflow | Calculation and practical scope |
@@ -70,7 +70,7 @@ records source, packaged and independent download checks separately.
 | Motor lookup | Explicit ThrustCurve.org search, curve/source preview and review before import; local ENG/RSE remains available offline |
 | Fast aerodynamics | Standard atmosphere, mass/CG, small-angle Barrowman reference geometry, drag/loading estimates and transparent unvalidated Mach corrections; import signature-bound coefficient CSV |
 | Flight | Passive point-mass or experimental quaternion 6DOF launch, adaptive integration, changing motor mass/inertia, single/dual recovery with assumed inflation, legacy/Dryden gusts and shear; causal live wind/temperature recalculation, smooth playback, actual attitude when solved, following camera and landing map |
-| Dynamic flight structures | Actual original-fin tapered beam mass/stiffness matrices and transient Newmark response to recorded directional/inertial loads; scope/coverage, reactions, stresses, deflection, energy and modal frequencies |
+| Dynamic flight structures | Actual original-fin tapered beam mass/stiffness matrices and exact modal response to linearly interpolated recorded directional/inertial loads, or legacy Newmark; scope/coverage, reactions, stresses, deflection, energy and modal frequencies |
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
 | Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
 | CFD | Experimental 3D compressible Euler or laminar Navier–Stokes finite volumes; steady-state and actual transient modes, launch-driven airflow/attitude transforms, saved frame playback, molecular traction diagnostics, cancellation and qualified ETA; no runtime/step ceilings |

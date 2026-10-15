@@ -1130,7 +1130,12 @@ def main():
             page.get_by_label("Flight dynamics model", exact=True).select_option("rigid_body")
             page.get_by_label("Wind model", exact=True).select_option("dryden")
             page.get_by_label("Flight structural model", exact=True).select_option("dynamic_fins")
+            expect(page.get_by_label("Fin time integrator", exact=True)).to_have_value("exact_foh")
+            page.get_by_label("Fin time integrator", exact=True).select_option("newmark")
             page.get_by_text("Dynamic fin discretization and material scope", exact=True).click()
+            expect(page.get_by_label("Steps per fundamental beam period", exact=True)).to_be_visible()
+            page.get_by_label("Fin time integrator", exact=True).select_option("exact_foh")
+            expect(page.get_by_label("Steps per fundamental beam period", exact=True)).to_have_count(0)
             page.get_by_label("Fin beam elements", exact=True).fill("4")
             page.get_by_role("button", name="Allow isotropic composite approximation", exact=True).click()
             rigid = job("Launch", timeout=120)
@@ -1138,6 +1143,9 @@ def main():
             assert rigid["validity"]["six_dof"] and not rigid["validity"]["cad_resolved_aerodynamics"]
             assert rigid["wind"]["model"] == "dryden" and rigid["inputs"]["conditions"]["wind_model"] == "dryden"
             assert rigid["inputs"]["options"]["structural_mode"] == "dynamic_fins"
+            assert rigid["inputs"]["options"]["time_integrator"] == "exact_foh"
+            assert all(model["time_integrator"] == "exact_foh" and model["retained_modes"] == model["free_dofs"]
+                       for model in rigid["dynamic_structural_analysis"]["components"] if model["supported"])
             assert all(abs(sum(value * value for value in row["body_quaternion_world"]) - 1) < 1e-10 for row in rigid["trajectory"])
             assert all(len(row["inertia_tensor_body_kg_m2"]) == 3 for row in rigid["trajectory"])
             assert max(math.dist(rigid["trajectory"][0]["body_axis_world"], row["body_axis_world"]) for row in rigid["trajectory"]) > 1e-7

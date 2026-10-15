@@ -1070,7 +1070,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.3.2</span>
+          <span className="version">0.3.3</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -2956,7 +2956,12 @@ export default function App() {
                                   },
                                 ].map((k) => (
                                   <tr key={k.key}>
-                                    <td>{k.label}</td>
+                                    <td>
+                                      {comparison.flight_performance_eligible ===
+                                      false
+                                        ? `Observed ${k.label.toLowerCase()}`
+                                        : k.label}
+                                    </td>
                                     <td>
                                       {quantity(
                                         comparison.original?.flight?.summary?.[
@@ -2976,7 +2981,10 @@ export default function App() {
                                     </td>
                                     <td>
                                       {quantity(
-                                        comparison.flight_deltas?.[k.key],
+                                        (comparison.flight_deltas ??
+                                          comparison.observed_flight_deltas)?.[
+                                          k.key
+                                        ],
                                         k.kind as Quantity,
                                         units,
                                       )}
@@ -2987,7 +2995,9 @@ export default function App() {
                             </table>
                           </div>
                           <p className="microcopy">
-                            Point-mass trajectories use each geometry's declared
+                            {comparison.flight_performance_eligible === false &&
+                              "Incomplete or out-of-domain flight histories: these values are observations, not completed-flight performance. "}
+                            Trajectories use each geometry's declared
                             coefficient source. CAD mass changes apply;
                             arbitrary surface drag changes require a
                             geometry-bound supplied polar. Flight stress remains
@@ -3066,13 +3076,24 @@ export default function App() {
                         ))}
                       </select>
                     </label>
+                    {study.sample_counts?.statistics_eligible === 0 && (
+                      <p className="warning-text">
+                        No eligible completed-flight samples. Partial observed
+                        values and exclusion reasons are retained in the
+                        CSV/JSON exports.
+                      </p>
+                    )}
                     <div className="chart-card">
                       <h4>
                         {study.parameter.replaceAll("_", " ")} vs{" "}
                         {studyMetric.replaceAll("_", " ")} · SI values
                       </h4>
                       <Chart
-                        data={[...study.rows].sort((a, b) => a.value - b.value)}
+                        data={study.rows
+                          .filter(
+                            (row: any) => row.statistics_eligible !== false,
+                          )
+                          .sort((a: any, b: any) => a.value - b.value)}
                         x="value"
                         series={[
                           {
@@ -3086,8 +3107,15 @@ export default function App() {
                     </div>
                     <div className="metrics-row">
                       <Metric
-                        label="Completed samples"
-                        value={study.rows.length}
+                        label="Eligible samples"
+                        value={
+                          study.sample_counts?.statistics_eligible ??
+                          study.rows.length
+                        }
+                      />
+                      <Metric
+                        label="Excluded samples"
+                        value={study.sample_counts?.excluded ?? 0}
                       />
                       <Metric
                         label="Mean"
@@ -3106,6 +3134,24 @@ export default function App() {
                         value={study.statistics?.[studyMetric]?.p95}
                       />
                     </div>
+                    {study.sample_counts?.excluded > 0 && (
+                      <details className="warning-list">
+                        <summary>
+                          Excluded flight samples · not completed-performance
+                          statistics
+                        </summary>
+                        {study.rows
+                          .filter(
+                            (row: any) => row.statistics_eligible === false,
+                          )
+                          .map((row: any) => (
+                            <p key={row.index}>
+                              Sample {row.index + 1}:{" "}
+                              {row.statistics_exclusion_reason}
+                            </p>
+                          ))}
+                      </details>
+                    )}
                     {study.failures?.length > 0 && (
                       <div className="warning-list">
                         <AlertTriangle size={15} />

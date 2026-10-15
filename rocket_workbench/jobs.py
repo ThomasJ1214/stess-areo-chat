@@ -376,7 +376,14 @@ def compare(project, conditions, configuration_id=None, options=None, progress=N
         replacement_summary = (result["replacement"]["flight"] or {}).get("summary", {})
         result["flight_deltas"] = {key: replacement_summary[key] - value for key, value in original_summary.items()
             if isinstance(value, (float, int)) and not isinstance(value, bool) and isinstance(replacement_summary.get(key), (float, int))}
-        result["fidelity"] += " Includes point-mass flight comparisons using each model's declared aerodynamic basis."
+        result["flight_performance_eligible"] = all(summary.get("complete") is True for summary in (original_summary, replacement_summary)) and not any(
+            result[label]["flight"].get("validity", {}).get(key) is False for label in ("original", "replacement")
+            if result[label].get("flight") for key in ("within_operating_range", "positive_static_margin_throughout"))
+        if not result["flight_performance_eligible"]:
+            result["observed_flight_deltas"] = result.pop("flight_deltas")
+            result["warnings"].append("At least one flight is incomplete or outside declared model limits. Observed differences are not eligible completed-flight performance comparisons.")
+        result["fidelity"] += " Flight methods: " + "; ".join(
+            f"{label}: {result[label]['flight']['fidelity']}" for label in ("original", "replacement") if result[label].get("flight"))
     if options.get("use_cfd"):
         from .solvers.cfd import solve
         for label, model in [("original", original), ("replacement", project)]:
@@ -389,8 +396,11 @@ def compare(project, conditions, configuration_id=None, options=None, progress=N
                                         telemetry=stage_telemetry)
             result["warnings"].extend(f"{label} CFD: {message}" for message in result[label]["cfd"].get("warnings", []))
             current_stage += 1
-        result["fidelity"] = "Empirical mass/stability comparison plus experimental inviscid Euler geometry comparison."
+        result["fidelity"] += " CFD methods: " + "; ".join(
+            f"{label}: {result[label]['cfd']['fidelity']}" for label in ("original", "replacement"))
     result["warnings"] = list(dict.fromkeys(result["warnings"]))
+    result["backend"] = "; ".join(dict.fromkeys(str(result[label][kind].get("backend", "unavailable"))
+        for label in ("original", "replacement") for kind in ("aero", "flight", "cfd") if result[label].get(kind)))
     return result
 
 
@@ -429,7 +439,7 @@ def study(project, conditions, configuration_id, kind, options, progress, cancel
         values = np.linspace(start, stop, count)
     rows, failures, warnings = [], [], []
     if use_flight and parameter == "angle_of_attack":
-        warnings.append("Angle-of-attack flight sweeps vary the fixed structural-load reference angle; the point-mass flight path does not integrate attitude/incidence.")
+        warnings.append("Angle-of-attack sweeps vary the fixed quasi-static structural reference angle. Rigid-body incidence is an integrated output; point-mass flight has a prescribed axis.")
     for index, value in enumerate(values):
         if cancelled():
             raise RuntimeError("Study cancelled")
@@ -450,7 +460,26 @@ def study(project, conditions, configuration_id, kind, options, progress, cancel
                 "validity": answer.get("validity", {key: answer[key] for key in
                     ["cp_valid", "within_mach_range", "within_small_angle_range", "cad_resolved"] if key in answer})}
             warnings.extend(answer.get("warnings", []))
-            row.update({k: v for k, v in metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
+            numeric = {k: v for k, v in metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v)}
+            if use_flight:
+                row.update({key: metrics.get(key) for key in ("complete", "termination_reason", "recovery_reached", "recovery_deployed")})
+                row["complete"] = metrics.get("complete") is True
+                if not row["complete"] and not row["termination_reason"]:
+                    row["termination_reason"] = "incomplete_flight"
+                limits = [key for key in ("within_operating_range", "positive_static_margin_throughout") if row["validity"].get(key) is False]
+                row["statistics_eligible"] = row["complete"] and not limits
+                row["statistics_exclusion_reason"] = ("Incomplete flight: " + row["termination_reason"] if not row["complete"] else
+                    "Outside declared flight model limits: " + ", ".join(limits) if limits else None)
+                if not row["complete"]:
+                    # Retain actual partial-history numbers without naming an
+                    # ascent sample 'apogee' or presenting an unfinished peak as
+                    # a completed-flight maximum.
+                    row.update({"observed_" + k: v for k, v in numeric.items()})
+                else:
+                    row.update(numeric)
+            else:
+                row["statistics_eligible"] = True
+                row.update(numeric)
             rows.append(row)
         except ValueError as exc:
             failures.append({"index": index, "value": float(value), "error": str(exc)})
@@ -459,13 +488,20 @@ def study(project, conditions, configuration_id, kind, options, progress, cancel
     if not rows:
         raise ValueError("Every study run failed: " + str(failures[:1]))
     statistics = {}
-    for key in rows[0]:
+    eligible = [row for row in rows if row["statistics_eligible"]]
+    for key in dict.fromkeys(key for row in eligible for key in row):
         if key in {"index", "parameter", "value", "gust_seed", "fidelity", "warnings", "validity"}:
             continue
-        numbers = [row[key] for row in rows if key in row]
-        statistics[key] = {"mean": float(np.mean(numbers)), "std": float(np.std(numbers)),
+        numbers = [row[key] for row in eligible if isinstance(row.get(key), (float, int)) and not isinstance(row[key], bool) and np.isfinite(row[key])]
+        if not numbers:
+            continue
+        statistics[key] = {"count": len(numbers), "mean": float(np.mean(numbers)), "std": float(np.std(numbers)),
                            "p05": float(np.percentile(numbers, 5)), "p95": float(np.percentile(numbers, 95))}
+    excluded = len(rows) - len(eligible)
+    if excluded:
+        warnings.append(f"{excluded} incomplete or out-of-domain flight samples are excluded from completed-flight statistics; partial numbers retain observed_ labels.")
     return {"rows": rows, "statistics": statistics, "failures": failures, "parameter": parameter, "seed": study_seed,
+            "sample_counts": {"requested": count, "solved": len(rows), "failed": len(failures), "statistics_eligible": len(eligible), "excluded": excluded},
             "gust_seed_policy": "independent per sample" if kind == "monte_carlo" else "common across sweep",
             "fidelity": "Seeded engineering study, using the same approximations as the selected underlying solver.",
             "warnings": list(dict.fromkeys(warnings + ([f"{len(failures)} sampled inputs failed; statistics exclude them."] if failures else []))), "backend": "CPU"}

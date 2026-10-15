@@ -1,4 +1,4 @@
-# Exercise release 0.3.2 physics through the actual installed executable API.
+# Exercise release physics through the actual installed executable API.
 # No development Python, mocked solver result, CUDA Toolkit or GPU is required.
 # Verification deadlines below do not configure numerical solver stopping limits.
 [CmdletBinding()]
@@ -152,6 +152,23 @@ try {
     $proof.causal_environment = [ordered]@{ checked_prefix_samples = $shared; last_checked_prefix_time_s = $lastSharedTime; maximum_prefix_error = $maximumPrefixError; event_time_s = 0.8; later_velocity_difference_m_s = (Max-Difference $last.velocity_vector $originalLast.velocity_vector) }
 
     $structural = $changed.result.dynamic_structural_analysis
+    if ([version]$ExpectedVersion -ge [version]'0.3.3') {
+        $supportedModels = @($structural.components | Where-Object { $_.supported })
+        Require ($supportedModels.Count -gt 0) 'Exact modal verification has no supported fin model.'
+        foreach ($model in $supportedModels) {
+            Require ($model.time_integrator -eq 'exact_foh' -and $model.retained_modes -eq $model.free_dofs) 'Installed default did not retain the complete exact modal basis.'
+            Require ($null -eq $model.maximum_internal_step_s) 'Exact modal integration incorrectly declares a Newmark timestep.'
+        }
+        $studyStart = Api '/api/jobs' 'POST' @{ kind = 'sweep'; conditions = $conditions; configuration_id = $project.active_configuration_id; options = @{ parameter = 'wind_speed'; start = 0.1; stop = 0.2; count = 2; flight = $true } }
+        $study = Wait-JobResult $studyStart.id
+        Require ($study.result.sample_counts.statistics_eligible -eq 0 -and $study.result.sample_counts.excluded -eq 2) 'Installed partial launch study polluted completed-flight statistics.'
+        Require (@($study.result.statistics.PSObject.Properties).Count -eq 0) 'Partial launch study returned completed-flight aggregate metrics.'
+        foreach ($sample in @($study.result.rows)) {
+            Require (!$sample.complete -and !$sample.statistics_eligible -and $null -ne $sample.observed_apogee_m -and $null -eq $sample.apogee_m) 'Partial launch study lost observed-value labeling.'
+        }
+        $proof.study_eligibility = $study.result.sample_counts
+        $proof.fin_time_integrator = 'exact_foh'
+    }
     Require ($null -ne $structural -and $structural.summary.status -eq 'completed' -and $structural.summary.complete -eq $true -and $structural.summary.substeps -gt 0) 'Installed dynamic fin FEM did not perform and finish its actual internal integration.'
     Require ($structural.summary.supported_components -gt 0 -and $structural.summary.rows_with_available_results -gt 0 -and $structural.summary.unavailable_rows -gt 0) 'Dynamic fin result does not expose actual supported and unavailable flight coverage.'
     Require ($structural.summary.max_stress_pa -gt 0 -and $structural.summary.max_deflection_m -gt 0 -and $changed.result.summary.max_dynamic_fin_stress_pa -gt 0) 'Installed dynamic fin FEM returned no actual nonzero structural response.'

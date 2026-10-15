@@ -5,6 +5,7 @@ import type { Conditions, Configuration, Units } from "./types";
 import "./flightDynamicsControls.css";
 
 export interface FlightOptions {
+  time_integrator: string;
   structural_mode: string;
   damping_ratio: number;
   elements: number;
@@ -183,6 +184,21 @@ export default function FlightDynamicsControls({
       </FieldSelect>
       {options.structural_mode === "dynamic_fins" && (
         <>
+          <FieldSelect
+            label="Fin time integrator"
+            value={String(options.time_integrator ?? "exact_foh")}
+            onChange={(time_integrator) =>
+              onOptions({ ...options, time_integrator })
+            }
+            hint="Exact propagation retains every beam mode for linearly interpolated recorded loads. It cannot recover unrecorded load fluctuations or stress peaks between samples. Legacy Newmark uses fundamental-period substeps and needs higher-mode time-convergence checks."
+          >
+            <option value="exact_foh">
+              Exact modal · recorded linear loads
+            </option>
+            <option value="newmark">
+              Legacy Newmark · convergence study required
+            </option>
+          </FieldSelect>
           <NumberField
             label="Fin modal damping ratio"
             value={options.damping_ratio}
@@ -206,17 +222,19 @@ export default function FlightDynamicsControls({
               }
               hint="Number of one-dimensional bending elements along the fin span. Check convergence by refining this discretization. This is not a three-dimensional solid mesh."
             />
-            <NumberField
-              label="Steps per shortest beam period"
-              value={options.steps_per_period}
-              min={12}
-              max={100}
-              step={1}
-              onChange={(n) =>
-                n !== null && onOptions({ ...options, steps_per_period: n })
-              }
-              hint="Structural substeps used to resolve the complete beam vibration basis. This can cost more than the flight integration; verify time-step sensitivity."
-            />
+            {options.time_integrator === "newmark" && (
+              <NumberField
+                label="Steps per fundamental beam period"
+                value={options.steps_per_period}
+                min={12}
+                max={100}
+                step={1}
+                onChange={(n) =>
+                  n !== null && onOptions({ ...options, steps_per_period: n })
+                }
+                hint="Controls Newmark steps relative to the fundamental period only. Higher modes require a separate time-convergence study."
+              />
+            )}
             <Toggle
               label="Allow isotropic composite approximation"
               value={options.allow_isotropic_surrogate}

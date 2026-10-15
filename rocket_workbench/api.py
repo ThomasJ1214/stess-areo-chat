@@ -462,7 +462,8 @@ def create_app(token: str | None = None, data_dir: Path | None = None) -> FastAP
             # the same file. Global metadata occupies dedicated columns of the
             # first data row; do not repeat kilobytes across every mesh node.
             context = {key: result[key] for key in
-                ["fidelity", "backend", "warnings", "validity", "inputs", "summary", "conventions"] if key in result}
+                ["fidelity", "backend", "warnings", "validity", "inputs", "summary", "conventions",
+                 "wind", "inertia", "numerical_integration", "dynamic_structural_analysis", "sample_counts"] if key in result}
             rows = [dict(row) for row in rows]
             rows[0].update({f"_result_{key}": value for key, value in context.items()})
             fields = list(dict.fromkeys(key for row in rows for key in row))

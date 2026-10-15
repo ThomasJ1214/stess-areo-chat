@@ -45,6 +45,7 @@ export const defaultStudyOptions = {
   seed: 42,
 };
 export const defaultFlightOptions = {
+  time_integrator: "exact_foh",
   structural_mode: "quasi_static",
   damping_ratio: 0.01,
   elements: 12,
@@ -105,6 +106,8 @@ export function restoreSettings(saved?: AnalysisSettings): WorkspaceSettings {
 
 export function restoreFlightOptions(saved?: Record<string, unknown>) {
   const restored = mergeOptions(defaultFlightOptions, saved);
+  if (!["exact_foh", "newmark"].includes(restored.time_integrator))
+    restored.time_integrator = "exact_foh";
   if (!["quasi_static", "dynamic_fins"].includes(restored.structural_mode))
     restored.structural_mode = "quasi_static";
   return restored;

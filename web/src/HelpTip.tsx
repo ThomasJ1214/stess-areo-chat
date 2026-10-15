@@ -746,9 +746,9 @@ export const engineeringGlossary: GlossaryEntry[] = [
       "Number of one-dimensional bending elements along the fin span. Increasing it refines the spanwise beam solution and adds vibration modes; compare convergence. It does not create a three-dimensional shell or solid fin mesh.",
   },
   {
-    term: "Steps per shortest beam period",
+    term: "Steps per fundamental beam period",
     definition:
-      "Structural substeps used to resolve the shortest vibration period in the complete fin beam modal basis. This controls structural time resolution independently of flight samples. Refining it costs time; compare stress and deflection sensitivity.",
+      "Legacy Newmark substeps relative to the fundamental period only; higher modes require time-convergence checks. The default exact modal integrator instead propagates all modes for the recorded linearly interpolated loads, without recovering unrecorded load fluctuations.",
   },
   {
     term: "Allow isotropic composite approximation",

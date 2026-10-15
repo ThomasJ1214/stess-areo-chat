@@ -77,6 +77,28 @@ describe("flight model controls and truthful results", () => {
     expect(html).toContain("Allow isotropic composite approximation");
     expect(html).toContain("not evaluate laminate ply directions");
     expect(html).toContain("ft");
+    expect(html).toContain('value="exact_foh" selected=""');
+    expect(html).not.toContain(
+      'aria-label="Steps per fundamental beam period"',
+    );
+  });
+  it("exposes the legacy fundamental-period control only for Newmark", () => {
+    const html = renderToStaticMarkup(
+      <FlightDynamicsControls
+        conditions={defaultConditions}
+        onConditions={() => {}}
+        options={{
+          ...defaultFlightOptions,
+          structural_mode: "dynamic_fins",
+          time_integrator: "newmark",
+        }}
+        onOptions={() => {}}
+        units="metric"
+      />,
+    );
+    expect(html).toContain('value="newmark" selected=""');
+    expect(html).toContain('aria-label="Steps per fundamental beam period"');
+    expect(html).toContain("Higher modes");
   });
   it("requires source provenance for an explicit dry inertia override and exposes inflation times", () => {
     const configuration = {

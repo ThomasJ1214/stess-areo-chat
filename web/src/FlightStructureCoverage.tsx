@@ -27,7 +27,7 @@ export default function FlightStructureCoverage({
         <ShieldCheck size={14} /> Dynamic fin FEA coverage{" "}
         <HelpTip
           term="Dynamic fin FEA coverage"
-          definition="One-dimensional Euler–Bernoulli fin beam finite elements with consistent mass, a complete modal basis and Newmark time integration. Only supported original fins and valid small-angle pre-recovery loads are solved. A completed flight job does not mean all parts or all flight times have structural results."
+          definition="One-dimensional Euler–Bernoulli fin beam finite elements with consistent mass, a complete modal basis and declared exact-modal or legacy Newmark time integration. Only supported original fins and valid small-angle pre-recovery loads are solved. A completed flight job does not mean all parts or all flight times have structural results."
         />
       </h4>
       <p>

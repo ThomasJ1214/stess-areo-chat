@@ -162,7 +162,8 @@ def _cfd_content(result) -> str:
         output += _pairs({key: transient[key] for key in
             ("duration_s", "completed", "temporal_sampling", "scope") if key in transient})
         output += _table(transient.get("frames", []), ["time_s", "flight_time_s",
-            "freestream_mach", "altitude_msl_m", "dynamic_pressure_pa", "pressure_drag_n"])
+            "freestream_mach", "altitude_msl_m", "dynamic_pressure_pa", "pressure_drag_n",
+            "viscous_drag_n", "total_drag_n", "viscous_force_n", "total_force_n"])
         output += '<p class="muted">Snapshot loads are instantaneous numerical results, not converged steady drag. Full field arrays are available in JSON.</p>'
     history = result.get("history", [])
     if history:
@@ -170,7 +171,8 @@ def _cfd_content(result) -> str:
         for key, title in (("residual", "Fluid steady residual"),
                            ("wall_pressure_residual", "Wall-pressure steady residual"),
                            ("force_residual", "Resultant-force steady residual"),
-                           ("moment_residual", "Centered-moment steady residual")):
+                           ("moment_residual", "Centered-moment steady residual"),
+                           ("wall_viscous_residual", "Viscous-wall steady residual")):
             if any(isinstance(row, Mapping) and key in row for row in history):
                 output += _plot(history, "step", key, title,
                     "Solver iteration (count)", "Residual (dimensionless)")
@@ -259,6 +261,10 @@ def _plot(rows, x_key, y_key, title, x_label, y_label) -> str:
 
 def _flight_content(result) -> str:
     output = _pairs(result.get("summary", {}))
+    for key, title in (("wind", "Wind realization and assumptions"), ("inertia", "Inertia and mass-distribution provenance"),
+                       ("dynamic_structural_analysis", "Dynamic fin model, coverage and assumptions")):
+        if result.get(key):
+            output += f"<h3>{title}</h3>" + _pairs(result[key])
     if result.get("numerical_integration"):
         output += "<h3>Numerical integration and accuracy controls</h3>" + _pairs(result["numerical_integration"])
     if result.get("events"):
@@ -267,6 +273,8 @@ def _flight_content(result) -> str:
         output += "<h3>Recorded flight events</h3>" + _table(events)
     rows = result.get("trajectory", [])
     if rows:
+        if any(isinstance(row, Mapping) and _number(row.get("dynamic_stress")) for row in rows):
+            output += _plot(rows, "time", "dynamic_stress", "Dynamic fin beam stress · supported recorded states", "Time (s)", "Bending stress (Pa)")
         output += _plot(rows, "time", "altitude", "Altitude above launch level", "Time (s)", "Altitude AGL (m)")
         output += _plot(rows, "time", "dynamic_pressure", "Dynamic pressure", "Time (s)", "Dynamic pressure (Pa)")
         for key, title, label in (("velocity", "Velocity", "Velocity (m/s)"),
@@ -336,6 +344,8 @@ svg text{font:11px system-ui,sans-serif;fill:#45586b}.grid{stroke:#dce5ec;stroke
         body += _section("Current minus original differences", _pairs(result.get("deltas", {})))
         if result.get("flight_deltas"):
             body += _section("Flight differences: current minus original", _pairs(result["flight_deltas"]))
+        if result.get("observed_flight_deltas"):
+            body += _section("Partial-history differences · not completed flight performance", _pairs(result["observed_flight_deltas"]))
         if result.get("configurations"):
             configuration_rows = []
             for row in result["configurations"]:
@@ -348,7 +358,8 @@ svg text{font:11px system-ui,sans-serif;fill:#45586b}.grid{stroke:#dce5ec;stroke
             body += _section("Configuration comparison", _table(configuration_rows))
     elif kind in {"sweep", "monte_carlo"}:
         body += _section("Study setup", _pairs({key: result[key] for key in ["parameter", "seed", "gust_seed_policy"] if key in result}))
-        body += _section("Statistics from successful samples", _pairs(result.get("statistics", {})))
+        body += _section("Sample eligibility and exclusions", _pairs(result.get("sample_counts", {})))
+        body += _section("Statistics from eligible samples", _pairs(result.get("statistics", {})))
         body += _section("Recorded study samples", _table(result.get("rows", [])))
         if result.get("failures"):
             body += _section("Excluded failed samples", _table(result["failures"]))

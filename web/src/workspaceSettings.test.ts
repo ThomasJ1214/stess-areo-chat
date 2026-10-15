@@ -61,6 +61,13 @@ describe("portable analysis setup", () => {
   it("restores actual flight solver options with backward-compatible physics defaults", () => {
     const older = restoreSettings();
     expect(older.flight_options).toEqual(defaultFlightOptions);
+    expect(older.flight_options.time_integrator).toBe("exact_foh");
+    expect(
+      restoreFlightOptions({ time_integrator: "unknown" }).time_integrator,
+    ).toBe("exact_foh");
+    expect(
+      restoreFlightOptions({ time_integrator: "newmark" }).time_integrator,
+    ).toBe("newmark");
     expect(older.conditions.flight_model).toBe("point_mass");
     expect(older.conditions.wind_model).toBe("legacy_gust");
     expect(older.conditions.wind_events).toEqual([]);

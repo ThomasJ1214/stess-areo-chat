@@ -66,8 +66,8 @@ strength through transonic flight or recovery opening shock.
 
 Flight options `structural_mode:dynamic_fins` run a separate, one-way structural
 pass over the actual accepted trajectory. The default `quasi_static` option
-retains the preceding estimates. Only original procedural trapezoidal finsets
-are supported: replacing a fin with arbitrary CAD does not silently turn it into
+retains the preceding estimates. Only original procedural trapezoidal finsets with at least three equally spaced
+fins are supported: replacing a fin with arbitrary CAD does not silently turn it into
 a bounding-box beam. Materials require finite positive density/E and an
 appropriate strength value. Fiberglass/carbon labels require explicit acceptance
 of an isotropic surrogate; the reported strength ratio is not laminate failure.
@@ -77,8 +77,13 @@ linearly varying chord, `I(s)=chord(s) thickness³/12` and distributed mass
 `ρ chord(s) thickness`. Cubic Hermite elements assemble actual bending stiffness
 and consistent mass matrices. All free bending modes are retained; there is no
 hidden single-mode truncation. A uniform assumed modal damping ratio is supplied
-by the user (default 0.01). Average-acceleration Newmark integration uses substeps
-bounded by the shortest modal period and the requested steps per period.
+by the user (default 0.01). The default exact-modal integrator propagates all modes analytically for the
+piecewise-linear prescribed loads between recorded timestamps. Small phase
+increments use a dimensionless augmented matrix exponential to avoid cancellation.
+It eliminates modal integration truncation error for that imposed load history;
+it does not recover unrecorded high-frequency forcing or between-sample stress
+extrema. Optional legacy Newmark substeps target the fundamental period only,
+so higher modes require separate temporal convergence checks.
 
 Loads project recorded original-reference aerodynamic force onto each fin's
 actual normal, using the solved quaternion when available. Point-mass runs use
@@ -101,10 +106,11 @@ The flight model's own limitations still apply to every imposed load.
 
 | Flight structural option | Default and range |
 | --- | --- |
+| `time_integrator` | `exact_foh` default; `newmark` retains legacy fundamental-period stepping |
 | `elements` | 12 span elements; 2–64 |
 | `damping_ratio` | 0.01 assumed modal ratio; 0–0.2 |
-| `steps_per_period` | 30; 12–100 |
-| `max_substeps` | 300,000; 1–2,000,000 |
+| `steps_per_period` | Legacy Newmark only: 30 per fundamental period; 12–100 |
+| `max_substeps` | 300,000; 1–2,000,000 state propagations (intervals in exact mode) |
 | `max_incidence_deg` | 10°; may narrow the small-angle load domain |
 | `allow_isotropic_surrogate` | false; explicit acknowledgement required for composite-labelled material |
 

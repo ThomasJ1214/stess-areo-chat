@@ -273,7 +273,7 @@ stored solution fields, and it requires a new actual simulation.
 
 Before launch, select **Dynamic fin bending · 1D beam FEA** under **Flight
 structural model**. Set a justified **Fin modal damping ratio**. In its advanced
-controls, compare **Fin beam elements** and **Steps per shortest beam period**
+controls, compare **Fin beam elements** and **Steps per fundamental beam period** (legacy Newmark only)
 for sensitivity. Fiberglass/carbon require an explicit **Allow isotropic
 composite approximation** acknowledgement; a scalar stiffness cannot represent
 laminate directions or composite failure criteria.
@@ -508,3 +508,5 @@ does not establish that the clamps, materials or loads match the real rocket.
 The [validation record](VALIDATION.md) describes reference and integration checks.
 Those checks verify calculations and workflows; they do not establish flight-test
 or wind-tunnel agreement for your particular rocket.
+
+For dynamic fins, **Fin time integrator → Exact modal** is the default. It solves all beam modes for linearly interpolated recorded loads. Refine flight sampling to check load bandwidth and sampled stress peaks; exact modal propagation cannot recreate unrecorded loads. Studies exclude incomplete/out-of-domain flights from completed-flight statistics, retaining partial data with `observed_` names and exclusion reasons.

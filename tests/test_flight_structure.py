@@ -254,7 +254,7 @@ def test_recovery_or_invalid_load_interval_is_never_interpolated():
 
 def test_work_budget_and_cancellation_return_aligned_partial_unavailable_states():
     project, rows = isotropic_project(), reference_rows()
-    partial = analyze_flight_structure(project, rows, options={"max_substeps": 1})
+    partial = analyze_flight_structure(project, rows, options={"max_substeps": 1, "time_integrator": "newmark"})
     assert partial["summary"]["status"] == "work_budget" and not partial["summary"]["complete"]
     assert len(partial["trajectory"]) == len(rows)
     assert partial["trajectory"][0]["components"][0]["supported"]

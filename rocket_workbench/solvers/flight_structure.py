@@ -1,7 +1,8 @@
 """Transient original-fin beam FEM driven by recorded flight loads.
 
 This is an actual Euler--Bernoulli finite-element dynamics calculation, with
-consistent mass and Newmark average acceleration in a complete modal basis.
+consistent mass and exact first-order-hold or legacy Newmark propagation in a
+complete modal basis.
 Its load history remains an original-reference aerodynamic engineering estimate;
 it is neither 3D transient solid FEA, CFD coupling, laminate analysis nor flutter.
 Source component geometry, materials and the input trajectory are never modified.
@@ -12,13 +13,13 @@ import math
 import time
 
 import numpy as np
-from scipy.linalg import eigh
+from scipy.linalg import eigh, expm
 from scipy.spatial.transform import Rotation
 
 from ..models import Project, active_components
 
 FIDELITY = ("Dynamic Euler–Bernoulli fin beam finite-element analysis; consistent mass, "
-            "full modal coordinates, Newmark average acceleration; original-reference aerodynamic load estimates")
+            "full modal coordinates; original-reference aerodynamic load estimates")
 _FINS = {"finset", "trapezoidfinset", "freeformfinset", "ellipticalfinset", "fin"}
 _SUPPORTED_FINS = {"finset", "trapezoidfinset", "fin"}
 
@@ -106,6 +107,43 @@ def newmark_step(displacement, velocity, acceleration, next_force, mass, damping
             predicted_velocity + 0.5*dt*new_acceleration, new_acceleration)
 
 
+def exact_foh_step(displacement, velocity, force_start, force_end, omega, damping_ratio, dt):
+    """Exact mass-normalized modal response to a linearly varying imposed force.
+
+    All modes are propagated; no assumption that a flight sample resolves the
+    modal period is made. This does not recover unrecorded load fluctuations or
+    extrema between output samples. Small phase increments use a dimensionless
+    augmented exponential to avoid cancellation in the ramp particular solution.
+    """
+    omega = np.asarray(omega, dtype=float)
+    if dt <= 0 or not math.isfinite(dt) or not np.isfinite(omega).all() or np.any(omega <= 0) or not 0 <= damping_ratio < 1:
+        raise ValueError("Exact modal propagation requires positive finite dt/frequencies and undercritical damping.")
+    q, v, f0, f1 = np.broadcast_arrays(displacement, velocity, force_start, force_end)
+    if q.ndim < 1 or q.shape[0] != len(omega) or not all(np.isfinite(value).all() for value in (q, v, f0, f1)):
+        raise ValueError("Modal states/forces must be finite and match the frequency count.")
+    w = omega.reshape((-1,) + (1,) * (q.ndim - 1))
+    decay = np.exp(-damping_ratio*w*dt)
+    wd = w*math.sqrt(1-damping_ratio**2)
+    sine, cosine = np.sin(wd*dt), np.cos(wd*dt)
+    ramp = (f1-f0)/dt
+    slope = ramp/w**2
+    intercept = (f0-2*damping_ratio*w*slope)/w**2
+    a, b = q-intercept, v-slope
+    next_q = decay*((cosine+damping_ratio*w*sine/wd)*a+sine/wd*b)+intercept+slope*dt
+    next_v = decay*(-w**2*sine/wd*a+(cosine-damping_ratio*w*sine/wd)*b)+slope
+    for i in np.flatnonzero(omega*dt < .05):
+        # Dimensionless [q, v/w, f/w², f_dot/w³]. Matrix magnitudes stay O(1)
+        # even for very high frequencies or a root-located very short interval.
+        matrix = np.array([[0., 1., 0., 0.], [-1., -2*damping_ratio, 1., 0.],
+                           [0., 0., 0., 1.], [0., 0., 0., 0.]])
+        transfer = expm(matrix*(omega[i]*dt))
+        initial = np.stack((q[i], v[i]/omega[i], f0[i]/omega[i]**2, ramp[i]/omega[i]**3))
+        propagated = np.tensordot(transfer[:2], initial, axes=(1, 0))
+        next_q[i], next_v[i] = propagated[0], propagated[1]*omega[i]
+    next_a = f1-2*damping_ratio*w*next_v-w**2*next_q
+    return next_q, next_v, next_a
+
+
 def _span_stress(model, displacements):
     """Signed surface bending stress from actual FE curvature; average shared nodes."""
     result = np.zeros((len(model["span_m"]), displacements.shape[1]))
@@ -172,6 +210,8 @@ def _original_slope(component, reference_radius, mach):
 
 
 def _fin_load(row, component, radius, maximum_incidence):
+    if component.fin_count < 3:
+        return None, "Directional load partition requires at least three equally spaced fins.", None, False
     phase = str(row.get("phase", "powered"))
     if phase in {"drogue", "main", "recovery", "landed"}:
         return None, "Recovery/landing fin loads are unavailable: canopy attachment and recovery attitude/opening shock are not modeled.", None, False
@@ -208,6 +248,8 @@ def _fin_load(row, component, radius, maximum_incidence):
     # Uniform radial finsets have sum(n*n.T)=N/2 in the transverse plane (N>=3).
     # This resolves different individual-fin forces instead of equal-load colors.
     per_fin = 2 / component.fin_count * (normals @ resultant)
+    if not np.allclose(normals.T @ per_fin, resultant, rtol=1e-9, atol=1e-10):
+        return None, "Recorded component force cannot be reconstructed by the fin-normal basis.", incidence, resolved
     return per_fin, fidelity, incidence, resolved
 
 
@@ -228,6 +270,9 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
     Work exhaustion/cancellation returns aligned partial rows with explicit status.
     """
     options = dict(options or {})
+    integrator = options.get("time_integrator", "exact_foh")
+    if integrator not in {"exact_foh", "newmark"}:
+        raise ValueError("Fin time_integrator must be exact_foh or newmark.")
     elements = _number(options, "elements", 12, 2, 64, True)
     damping_ratio = _number(options, "damping_ratio", .01, 0, .2)
     steps_per_period = _number(options, "steps_per_period", 30, 12, 100)
@@ -254,6 +299,8 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
                 "Uniform modal damping is an explicit user assumption, not measured damping. All finite-element modes are retained; time-step targets resolve the fundamental mode, so higher-mode response and sampled load changes require time/mesh convergence.",
                 "Loads are piecewise-linear original-reference aerodynamic estimates at recorded flight timestamps, not CFD pressure or recovery-opening shock. Initial state assumes static equilibrium at the first valid load with zero velocity.",
                 "Recorded transverse specific acceleration supplies translational fin-root inertial loading (gravity excluded). Rotating-frame Euler, centrifugal, gyroscopic and geometric-stiffening terms are not solved."]
+    if integrator == "exact_foh":
+        warnings[1] = "Uniform modal damping is a user assumption. Every finite-element mode is propagated exactly for the prescribed piecewise-linear recorded loads; unrecorded high-frequency forcing and between-sample stress extrema remain unresolved."
     if any(component.external and component.asset_id and component.geometry_mode == "replacement" for component in parts):
         warnings.append("Other exterior CAD replacements are preserved; fin loads retain original-reference body/fin interference. Changed CAD interference is unresolved and these loads cannot establish CAD-resolved aerodynamics.")
     if any(row.get("polar_applied") for row in rows):
@@ -271,6 +318,8 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
             reason = "CAD replacement fin geometry requires an explicit structural model; no bounding-box beam is substituted."
         elif component.kind not in _SUPPORTED_FINS:
             reason = "Freeform/elliptical fins require a verified span section model; no trapezoid geometry is substituted."
+        elif component.fin_count < 3:
+            reason = "Directional fin load partition requires at least three equally spaced fins; one/two-fin systems need an independently justified directional aerodynamic model."
         elif min(component.span, component.root_chord, component.thickness) <= 0:
             reason = "Fin span, root chord and measured thickness must be positive."
         elif component.span / component.thickness < 10:
@@ -319,9 +368,9 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
                       "maximum_internal_step_s": maximum_dt, "steps_per_fundamental_period": steps_per_period,
                       "initial_condition": "Static equilibrium at first valid input; zero modal velocity",
                       "initial_time_s": None, "final_time_s": None, "substeps": 0}
+        descriptor["time_integrator"] = integrator
+        descriptor["maximum_internal_step_s"] = maximum_dt if integrator == "newmark" else None
         descriptors.append(descriptor)
-        if component.fin_count < 3:
-            warnings.append(f"{component.name}: one/two-fin forces use the original azimuth-averaged slope as a directional estimate; their summed loads need independent validation.")
         displacement = velocity = acceleration = None
         previous_load, previous_time, closed_reason = None, None, None
         for index, (row, stamp) in enumerate(zip(rows, times)):
@@ -361,7 +410,7 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
                 acceleration = np.zeros_like(displacement)
                 descriptor["initial_time_s"] = float(stamp)
             else:
-                count = max(1, math.ceil((stamp - previous_time) / maximum_dt))
+                count = max(1, math.ceil((stamp - previous_time) / maximum_dt)) if integrator == "newmark" else 1
                 if total_steps + count > max_substeps:
                     status, closed_reason = "work_budget", "Structural substep budget exhausted; increase max_substeps or narrow the analysis interval. No later states were simulated."
                     output[index]["components"].append(_unavailable(component, closed_reason))
@@ -378,8 +427,12 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
                     fraction = substep / count
                     step_load = previous_load + fraction * (load - previous_load)
                     step_force = unit_modal[:, None] * step_load[None, :]
-                    displacement, velocity, acceleration = newmark_step(displacement, velocity, acceleration, step_force,
-                        1., damping[:, None], stiffness[:, None], dt)
+                    if integrator == "exact_foh":
+                        displacement, velocity, acceleration = exact_foh_step(displacement, velocity,
+                            unit_modal[:, None]*previous_load[None, :], step_force, omega, damping_ratio, dt)
+                    else:
+                        displacement, velocity, acceleration = newmark_step(displacement, velocity, acceleration, step_force,
+                            1., damping[:, None], stiffness[:, None], dt)
                     total_steps += 1
                     descriptor["substeps"] += 1
                 if closed_reason:
@@ -418,7 +471,7 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
             output[index]["components"].append({"component_id": component.id, "name": component.name,
                 "supported": True, "stress_pa": peak, "deflection_m": deflection,
                 "safety_factor": material.yield_strength / peak if peak > 0 and not composite else None,
-                "fidelity": FIDELITY, "load_fidelity": load_fidelity, "angle_of_attack_deg": incidence,
+                "fidelity": FIDELITY + "; " + integrator, "load_fidelity": load_fidelity, "angle_of_attack_deg": incidence,
                 "resolved_attitude": resolved, "translational_base_inertia_included": inertia_recorded,
                 "relative_dynamic_equilibrium_residual": residual,
                 "small_deflection_within_range": deflection <= .05 * component.span, "fins": fin_rows})
@@ -442,8 +495,8 @@ def analyze_flight_structure(project: Project, trajectory, configuration_id=None
     if status != "completed":
         warnings.append(f"Stopping reason: {status}. Unsolved states remain unavailable and are not interpolated or labeled complete.")
     if progress:
-        progress(1., f"Dynamic fin analysis {status}; {total_steps:,} actual Newmark substeps")
-    return {"trajectory": output, "components": descriptors, "fidelity": FIDELITY,
+        progress(1., f"Dynamic fin analysis {status}; {total_steps:,} actual {integrator} propagations")
+    return {"trajectory": output, "components": descriptors, "fidelity": FIDELITY + "; " + integrator,
             "backend": "CPU NumPy/SciPy; complete beam modal basis", "warnings": list(dict.fromkeys(warnings)),
             "summary": {"status": status, "complete": status == "completed", "substeps": total_steps,
                 "elapsed_seconds": time.perf_counter() - started, "max_stress_pa": max_stress,

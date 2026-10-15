@@ -272,8 +272,14 @@ seeds per sample. Flight speed/Mach are integrated outputs and cannot be swept a
 independent flight inputs. Static angle-of-attack flight sweeps vary the structural
 reference loading angle; rigid-body incidence is an integrated result rather than
 an independently prescribed static angle.
-Failed samples are reported and excluded from statistics. Completed runs outside
-method limits remain visibly flagged estimates in the exported rows.
+Failed samples are reported and excluded from statistics. Flight rows preserve
+completion, recovery, termination and statistics-eligibility status. Incomplete
+histories use `observed_` metric names and never enter completed-flight statistics.
+Flights outside their operating/static-stability limits are also excluded;
+`sample_counts` and per-metric counts describe the actual contributing population.
+Partial comparison differences are separately labelled `observed_flight_deltas`.
+Dynamic fin jobs accept `time_integrator:exact_foh` (default) or legacy `newmark`;
+the selected method and full-basis model remain recorded in structural metadata.
 
 Current scientific scope: Barrowman small-angle stability and documented Mach
 corrections up to 2; passive point-mass or small-angle quaternion rigid-body
