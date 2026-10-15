@@ -63,9 +63,12 @@ the local last-session file is a convenience, not a backup.
    enter the real settings and enable **Recovery settings confirmed**.
 7. Click **Apply flight setup**, then **Save project**.
 
-The first release supports passive single-stage, single-motor high-power rockets
-through Mach 2. Flight is a point-mass model; it does not solve attitude,
-weathercocking, tumbling, active guidance or recovery opening shock.
+The supported target is passive single-stage, single-motor high-power rockets
+through Mach 2. Point-mass flight retains a prescribed gravity-turn axis.
+Optional rigid-body 6DOF integrates attitude and angular rates using small-angle
+engineering forces and moments. It can respond to wind but does not supply
+validated large-angle, tumbling, active-guidance or recovery-opening physics.
+Read the supported-domain warnings before using either trajectory.
 
 ### Find and review a motor curve online
 
@@ -178,7 +181,16 @@ reference area. Geometry edits invalidate that table. See [PHYSICS.md](PHYSICS.m
 1. Open **Flight**. Set launch altitude, wind, **Launch rail length**, **Angle
    from vertical**, launch azimuth, time step and duration limit. The rocket
    starts on a launch rail above a flat ground plane. Check that the setup matches
-   your intended rail and configuration.
+   your intended rail and configuration. Under **Flight dynamics model**, choose
+   **Rigid body · 6DOF** to calculate orientation and angular rates, or retain
+   **Point mass** for the previous gravity-turn model. Rigid-body inertia comes
+   from supported geometry and declared approximations; Flight setup accepts a
+   measured complete dry-rocket inertia tensor and source. A supplied Cmq adds
+   pitch/yaw damping; missing coefficients do not invent damping.
+   Choose **Wind model** deliberately. Dryden stochastic gusts use a fixed
+   transport speed and user-assumed correlation length. Smooth gusts retain the
+   earlier seeded sine-wave model. Both use the random seed and turbulence
+   intensity; neither supplies measured weather or resolved turbulent CFD.
 2. Click the large red **Launch** button. The app first calculates the complete
    flight. Progress shows percent, elapsed time and ETA;
    ETA is an estimate. Use **Cancel** to stop a long job. Setup controls are
@@ -189,7 +201,9 @@ reference area. Geometry edits invalidate that table. See [PHYSICS.md](PHYSICS.m
 3. Use play/pause, playback speed and **Flight timeline** to scrub. Click events
    to inspect rail exit, burnout, max acceleration, max Q, apogee and recovery.
    The trail follows the computed trajectory and wind indicators show the model's
-   wind. Rocket attitude is illustrative because this is a point-mass model.
+   wind. Rigid-body playback uses saved quaternion attitude and interpolates it
+   smoothly for viewing; point-mass orientation remains prescribed. Smooth
+   camera motion and display interpolation do not change the calculated physics.
 4. Drag to orbit, right-drag to pan, or scroll to zoom at any time. In **Follow**,
    automatic tracking resumes five seconds after your camera interaction ends;
    **Resume follow** restores it immediately. **Overview** fits the flight path;
@@ -208,7 +222,9 @@ reference area. Geometry edits invalidate that table. See [PHYSICS.md](PHYSICS.m
    not a predicted completed landing; the map explicitly reports no landing
    point when ground contact was not reached.
 6. Read flight graphs and the selected time's velocity, acceleration, Mach,
-   dynamic pressure and supported beam-stress estimate.
+   dynamic pressure and supported beam-stress estimate. **Attitude & recovery**
+   shows solved incidence, angular rates and forces when available; missing
+   point-mass attitude data are unavailable, not zero angular motion.
 7. Check whether recovery was deployed and ground contact was reached. A duration
    limit can yield an incomplete flight; an undeployed impact is explicitly
    different from parachute recovery. Extend the duration if necessary.
@@ -217,13 +233,72 @@ reference area. Geometry edits invalidate that table. See [PHYSICS.md](PHYSICS.m
    even after later edits. Reports show the source hash, method and warnings.
 
 Wind direction is a *toward* direction. Flight uses north=0°, east=90°; static
-rocket wind uses +Y=0°, +Z=90°. Turbulence is a reproducible gust estimate, not
-resolved turbulent CFD. Flight stress is quasi-static beam/fin estimation,
-not transient FEA or a resolved parachute-opening load.
+rocket wind uses +Y=0°, +Z=90°. **Wind shear exponent** optionally applies a
+user-assumed power law versus height above the flat launch plane. Zero retains
+height-independent wind. Dryden's **Gust sample interval** is independent of the
+flight integrator; smaller values retain faster gust changes but cost memory.
+Compare justified scales, sample intervals and seeds for sensitivity.
+
+Rigid-body forces still rely on small-angle coefficients and reference CP.
+Significant unsupported high incidence stops the un-recovered free-flight
+calculation rather than inventing tumbling physics; check completion and validity.
+Initial roll can evolve without a supplied aerodynamic roll/cant model.
+Main/drogue **inflation time** grows lumped Cd × area linearly; zero preserves
+instant deployment. This does not solve line shock, suspension motion or canopy
+shape. Flight stress estimates remain distinct from dynamic fin FEA and neither
+resolves full-vehicle recovery opening loads.
+
+### Change wind or air during playback
+
+1. Pause or scrub the flight timeline to the desired timestamp.
+2. If **Setup changed since this flight** appears, click **Recalculate flight**
+   first. The old playback and geometry retain their original run inputs.
+3. Open **Live environment · recalculate from a selected moment**. Enter the
+   new lateral wind, toward-bearing direction, gust intensity and transition
+   time. An optional temperature deviation changes the standard-atmosphere
+   offset; blank preserves the preceding temperature schedule.
+4. Click **Apply from selected time**. The app recalculates the actual launch
+   with this scheduled input and resumes playback at that moment. The
+   prescribed wind history before the timestamp stays unchanged; numerical
+   trajectory samples may differ slightly because the new event partitions
+   the adaptive integration.
+5. Inspect the schedule, wind/attitude/load graphs and landing response.
+   Transition windows cannot overlap. **Clear schedule for next launch** removes
+   events from the next run; recalculate to obtain its new results.
+
+This control changes atmospheric inputs. It does not steer the rocket or edit
+stored solution fields, and it requires a new actual simulation.
+
+### Add time-dependent fin bending
+
+Before launch, select **Dynamic fin bending · 1D beam FEA** under **Flight
+structural model**. Set a justified **Fin modal damping ratio**. In its advanced
+controls, compare **Fin beam elements** and **Steps per shortest beam period**
+for sensitivity. Fiberglass/carbon require an explicit **Allow isotropic
+composite approximation** acknowledgement; a scalar stiffness cannot represent
+laminate directions or composite failure criteria.
+
+After calculation, inspect **Dynamic fin FEA** graphs and the structural coverage
+panel. Dynamic stress/deflection come from a time-integrated Euler–Bernoulli beam
+model of original trapezoidal fins under saved aerodynamic and translational
+inertial loads. CAD replacement fins are unsupported. These results are separate
+from the quasi-static stress estimate. Choose the desired stress source in the
+viewer: dynamic colors show each supported fin component's peak beam stress,
+while exported nodal values retain the span distribution. They are not a 3D
+solid heatmap. Unsupported fins, recovery and unavailable load intervals leave
+gaps or gray parts; they do not imply zero stress. Check structural coverage even
+when the flight job finished. This solver excludes rotational base inertia,
+bonded joints, full-vehicle shell/solid dynamics, flutter and fluid–structure
+coupling.
 
 ## 6. Solve exterior flow with CFD
 
 1. Open **CFD** and confirm actual exterior geometry and operating conditions.
+   Choose **CFD physics model**. **Euler** computes inviscid pressure flow with
+   slip walls. **Experimental laminar Navier–Stokes** adds molecular Newtonian
+   viscosity, Fourier heat conduction and stationary no-slip adiabatic walls.
+   It does not add turbulence, transition or a wall function; neither option
+   establishes accurate whole-rocket drag on a coarse grid.
 2. Start with a modest grid/cell budget. Lengthwise and transverse resolution
    are separate so slender rockets still resolve their diameter and fins.
 3. Select CPU, automatic, or GPU and open **GPU diagnostics** if GPU execution is
@@ -240,14 +315,23 @@ not transient FEA or a resolved parachute-opening load.
    Initialization and field extraction are separate phases outside that ETA.
    For transient launch flow, use **Launch history** and choose the whole flight
    or a short interval. The app uses calculated air-relative velocity, wind and
-   atmosphere. A fixed-condition transient test is also available.
+   atmosphere. Rigid-body histories also use saved quaternion attitude and roll
+   to express that boundary velocity in the original CAD axes; point-mass
+   histories use their prescribed body-axis convention. A fixed-condition
+   transient test is also available.
    **Each selected interval starts with uniform freestream at its first launch
    timestamp, rather than resuming an earlier CFD state.** Start before the
    event you want to inspect and compare earlier start times to assess startup
    effects; a short window around max Q omits the fluid history before its start.
 5. Click **Solve flow field**. Pressure/velocity fields are actual numerical
    outputs. Check stopping reason, convergence history, wall/force convergence,
-   grid spacing and geometry/flow diagnostics before using loads.
+   grid spacing and geometry/flow diagnostics before using loads. Laminar
+   convergence independently includes viscous-wall traction changes, and its
+   force/moment criteria include both pressure and full viscous traction.
+   **Computed viscous force component**, **Pressure + viscous drag** and
+   **Fluid wall shear stress** are separate from pressure-only force and solid
+   material stress. Transient playback reports the selected actual state's
+   loads; a finished interval does not make them steady or validated.
 6. Enable **Streamlines** and **Pressure** in the 3D overlays. In **Flow display**,
    adjust **Streamline density**, **Streamline length** and **Streamline color**.
    The speed legend comes from the solved field. **Direction tracers** use visual
@@ -272,13 +356,34 @@ not transient FEA or a resolved parachute-opening load.
    steady answer alone does not establish resolution independence or physical
    accuracy. Export the full **Flow solution JSON** to preserve fields.
 
-This solver is experimental compressible inviscid Euler, with staircase walls.
-It omits viscosity, skin friction, boundary layers and turbulence. Low-Mach
-pressure forces are particularly sensitive to numerical dissipation. Its
-pressure drag is not a validated total drag coefficient. Completed transient
-fields are instantaneous loads, not steady drag. Launch-driven CFD prescribes a
-one-way airflow history on fixed geometry; it does not model rotating vehicle
-attitude, moving meshes, canopy shape changes or feedback into the trajectory.
+Both solvers use an experimental first-order compressible Cartesian scheme with
+staircase walls. Euler omits viscosity. Laminar transport computes real molecular
+stress and heat conduction, but rocket boundary layers can be far thinner than
+the mesh, and numerical diffusion can overwhelm those physical terms. Neither
+mode supplies transition or turbulent flow physics. Low-Mach pressure forces
+remain particularly sensitive to acoustic numerical dissipation.
+
+Laminar **Run diagnostics**, warnings and exported `summary.transport` describe
+the **initial freestream reference**: Reynolds number, viscosity/conductivity and
+a characteristic numerical-to-molecular diffusivity ratio. They are not updated
+to match every playback timestamp. A large ratio warns that adding physical
+viscosity has not resolved the boundary layer; the ratio is a diagnostic scale,
+not a measured error bound. Compare grid/domain refinement and trusted data.
+Sutherland viscosity and a fixed Prandtl number set transport properties.
+Adiabatic walls have zero imposed heat flux; the model does not predict wall
+heating with an external thermal boundary condition.
+
+Surface exports distinguish gauge-pressure loading, tangential fluid shear,
+full viscous traction and their sum. These loads integrate every exposed voxel
+face; display sampling does not reduce the integration. **CFD pressure transfer
+to FEA remains pressure-only**, excluding viscous normal and tangential traction.
+The computed total pressure-plus-viscous drag is not a validated rocket drag
+coefficient. Completed transient fields are instantaneous loads, not steady drag.
+
+Launch-driven CFD prescribes one-way airflow on fixed geometry. It uses saved
+rigid-body orientation when available to rotate the boundary inputs, but does
+not implement moving meshes, rotating-frame forces, canopy shape changes or
+CFD force feedback into the trajectory.
 Whole-flight CFD can require millions of acoustic CFL steps. Begin with a short
 interval. See [CFD.md](CFD.md).
 
@@ -337,8 +442,10 @@ The source job is session-local: export its JSON and recorded inputs before
 closing. A downloaded FEA input project alone does not include that solved field;
 rerun its source CFD before pressure transfer in a new session.
 
-FEA is linear isotropic static elasticity. It does not model laminate failure,
-yielding/plasticity, buckling, joints/contact, flutter or transient opening shock.
+Component solid FEA in **Structures** is linear isotropic static elasticity.
+It does not model laminate failure, yielding/plasticity, buckling, joints/contact,
+flutter or transient opening shock. The separate dynamic fin beam option in
+**Flight** retains its own limited geometry, load coverage and damping assumptions.
 See [STRUCTURAL.md](STRUCTURAL.md).
 
 ### If FEA asks for mesh size ≤ thickness/2
@@ -371,7 +478,8 @@ does not establish that the clamps, materials or loads match the real rocket.
 - A parameter/wind sweep changes one input with a common gust realization.
   Flight speed and Mach are outputs; use wind, launch altitude/angle, rail length
   or other supported flight inputs. An angle-of-attack flight sweep changes
-  the structural reference angle rather than integrating attitude.
+  the static structural reference angle; rigid-body incidence comes from solved
+  attitude and wind, rather than that entered static-test angle.
 - Monte Carlo uses the displayed seed and records failed samples. Statistics
   exclude failed inputs; examine warnings and validity in the individual rows.
 - **Save project** preserves geometry, materials, motors, configuration, units

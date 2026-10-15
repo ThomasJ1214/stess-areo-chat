@@ -207,17 +207,19 @@ export function Metric({
   value,
   unit,
   color,
+  definition,
 }: {
   label: string;
   value: unknown;
   unit?: string;
   color?: string;
+  definition?: string;
 }) {
   return (
     <div className="metric">
       <span>
         {label}
-        <HelpTip term={label} />
+        <HelpTip term={label} definition={definition} />
       </span>
       <strong style={color ? { color } : undefined}>
         {typeof value === "number" ? fmt(value) : String(value ?? "—")}{" "}
@@ -412,17 +414,19 @@ export function FieldSelect({
   value,
   onChange,
   children,
+  hint,
 }: {
   label: string;
   value: string;
   onChange: (s: string) => void;
   children: React.ReactNode;
+  hint?: string;
 }) {
   return (
     <div className="field">
       <span>
         {label}
-        <HelpTip term={label} />
+        <HelpTip term={label} definition={hint} />
       </span>
       <select
         aria-label={label}

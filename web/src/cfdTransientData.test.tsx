@@ -118,6 +118,43 @@ describe("actual transient CFD snapshot selection", () => {
     expect(selected.samples[1].mach).toBeCloseTo(5 / 330);
     expect(selected.summary.max_mach).toBeCloseTo(5 / 330);
   });
+  it("selects laminar wall traction and total force from the actual frame, never final run fields", () => {
+    const data: any = result();
+    data.summary.physics_model = "laminar";
+    data.summary.viscous_drag_n = 9999;
+    data.summary.total_drag_n = 99999;
+    data.transient.frames.forEach((frame: any, index: number) =>
+      Object.assign(frame, {
+        surface_viscous_traction_pa: [[index, 2, 0]],
+        surface_shear_traction_pa: [[0, index, 0]],
+        surface_shear_stress_pa: [index],
+        surface_total_traction_pa: [[index + 100, 2, 0]],
+        surface_wall_fluid_temperature_k: [280 + index],
+        pressure_force_n: frame.force_n,
+        viscous_force_n: [index, 0, 0],
+        total_force_n: [frame.force_n[0] + index, 5, 0],
+        viscous_drag_n: index,
+        total_drag_n: frame.pressure_drag_n + index,
+        viscous_moment_about_origin_nm: [0, 0, index],
+        total_moment_about_origin_nm: [0, 0, 5 + index],
+      }),
+    );
+    delete data.transient.frames[1].pressure_force_n;
+    const before = JSON.stringify(data);
+    const selected = selectCfdFrame(data, 1);
+    expect(selected.summary.viscous_drag_n).toBe(1);
+    expect(selected.summary.total_drag_n).toBe(21);
+    expect(selected.summary.force_n).toEqual([20, 5, 0]);
+    expect(selected.summary.pressure_force_n).toEqual([20, 5, 0]);
+    expect(selected.summary.total_force_n).toEqual([21, 5, 0]);
+    expect(selected.surface[0].shear_stress_pa).toBe(1);
+    expect(selected.surface[0].wall_fluid_temperature_k).toBe(281);
+    expect(selected.summary.max_wall_shear_stress_pa).toBe(1);
+    expect(JSON.stringify(data)).toBe(before);
+    const malformed = structuredClone(data);
+    malformed.transient.frames[1].surface_viscous_traction_pa.pop();
+    expect(selectCfdFrame(malformed, 1)).toBeNull();
+  });
 
   it("holds accepted states on irregular saved times instead of inventing an intermediate field", () => {
     const data = result();

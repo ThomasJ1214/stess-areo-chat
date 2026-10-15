@@ -45,7 +45,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Partial pressure force",
     aliases: ["Inviscid pressure drag", "Instantaneous pressure force"],
     definition:
-      "The current resultant from computed exterior surface pressures, projected along the incoming freestream direction. A partial solution is not a steady-flow prediction. This inviscid solver omits skin friction, boundary layers, viscous separation, and turbulence; its result is not total aerodynamic drag. Low-Mach pressure forces are particularly unreliable.",
+      "The resultant from computed exterior surface pressures, projected along the incoming freestream direction. A partial solution is not a steady-flow prediction. This pressure-only quantity excludes viscous traction even when laminar transport is selected; the separate total load adds it. First-order numerical diffusion and low-Mach pressure errors still require validation.",
   },
   {
     term: "Mach",
@@ -81,7 +81,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Cd",
     aliases: ["CD", "Drag coefficient", "Total Cd"],
     definition:
-      "Dimensionless drag coefficient: drag divided by dynamic pressure times reference area. The reference area and coefficient source must match. The fast model estimates drag; experimental inviscid CFD supplies pressure drag and omits skin friction.",
+      "Dimensionless drag coefficient: drag divided by dynamic pressure times reference area. The reference area and coefficient source must match. The fast model estimates drag. Euler CFD supplies pressure-only drag; optional laminar transport also computes viscous loading, but unresolved boundary layers and absent turbulence prevent a validated total-drag claim.",
   },
   {
     term: "CNa",
@@ -99,7 +99,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Angle of attack",
     aliases: ["AoA", "AOA", "Incidence"],
     definition:
-      "Angle between the rocket reference axis and incoming relative airflow. Static angle of attack acts in the model XY plane; sideslip acts in XZ. Flight does not integrate attitude: the entered angle is a fixed reference for structural estimates, not the actual flight attitude.",
+      "Angle between the rocket nose axis and its air-relative velocity. Static angle of attack acts in model XY; sideslip acts in XZ. The rigid-body flight model calculates changing incidence from solved attitude and wind. Point-mass flight uses a prescribed axis; the entered static angle remains a structural reference input, not an initial solved attitude.",
   },
   {
     term: "Sideslip",
@@ -143,12 +143,112 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Turbulence",
     aliases: ["Gust intensity", "Turbulence intensity"],
     definition:
-      "Here this sets repeatable smooth gust perturbations scaled by wind speed. It is a sensitivity input, not a measured turbulence spectrum. The Euler CFD solver does not solve physical turbulent eddies or use a turbulence model.",
+      "Scales flight gust strength by max(mean reference wind speed, 1 m/s). Dryden treats this as the stationary per-axis RMS ratio; the legacy sine-wave model uses the same amplitude scale with different variance. Neither is measured weather or resolved CFD turbulence. Scheduled environment changes can change this strength.",
+  },
+  {
+    term: "Flight dynamics model",
+    definition:
+      "Point mass integrates position and velocity with a prescribed gravity-turn axis. Rigid body adds quaternion attitude and body angular rates: six degrees of freedom (6DOF). It applies small-angle normal forces and moments and can react to wind, but does not supply validated separated-flow, tumbling or canopy suspension physics.",
+  },
+  {
+    term: "6DOF",
+    aliases: ["Rigid body", "Rigid-body attitude", "Six degrees of freedom"],
+    definition:
+      "Three translational and three rotational degrees of freedom. This app integrates rigid-body motion using a quaternion and Euler angular-momentum equations, with simplified aerodynamic coefficients. A solved orientation does not establish reliable large-angle aerodynamics; inspect the supported-domain and inertia warnings.",
+  },
+  {
+    term: "Quaternion",
+    aliases: ["Solved attitude"],
+    definition:
+      "Four numbers describing the rocket's three-dimensional orientation without the singularities of rotation angles. Rigid-body flight exports a unit quaternion in [w, x, y, z] order, mapping its nose-body axes into east/north/up. Smooth playback interpolates these solved orientations for display; it does not add simulated states.",
+  },
+  {
+    term: "Body angular rates",
+    aliases: [
+      "Initial roll rate",
+      "Initial pitch rate",
+      "Initial yaw rate",
+      "Angular rate",
+    ],
+    definition:
+      "Rotation rates in radians per second about the right-handed nose-body axes: X toward the nose, Y original CAD +Y, Z original CAD −Z. Roll is about X, pitch about Y, yaw about Z. The ideal launch rail constrains angular motion until rail exit; point-mass flight has no solved angular rates.",
+  },
+  {
+    term: "Inertia tensor",
+    aliases: [
+      "Override inertia tensor",
+      "Ixx",
+      "Iyy",
+      "Izz",
+      "Ixy",
+      "Ixz",
+      "Iyz",
+    ],
+    definition:
+      "The mass distribution governing resistance to rotation, in mass × length squared. An override is the complete dry rocket tensor about dry CG in nose-body axes; remaining propellant adds its modeled inertia. It must be symmetric and positive definite. Cross terms use tensor matrix-entry signs. Record the measurement or calculation source.",
+  },
+  {
+    term: "Pitch damping coefficient Cmq",
+    aliases: ["Supply pitch/yaw damping coefficient", "Cmq"],
+    definition:
+      "User-supplied aerodynamic rate-damping coefficient applied to pitch and yaw, normalized by angular rate × reference length / (2 × airspeed). Nonpositive values oppose angular motion. Missing coefficients apply zero empirical damping with a warning; the app does not invent a damping calibration or roll model.",
+  },
+  {
+    term: "Wind model",
+    definition:
+      "Selects the repeatable flight disturbance: legacy smooth sine gusts or stochastic Dryden gusts. Both add to the entered mean wind and optional height power law. Neither resolves local eddies or imports weather data, and the fixed Dryden transport speed is a declared modeling assumption.",
+  },
+  {
+    term: "Dryden",
+    aliases: ["Dryden stochastic gusts"],
+    definition:
+      "A stochastic gust spectrum represented by longitudinal and lateral/vertical filters. This implementation uses exact stationary filter updates on a fixed time grid, then interpolates wind queries. Equal-axis RMS, length scale and fixed transport speed are user assumptions; this is a temporal homogeneous surrogate, not a measured atmosphere or flight-path-dependent turbulence field.",
+  },
+  {
+    term: "Turbulence length scale",
+    definition:
+      "The user-assumed Dryden correlation length. Length divided by the fixed transport speed sets the gust time scale. It does not specify CFD eddy size or prove the launch site's weather spectrum; use justified values and compare sensitivity.",
+  },
+  {
+    term: "Dryden convection speed override",
+    definition:
+      "Fixed speed converting Dryden length scale into time scale. Blank uses max(initial reference mean wind speed, 1 m/s) for the entire realization. It does not automatically follow rocket airspeed or later wind events.",
+  },
+  {
+    term: "Wind reference height",
+    definition:
+      "Height above the flat launch plane where entered mean wind and gust strength apply. With shear enabled, all wind components scale by (height / reference height) to the entered exponent; the power law is an assumed terrain/weather model.",
+  },
+  {
+    term: "Wind shear exponent",
+    definition:
+      "Exponent in the assumed height power law for mean wind and gusts. Zero keeps wind independent of height. A positive exponent reduces wind to zero at the launch plane and increases it above the reference height. This is not a resolved atmospheric boundary layer.",
+  },
+  {
+    term: "Gust sample interval",
+    definition:
+      "Spacing of the fixed Dryden samples, in seconds. Wind queries interpolate between them independently of flight integrator steps, so rejected steps never change the random history. Smaller intervals retain higher gust frequencies and cost more memory; compare their effect on results.",
+  },
+  {
+    term: "Live environment",
+    aliases: [
+      "Live lateral wind",
+      "Live wind direction",
+      "Live turbulence intensity",
+      "Live temperature deviation",
+    ],
+    definition:
+      "Schedules a wind, gust-strength or temperature change at the selected recorded flight time, then recalculates the actual launch and resumes playback there. Earlier prescribed wind history remains unchanged. A stale run must be recalculated first; this is not steering, throttle control or instant modification of stored results.",
+  },
+  {
+    term: "Environment transition time",
+    definition:
+      "Duration over which the scheduled mean-wind vector, gust strength and optional temperature offset change from their preceding values. Zero creates an abrupt prescribed change. Transition windows cannot overlap, and the change does not affect inputs before its timestamp.",
   },
   {
     term: "Rail exit",
     definition:
-      "The instant the modeled rocket travels the full entered rail length and is no longer constrained to the rail. Rail-exit speed is useful for comparison, but this point-mass model cannot evaluate full attitude stability after release.",
+      "The instant the rocket travels the entered guiding distance and leaves the ideal rail constraint. Rigid-body angular motion becomes free after release. Rail-exit speed alone does not establish stability; inspect wind, incidence, inertia, coefficients and model validity.",
   },
   {
     term: "Burnout",
@@ -182,7 +282,13 @@ export const engineeringGlossary: GlossaryEntry[] = [
       "Drogue effective Cd × area",
     ],
     definition:
-      "Canopy drag coefficient multiplied by effective canopy area, with area units. Recovery drag magnitude is approximately dynamic pressure × Cd × area. Use the appropriate measured coefficient and area convention for your canopy; the solver assumes instant full deployment.",
+      "Canopy drag coefficient multiplied by effective canopy area, with area units. Recovery drag magnitude is approximately dynamic pressure × Cd × area. Use justified canopy values. Zero inflation time assumes instant full deployment; a positive time grows the lumped drag area linearly and does not resolve canopy or line shock.",
+  },
+  {
+    term: "Canopy inflation time",
+    aliases: ["Main chute inflation time", "Drogue inflation time"],
+    definition:
+      "User-assumed duration for effective canopy Cd × area to grow linearly after deployment. Zero preserves instantaneous deployment. This changes the computed recovery drag buildup, but does not simulate fabric shape, suspension lines, opening shock or vehicle separation.",
   },
   {
     term: "Total impulse",
@@ -227,7 +333,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "CFD",
     definition:
-      "Computational fluid dynamics: numerical solution of fluid-flow equations on a grid. This app's CFD is an experimental compressible inviscid Euler solver. Solved pressure and velocity are numerical fields, with explicit convergence and accuracy limits.",
+      "Computational fluid dynamics: numerical solution of fluid-flow equations on a grid. This app offers experimental compressible Euler or laminar Navier–Stokes transport. Solved pressure, velocity and available viscous loads are numerical results with explicit grid, convergence and accuracy limits; neither model supplies physical turbulence.",
   },
   {
     term: "Euler",
@@ -239,6 +345,29 @@ export const engineeringGlossary: GlossaryEntry[] = [
     ],
     definition:
       "The compressible Euler equations conserve mass, momentum, and energy without viscosity. The solver can estimate pressure-driven loading, but omits skin friction, boundary layers, viscous separation, and physical turbulence. This term is different from Euler rotation angles.",
+  },
+  {
+    term: "CFD physics model",
+    definition:
+      "Euler uses inviscid compressible transport with slip walls. Experimental laminar Navier–Stokes adds molecular Newtonian viscosity, Fourier heat conduction and no-slip adiabatic walls. Neither supplies transition, turbulent boundary layers or validated rocket drag; inspect grid resolution and numerical-diffusion diagnostics.",
+  },
+  {
+    term: "Laminar Navier–Stokes",
+    aliases: ["Laminar", "Experimental laminar Navier–Stokes"],
+    definition:
+      "Compressible mass, momentum and energy equations with molecular viscosity and heat conduction. Here they use Sutherland air viscosity, fixed Prandtl number and a first-order Cartesian grid. Physical transport is computed, but coarse-grid numerical diffusion can dominate it; this is not turbulent CFD or a validated boundary-layer prediction.",
+  },
+  {
+    term: "Wall shear",
+    aliases: ["Wall shear stress", "Peak wall shear"],
+    definition:
+      "Tangential fluid traction at the stationary no-slip wall from the resolved velocity gradient and molecular viscosity. It is a fluid load, not solid material stress. Unresolved thin boundary layers and staircase faces can make it strongly grid-dependent.",
+  },
+  {
+    term: "Viscous traction",
+    aliases: ["Viscous drag", "Total aerodynamic load", "Total resolved drag"],
+    definition:
+      "Fluid stress acting on a wall through viscosity, including normal and tangential terms. The reported total resolved load adds viscous traction to gauge-pressure loading over every exposed face. Existing CFD-to-FEA transfer applies pressure only, and a completed numerical solve does not validate these drag values.",
   },
   {
     term: "Mesh",
@@ -273,7 +402,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Convergence",
     aliases: ["Convergence tolerance", "Convergence residuals"],
     definition:
-      "The solution has settled according to the solver's numerical criteria. CFD checks conservation-state, wall-pressure, force, and moment changes. Reaching a time or step limit is not convergence, and convergence is not proof of experimental accuracy.",
+      "The solution has settled according to numerical criteria. CFD checks conserved-state, wall-pressure, force and moment changes; laminar mode also checks viscous-wall traction. Completing a transient interval is not convergence, and convergence does not establish experimental accuracy.",
   },
   {
     term: "Residual",
@@ -292,12 +421,12 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Reynolds number",
     aliases: ["Reynolds", "Re"],
     definition:
-      "Dimensionless ratio of inertial to viscous effects, based on density × airspeed × reference length divided by dynamic viscosity. It helps characterize real flow regimes. This app's inviscid CFD does not model Reynolds-dependent boundary layers.",
+      "Dimensionless ratio of inertial to viscous effects: density × airspeed × reference length / dynamic viscosity. High rocket Reynolds numbers often require transition and turbulent boundary-layer physics that neither CFD mode supplies. Laminar transport reports Reynolds number but coarse grids may not resolve its physical viscous scales.",
   },
   {
     term: "Pressure drag",
     definition:
-      "Drag obtained by integrating normal pressure forces on the exterior. It excludes viscous wall shear and skin friction in this Euler CFD solver, so it is not total real-world aerodynamic drag.",
+      "Drag obtained by integrating exterior pressure forces and projecting along the incoming airflow. This pressure-only quantity excludes viscous traction in both CFD modes. Laminar mode reports pressure-plus-viscous drag separately; neither quantity is automatically validated real-world drag.",
   },
   {
     term: "Pressure coefficient",
@@ -309,7 +438,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "FEA",
     aliases: ["Finite element analysis", "Solid FEA", "Tetrahedral FEA"],
     definition:
-      "Finite element analysis divides a solid into elements and solves displacement and stress under declared supports and loads. This app uses linear static isotropic elasticity; it excludes composite layups, contact, buckling, yielding, and transient recovery shock.",
+      "Finite element analysis divides a structure into elements and solves displacement and stress under declared supports and loads. Structures uses linear static isotropic solid elasticity. Optional flight fin FEA integrates one-dimensional beam dynamics for supported original fins. Neither solves laminate failure, contact, buckling, plastic yielding or recovery shock.",
   },
   {
     term: "von Mises",
@@ -372,6 +501,11 @@ export const engineeringGlossary: GlossaryEntry[] = [
     ],
     definition:
       "Entered acceleration components that create volume forces proportional to material density. Coordinates follow the model axes. Flight structural estimates use specific acceleration rather than treating gravity in freefall as an applied inertial stress.",
+  },
+  {
+    term: "Specific acceleration",
+    definition:
+      "Inertial acceleration with the gravity vector removed, as an ideal accelerometer would measure. Ideal free fall has zero specific acceleration. The flight structural calculations use this quantity for supported inertial loads rather than treating gravity alone as a stress-producing load.",
   },
   {
     term: "Strain energy",
@@ -511,7 +645,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
     term: "Steady-state",
     aliases: ["Simulation mode"],
     definition:
-      "A flow prediction whose numerical state settles under fixed conditions. Steady mode advances the actual Euler equations until conservation-state, wall-pressure, force and moment changes meet the numerical criteria, or you cancel. It has no elapsed-time or step ceiling and may never converge. Numerical convergence does not establish physical accuracy.",
+      "A flow prediction whose numerical state settles under fixed conditions. Steady mode advances the selected flow equations until conserved-state, wall-pressure, force and moment changes meet the criteria; laminar flow also requires viscous-wall traction to settle. It has no elapsed-time or step ceiling and may never converge. Numerical convergence does not establish physical accuracy.",
   },
   {
     term: "Transient",
@@ -533,7 +667,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
       "Inspect flight event",
     ],
     definition:
-      "Use an actual calculated launch history to prescribe changing air-relative speed, wind and atmosphere around fixed rigid rocket geometry, or hold freestream conditions fixed for a wind test. Launch-driven CFD is a one-way approximation: it does not feed forces back into the flight, solve full moving-mesh attitude, deploy a canopy, or replace point-mass flight assumptions. Whole-flight CFD resolves every physical time step and can take substantial computer time; a short interval is useful for inspection.",
+      "Use calculated launch history to prescribe changing air-relative velocity and atmosphere around fixed rocket geometry, or hold conditions fixed. Rigid-body history uses saved attitude and roll; point-mass history uses its assumed axis. This one-way approximation has no moving mesh, rotating-frame forces, canopy geometry or feedback into flight. Each interval starts from uniform flow and resolves actual physical time steps.",
   },
   {
     term: "Streamline quality",
@@ -583,6 +717,43 @@ export const engineeringGlossary: GlossaryEntry[] = [
     aliases: ["Estimated component stress"],
     definition:
       "Quasi-static beam/fin screening stresses scaled by current dynamic pressure, with supported axial inertial estimates. They are not transient FEA and do not resolve recovery shock, laminate failure, joints, flutter, or missing load distributions.",
+  },
+  {
+    term: "Flight structural model",
+    aliases: ["Flight stress display"],
+    definition:
+      "Quasi-static mode evaluates supported beam/fin estimates at each sample. Dynamic fins integrates one-dimensional Euler–Bernoulli beam FEA under saved supported flight loads. It does not solve the full rocket, structural joints, flutter, canopy shock or fluid–structure feedback. Missing coverage remains unavailable.",
+  },
+  {
+    term: "Dynamic fin bending stress",
+    aliases: [
+      "Dynamic fin FEA",
+      "Dynamic fin FEA stress",
+      "Dynamic fin deflection",
+      "Dynamic fin yield safety factor",
+    ],
+    definition:
+      "Stress, deflection and scalar yield margin from time-integrated one-dimensional beam FEA of supported original trapezoidal fins. CAD replacement fins, recovery and unsupported load intervals have no result. Viewer colors show each fin component's peak bending stress, not a three-dimensional solid field. The calculation does not establish composite laminate failure strength.",
+  },
+  {
+    term: "Fin modal damping ratio",
+    definition:
+      "Fraction of critical damping applied to each supported fin beam vibration mode. Zero removes assumed damping. A nonzero value needs measurement or a justified sensitivity study; the nominal setting is not a certified material property.",
+  },
+  {
+    term: "Fin beam elements",
+    definition:
+      "Number of one-dimensional bending elements along the fin span. Increasing it refines the spanwise beam solution and adds vibration modes; compare convergence. It does not create a three-dimensional shell or solid fin mesh.",
+  },
+  {
+    term: "Steps per shortest beam period",
+    definition:
+      "Structural substeps used to resolve the shortest vibration period in the complete fin beam modal basis. This controls structural time resolution independently of flight samples. Refining it costs time; compare stress and deflection sensitivity.",
+  },
+  {
+    term: "Allow isotropic composite approximation",
+    definition:
+      "Explicit permission to approximate fiberglass or carbon material using scalar elastic properties in dynamic fin beams. It does not resolve ply directions, laminate bending coupling, interlaminar stress or composite failure criteria. Use justified effective stiffness and inspect this scope in results.",
   },
   {
     term: "Standard deviation",
@@ -656,7 +827,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "Acceleration",
     definition:
-      "Rate of change of ground-relative velocity. Flight's displayed magnitude includes gravity, while inertial structural loading uses specific acceleration with gravity removed. The instant full-canopy assumption can create an idealized acceleration change that is not resolved opening shock.",
+      "Rate of change of ground-relative velocity. Flight's displayed magnitude includes gravity, while inertial structural loading uses specific acceleration with gravity removed. Prescribed canopy inflation changes lumped recovery-force buildup; its acceleration is not a resolved opening-shock solution.",
   },
   {
     term: "Stress",
@@ -666,7 +837,7 @@ export const engineeringGlossary: GlossaryEntry[] = [
   {
     term: "Pressure",
     definition:
-      "Normal force per area in a fluid or applied structural load. A CFD pressure overlay comes from the numerical solution; its assumptions exclude viscosity and physical turbulence. Pressure is different from dynamic pressure and from the solid's von Mises stress.",
+      "Normal force per area in a fluid or applied structural load. CFD pressure comes from the actual selected Euler or laminar numerical solution. Molecular viscous traction is reported separately in laminar mode; neither model supplies physical turbulence. Pressure differs from dynamic pressure and from solid von Mises stress.",
   },
   {
     term: "Dry mass",

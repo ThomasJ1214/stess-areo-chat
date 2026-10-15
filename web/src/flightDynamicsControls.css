@@ -1,0 +1,70 @@
+.flight-dynamics-controls .solver-note,
+.flight-configuration-dynamics .solver-note {
+  margin: 8px 0 12px;
+}
+.flight-advanced {
+  margin: 12px 0;
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  padding: 10px;
+}
+.flight-advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #bac9db;
+  margin-bottom: 8px;
+}
+.flight-advanced .field:first-of-type {
+  margin-top: 10px;
+}
+.flight-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin: 10px 0;
+}
+.flight-provenance input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #394658;
+  border-radius: 6px;
+  background: #111e2d;
+  color: #e0e7f0;
+}
+.flight-run-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  border: 1px solid #394658;
+  border-radius: 8px;
+  color: #b4c6d9;
+  font-size: 12px;
+}
+.flight-run-status.stale {
+  border-color: #b88942;
+  background: #382a181a;
+}
+.flight-run-status > div {
+  flex: 1 1 260px;
+}
+.flight-run-status strong {
+  display: block;
+  color: #e7d0a2;
+  margin-bottom: 3px;
+}
+.flight-run-status p {
+  margin: 0;
+}
+.flight-run-status button {
+  white-space: nowrap;
+}
+.flight-inspection-note {
+  margin: 6px 0 10px;
+  color: #8495a9;
+  font-size: 11px;
+}

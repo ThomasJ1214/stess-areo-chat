@@ -9,6 +9,7 @@ export type Quantity =
   | "area"
   | "density"
   | "energy"
+  | "inertia"
   | "acceleration";
 const definitions: Record<
   Quantity,
@@ -23,6 +24,7 @@ const definitions: Record<
   area: { metric: "m²", us: "ft²", factor: 10.76391042 },
   density: { metric: "kg/m³", us: "lb/ft³", factor: 0.06242796 },
   energy: { metric: "J", us: "ft·lbf", factor: 0.7375621493 },
+  inertia: { metric: "kg·m²", us: "slug·ft²", factor: 0.7375621493 },
   acceleration: { metric: "m/s²", us: "ft/s²", factor: 3.280839895 },
 };
 export function displayValue(

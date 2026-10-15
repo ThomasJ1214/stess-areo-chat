@@ -10,6 +10,7 @@ type Plot = {
   title: string;
   kind: Quantity | null;
   color: string;
+  unit?: string;
 };
 const overview: Plot[] = [
   { key: "altitude", title: "Altitude", kind: "length", color: "#77c9c0" },
@@ -61,6 +62,55 @@ const plotGroups: Record<string, Plot[]> = {
     { key: "mach", title: "Mach", kind: null, color: "#92aee4" },
     overview[2],
   ],
+  "Attitude & recovery": [
+    {
+      key: "angle_of_attack_deg",
+      title: "Calculated angle of attack",
+      kind: null,
+      unit: "°",
+      color: "#77c9c0",
+    },
+    {
+      key: "angular_rate_magnitude",
+      title: "Body angular rate magnitude",
+      kind: null,
+      unit: "rad/s",
+      color: "#e0b176",
+    },
+    {
+      key: "normal_force_magnitude",
+      title: "Aerodynamic normal force",
+      kind: "force",
+      color: "#92aee4",
+    },
+    {
+      key: "canopy_opening_load_n",
+      title: "Lumped recovery load",
+      kind: "force",
+      color: "#c498da",
+    },
+  ],
+  "Dynamic fin FEA": [
+    {
+      key: "dynamic_stress",
+      title: "Dynamic fin bending stress",
+      kind: "stress",
+      color: "#77c9c0",
+    },
+    {
+      key: "dynamic_fin_deflection",
+      title: "Dynamic fin deflection",
+      kind: "length",
+      color: "#e0b176",
+    },
+    {
+      key: "dynamic_fin_safety_factor",
+      title: "Dynamic fin yield safety factor",
+      kind: null,
+      color: "#92aee4",
+    },
+    overview[3],
+  ],
 };
 const plotDefinitions: Record<string, string> = {
   altitude:
@@ -72,39 +122,82 @@ const plotDefinitions: Record<string, string> = {
   air_relative_speed:
     "Magnitude of rocket velocity minus the actual ambient wind vector. This speed drives Mach, dynamic pressure and drag.",
   wind_speed_magnitude:
-    "Magnitude of the calculated local wind vector, including seeded smooth gust perturbations when enabled. These gusts are a sensitivity model, not resolved turbulent CFD.",
+    "Magnitude of the calculated local wind vector, including the selected modeled gusts, mean wind shear and scheduled environment changes. Gusts are an atmospheric disturbance model, not resolved turbulent CFD.",
   stress:
     "Maximum supported quasi-static beam/fin stress estimate for this flight sample, including supported inertial loads. Missing values mean unavailable, not zero stress; this is not transient FEA or recovery opening shock.",
   drag: "Combined body and deployed-recovery aerodynamic drag magnitude from the flight model. Body and canopy force vectors are separately available in the exported flight data.",
   thrust:
     "Force interpolated from the assigned motor's actual thrust curve, with ignition and burnout timing. Synthetic demonstration motors are labeled examples.",
+  angle_of_attack_deg:
+    "Actual incidence between the calculated nose axis and rocket air-relative velocity, in degrees. Large angles exceed the simplified aerodynamic model's useful range; inspect the run's warnings.",
+  angular_rate_magnitude:
+    "Magnitude of the computed body angular-velocity vector in radians per second. Available for the rigid-body solver; missing point-mass values are unavailable, not zero rotation.",
+  normal_force_magnitude:
+    "Magnitude of the actual computed aerodynamic normal-force vector, perpendicular to the nose axis. This uses engineering coefficients, not a CFD solution.",
+  canopy_opening_load_n:
+    "Calculated q × effective recovery drag area during prescribed inflation. This is a lumped force estimate, not line shock, canopy FEA or parachute suspension dynamics.",
+  dynamic_stress:
+    "Actual time-integrated one-dimensional Euler–Bernoulli fin beam FEA bending stress under the saved flight loads. It ends at recovery and omits unsupported geometry or aerodynamic incidence. This is not full vehicle transient solid FEA.",
+  dynamic_fin_deflection:
+    "Maximum absolute supported fin beam deflection from the time-integrated structural solution. Null samples preserve gaps where loads or supported geometry are unavailable.",
+  dynamic_fin_safety_factor:
+    "Minimum reported yield safety factor across the supported dynamic fin beam solutions. Scalar isotropic composite approximations do not establish laminate failure strength.",
 };
+
+const vectorMagnitude = (value: unknown) =>
+  Array.isArray(value) &&
+  value.length === 3 &&
+  value.every((v) => typeof v === "number" && Number.isFinite(v))
+    ? Math.hypot(...value)
+    : null;
+/** Derive presentation scalars solely from actual emitted vectors/results. */
+export function flightChartValues(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const forces = row.force_vectors_n as Record<string, unknown> | undefined;
+  const fins = Array.isArray(row.dynamic_structural_components)
+    ? (row.dynamic_structural_components as Record<string, unknown>[])
+    : [];
+  const finite = (key: string) =>
+    fins
+      .map((fin) => fin[key])
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const deflections = finite("deflection_m");
+  const safety = finite("safety_factor");
+  return {
+    ...row,
+    wind_speed_magnitude: vectorMagnitude(row.wind_vector),
+    angular_rate_magnitude: vectorMagnitude(row.angular_velocity_body_rad_s),
+    normal_force_magnitude: vectorMagnitude(forces?.aerodynamic_normal),
+    dynamic_fin_deflection: deflections.length
+      ? Math.max(...deflections.map(Math.abs))
+      : null,
+    dynamic_fin_safety_factor: safety.length ? Math.min(...safety) : null,
+  };
+}
 
 /** Keep full-resolution plot inputs stable while the playback cursor advances. */
 export default function FlightCharts({
   trajectory,
   units,
   time,
+  flightModel,
+  windModel,
+  structuralMode,
 }: {
   trajectory: Record<string, unknown>[];
   units: Units;
   time: number;
+  flightModel?: string;
+  windModel?: string;
+  structuralMode?: string;
 }) {
   const [group, setGroup] = useState("Overview");
   const plots = plotGroups[group];
   const data = useMemo(
     () =>
       trajectory.map((row) => {
-        const wind = row.wind_vector;
-        const values: Record<string, unknown> = {
-          ...row,
-          wind_speed_magnitude:
-            Array.isArray(wind) &&
-            wind.length === 3 &&
-            wind.every((v) => typeof v === "number" && Number.isFinite(v))
-              ? Math.hypot(...wind)
-              : null,
-        };
+        const values = flightChartValues(row);
         return Object.fromEntries([
           ["time", row.time],
           ...plots.map(({ key, kind }) => {
@@ -127,7 +220,7 @@ export default function FlightCharts({
       plots.map((plot) => [
         {
           key: plot.key,
-          label: `${plot.title}${plot.kind ? ` · ${unitLabel(plot.kind, units)}` : ""}`,
+          label: `${plot.title}${plot.kind ? ` · ${unitLabel(plot.kind, units)}` : plot.unit ? ` · ${plot.unit}` : ""}`,
           color: plot.color,
         },
       ]),
@@ -147,10 +240,20 @@ export default function FlightCharts({
           ))}
         </select>
         <p className="solver-note">
-          Graphs follow the saved flight samples. Gusts are modeled wind
-          variations; stress is a quasi-static beam/fin estimate, including
-          supported inertial loads. Specific acceleration excludes gravitational
-          freefall.
+          Saved samples ·{" "}
+          {flightModel === "rigid_body"
+            ? "rigid-body 6DOF"
+            : "point-mass flight"}{" "}
+          ·{" "}
+          {windModel === "dryden"
+            ? "Dryden modeled gusts"
+            : "smooth modeled gusts"}
+          .{" "}
+          {structuralMode === "dynamic_fins"
+            ? "Dynamic fin plots use actual 1D beam FEA; whole-vehicle stress remains an estimate."
+            : "Stress uses quasi-static beam/fin estimates."}{" "}
+          Missing fields and unsupported intervals appear as gaps. Specific
+          acceleration excludes gravitational freefall.
         </p>
       </label>
       {plots.map((plot, index) => (

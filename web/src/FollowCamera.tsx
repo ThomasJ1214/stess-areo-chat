@@ -59,6 +59,14 @@ export default function FollowCamera(p: Props) {
     p.box.max.y,
     p.box.max.z,
   ]);
+  useEffect(() => {
+    if (
+      p.mode === "overview" &&
+      !p.interacting.current &&
+      performance.now() >= p.manualUntil.current
+    )
+      state.current.initialized = false;
+  }, [viewport.width, viewport.height, p.mode]);
 
   useFrame((_, delta) => {
     if (!controls.current) return;
@@ -163,7 +171,9 @@ export default function FollowCamera(p: Props) {
       makeDefault
       minDistance={Math.max(0.2, p.rocketSize * 0.3)}
       maxDistance={Math.max(300, p.extent * 5)}
-      maxPolarAngle={Math.PI * 0.495}
+      maxPolarAngle={
+        p.target.y > p.rocketSize * 2 ? Math.PI * 0.92 : Math.PI * 0.495
+      }
       enableDamping
       dampingFactor={0.12}
       onStart={() => {

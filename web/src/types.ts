@@ -55,6 +55,11 @@ export interface Configuration {
   main_deploy_altitude: number;
   apogee_delay: number;
   ignition_delay: number;
+  drogue_inflation_time?: number;
+  main_inflation_time?: number;
+  inertia_override_kg_m2?: number[][] | null;
+  inertia_override_source?: string;
+  pitch_damping_coefficient?: number | null;
 }
 export interface Motor {
   id: string;
@@ -99,6 +104,7 @@ export interface AnalysisSettings {
   fea_options: Record<string, unknown>;
   study_options: Record<string, unknown>;
   study_mode: "sweep" | "monte_carlo" | "comparison";
+  flight_options?: Record<string, unknown>;
 }
 export interface Conditions {
   speed: number;
@@ -116,6 +122,23 @@ export interface Conditions {
   dt: number;
   max_time: number;
   seed: number;
+  flight_model: "point_mass" | "rigid_body";
+  initial_angular_velocity_body_rad_s: number[];
+  wind_model: "legacy_gust" | "dryden";
+  turbulence_length_scale_m: number;
+  wind_reference_height_m: number;
+  wind_shear_exponent: number;
+  turbulence_sample_interval_s: number;
+  turbulence_transport_speed_m_s: number | null;
+  wind_events: WindEvent[];
+}
+export interface WindEvent {
+  time_s: number;
+  wind_speed: number;
+  wind_direction: number;
+  turbulence: number;
+  transition_s: number;
+  temperature_delta: number | null;
 }
 export interface MeshResponse {
   components: {
@@ -182,4 +205,13 @@ export const defaultConditions: Conditions = {
   dt: 0.025,
   max_time: 300,
   seed: 42,
+  flight_model: "point_mass",
+  initial_angular_velocity_body_rad_s: [0, 0, 0],
+  wind_model: "legacy_gust",
+  turbulence_length_scale_m: 50,
+  wind_reference_height_m: 10,
+  wind_shear_exponent: 0,
+  turbulence_sample_interval_s: 0.02,
+  turbulence_transport_speed_m_s: null,
+  wind_events: [],
 };

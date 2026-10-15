@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Rocket,
   Box,
@@ -48,6 +48,13 @@ import Viewport from "./Viewport";
 import { defaultCfdFlowSettings } from "./flowFieldMath";
 import type { CfdFlowSettings } from "./flowFieldMath";
 import FlightCharts from "./FlightCharts";
+import FlightDynamicsControls, {
+  FlightConfigurationDynamics,
+} from "./FlightDynamicsControls";
+import LiveFlightEnvironment from "./LiveFlightEnvironment";
+import FlightStructureCoverage from "./FlightStructureCoverage";
+import { flightInputKey, flightRunIsStale } from "./flightRunState";
+import { interpolateFlightSample } from "./flightPlaybackMath";
 import UserGuide from "./UserGuide";
 import Tutorials from "./Tutorial";
 import HelpTip from "./HelpTip";
@@ -218,6 +225,18 @@ export default function App() {
   const [feaPreflightPending, setFeaPreflightPending] = useState(false);
   const [feaPreflightError, setFeaPreflightError] = useState("");
   const launchPlayback = useRef(false);
+  const launchResumeTime = useRef(0);
+  const [flightSnapshot, setFlightSnapshot] = useState<{
+    key: string;
+    meshes: MeshResponse | null;
+    originalMeshes: MeshResponse | null;
+  } | null>(null);
+  const pendingFlightSnapshot = useRef<{
+    jobId: string;
+    key: string;
+    meshes: MeshResponse | null;
+    originalMeshes: MeshResponse | null;
+  } | null>(null);
   const [previousProject, setPreviousProject] = useState<Project | null>(null);
   const [project, setProject] = useState<Project | null>(null),
     [health, setHealth] = useState<any>(null),
@@ -257,6 +276,9 @@ export default function App() {
   const [playTime, setPlayTime] = useState(0),
     [playing, setPlaying] = useState(false),
     [playSpeed, setPlaySpeed] = useState(1);
+  const [flightStructuralMode, setFlightStructuralMode] = useState<
+    "quasi_static" | "dynamic_fins"
+  >("quasi_static");
   const settings = usePersistentSettings(
     (saved) =>
       setProject((current) =>
@@ -280,6 +302,8 @@ export default function App() {
     setStudyMode,
     studyOptions,
     setStudyOptions,
+    flightOptions,
+    setFlightOptions,
   } = settings;
   const restoreSettings = settings.restore;
   const projectIdRef = useRef<string | null>(null);
@@ -329,15 +353,32 @@ export default function App() {
     cfd.job_status !== "cancelled";
   const launchEndTime = flight?.trajectory?.at(-1)?.time;
   const row = nearestRow(flight?.trajectory || [], playTime);
+  const flightDisplayRow = useMemo(
+    () => interpolateFlightSample(flight?.trajectory || [], playTime),
+    [flight, playTime],
+  );
+  const currentFlightKey = useMemo(
+    () => flightInputKey(project, conditions, flightOptions),
+    [project, conditions, flightOptions],
+  );
+  const staleFlight =
+    !!flight && flightRunIsStale(flightSnapshot?.key ?? null, currentFlightKey);
+  const currentFlightJobId = staleFlight ? undefined : resultJobs.flight;
   const aero = analysis?.aero,
     structural = analysis?.structure;
   const setCondition = (key: keyof Conditions, n: number | null) => {
     setConditions((c) => ({ ...c, [key]: key === "mach" ? n : (n ?? c[key]) }));
+    invalidateAnalysis();
+  };
+  const invalidateAnalysis = () => {
     setAnalysis(null);
-    setResults({});
-    setResultJobs({});
+    setResults((current) => (current.flight ? { flight: current.flight } : {}));
+    setResultJobs((current) => {
+      const retained: Record<string, string> = {};
+      if (current.flight) retained.flight = current.flight;
+      return retained;
+    });
     setComparison(null);
-    setPlaying(false);
   };
   const clearResults = () => {
     setCfdFrameIndex(0);
@@ -347,6 +388,8 @@ export default function App() {
     setComparison(null);
     setPlaying(false);
     setPlayTime(0);
+    setFlightSnapshot(null);
+    pendingFlightSnapshot.current = null;
   };
   const toggleOverlay = (key: keyof Overlays) =>
     setOverlays((o) => ({ ...o, [key]: !o[key] }));
@@ -569,8 +612,21 @@ export default function App() {
           }));
           setResultJobs((r) => ({ ...r, [jobKind]: next.id }));
           if (jobKind === "flight") {
+            setFlightStructuralMode(
+              next.result.dynamic_structural_analysis
+                ? "dynamic_fins"
+                : "quasi_static",
+            );
+            if (pendingFlightSnapshot.current?.jobId === next.id)
+              setFlightSnapshot(pendingFlightSnapshot.current);
             setOverlays((o) => ({ ...o, stress: true, forces: true }));
-            setPlayTime(0);
+            setPlayTime(
+              Math.min(
+                launchResumeTime.current,
+                next.result.trajectory?.at(-1)?.time ??
+                  launchResumeTime.current,
+              ),
+            );
             setPlaying(launchPlayback.current);
             launchPlayback.current = false;
           }
@@ -608,9 +664,10 @@ export default function App() {
   useEffect(() => {
     if (!playing || !flight?.trajectory?.length) return;
     let last = performance.now();
-    const timer = setInterval(() => {
-      const now = performance.now(),
-        delta = ((now - last) / 1000) * playSpeed;
+    let frame: number;
+    const advance = (now: number) => {
+      // Avoid a large jump after an inactive desktop window resumes rendering.
+      const delta = Math.min((now - last) / 1000, 0.1) * playSpeed;
       last = now;
       setPlayTime((t) => {
         const max = flight.trajectory.at(-1).time;
@@ -620,8 +677,10 @@ export default function App() {
         }
         return t + delta;
       });
-    }, 40);
-    return () => clearInterval(timer);
+      frame = requestAnimationFrame(advance);
+    };
+    frame = requestAnimationFrame(advance);
+    return () => cancelAnimationFrame(frame);
   }, [playing, flight, playSpeed]);
   useEffect(() => {
     if (notice) {
@@ -643,7 +702,7 @@ export default function App() {
       restore,
     );
     if (p.unit_system === project?.unit_system) {
-      clearResults();
+      invalidateAnalysis();
     }
   }
   function importFile(kind: string, file: File | undefined) {
@@ -679,7 +738,7 @@ export default function App() {
         );
       } else if (kind === "polar") {
         await acceptProject(await upload<Project>("/import/polar", file));
-        clearResults();
+        invalidateAnalysis();
         setNotice(
           "User-supplied aerodynamic polar imported for this exact geometry and configuration. Verify provenance and physical validity.",
         );
@@ -695,6 +754,8 @@ export default function App() {
     kind: string,
     options: Record<string, unknown> = {},
     autoPlayback = false,
+    submittedConditions: Conditions = conditions,
+    resumeTime = 0,
   ) {
     if (activeJob) return;
     operation(async () => {
@@ -702,25 +763,33 @@ export default function App() {
       await settings.flush();
       const next = await post<Job>("/jobs", {
         kind,
-        conditions,
+        conditions: submittedConditions,
         configuration_id: project?.active_configuration_id,
         options:
           kind === "fea"
             ? feaRequestOptions(options)
             : kind === "cfd"
-              ? cfdRequestOptions(options, resultJobs.flight)
-              : options,
+              ? cfdRequestOptions(options, currentFlightJobId)
+              : kind === "flight"
+                ? { ...flightOptions, ...options }
+                : options,
       });
       if (kind === "flight") {
+        pendingFlightSnapshot.current = {
+          jobId: next.id,
+          key: flightInputKey(project, submittedConditions, {
+            ...flightOptions,
+            ...options,
+          }),
+          meshes: meshes ? structuredClone(meshes) : null,
+          originalMeshes: originalMeshes
+            ? structuredClone(originalMeshes)
+            : null,
+        };
         launchPlayback.current = autoPlayback;
+        launchResumeTime.current = resumeTime;
         if (autoPlayback) {
           setPlaying(false);
-          setPlayTime(0);
-          setResults((current) => {
-            const changed = { ...current };
-            delete changed.flight;
-            return changed;
-          });
         }
       }
       setJobKind(kind);
@@ -730,6 +799,16 @@ export default function App() {
   function launch() {
     if (!canRun) return;
     startJob("flight", {}, true);
+  }
+  function applyLiveEnvironment(nextConditions: Conditions) {
+    if (!canRun || staleFlight || !flight) return;
+    setPlaying(false);
+    setConditions(nextConditions);
+    invalidateAnalysis();
+    setNotice(
+      `Recalculating flight with an environment change at ${fmt(playTime, 3)} s. Playback will resume at this moment.`,
+    );
+    startJob("flight", {}, true, nextConditions, playTime);
   }
   function runAnalysis() {
     operation(async () => {
@@ -825,25 +904,36 @@ export default function App() {
   const canRun = !busy && !activeJob && !!project?.components.length;
   const conditionFields = (
     <>
-      <div className="field-pair">
-        <SIField
-          label="Primary stream speed"
-          kind="speed"
-          units={units}
-          value={conditions.speed}
-          onChange={(n) => setCondition("speed", n)}
-          min={0}
-          max={1000}
-        />
-        <NumberField
-          label="Mach override"
-          value={conditions.mach}
-          onChange={(n) => setCondition("mach", n)}
-          min={0}
-          max={2}
-          hint="Optional. A value overrides airspeed using local speed of sound. Clear to use airspeed."
-        />
-      </div>
+      {workspace !== "flight" && (
+        <div className="field-pair">
+          <SIField
+            label="Primary stream speed"
+            kind="speed"
+            units={units}
+            value={conditions.speed}
+            onChange={(n) => setCondition("speed", n)}
+            min={0}
+            max={1000}
+          />
+          <NumberField
+            label="Mach override"
+            value={conditions.mach}
+            onChange={(n) => setCondition("mach", n)}
+            min={0}
+            max={2}
+            hint="Optional. A value overrides airspeed using local speed of sound. Clear to use airspeed."
+          />
+        </div>
+      )}
+      {workspace === "flight" && (
+        <p className="microcopy">
+          Flight airspeed and Mach are calculated from the actual trajectory,
+          motor and wind.{" "}
+          {conditions.flight_model === "rigid_body"
+            ? "The rigid-body solver calculates incidence from its attitude."
+            : "The point-mass model's angle inputs below are reference structural-load assumptions, not integrated attitude."}
+        </p>
+      )}
       <div className="field-pair">
         <SIField
           label="Altitude"
@@ -854,14 +944,17 @@ export default function App() {
           min={-500}
           max={50000}
         />
-        <NumberField
-          label="Angle of attack"
-          value={conditions.angle_of_attack}
-          onChange={(n) => setCondition("angle_of_attack", n)}
-          unit="°"
-          min={-45}
-          max={45}
-        />
+        {(workspace !== "flight" ||
+          conditions.flight_model === "point_mass") && (
+          <NumberField
+            label="Angle of attack"
+            value={conditions.angle_of_attack}
+            onChange={(n) => setCondition("angle_of_attack", n)}
+            unit="°"
+            min={-45}
+            max={45}
+          />
+        )}
       </div>
       <div className="field-pair">
         <SIField
@@ -891,14 +984,17 @@ export default function App() {
           min={0}
           max={100}
         />
-        <NumberField
-          label="Sideslip"
-          value={conditions.sideslip}
-          onChange={(n) => setCondition("sideslip", n)}
-          unit="°"
-          min={-45}
-          max={45}
-        />
+        {(workspace !== "flight" ||
+          conditions.flight_model === "point_mass") && (
+          <NumberField
+            label="Sideslip"
+            value={conditions.sideslip}
+            onChange={(n) => setCondition("sideslip", n)}
+            unit="°"
+            min={-45}
+            max={45}
+          />
+        )}
       </div>
       <NumberField
         label="Temperature deviation from ISA"
@@ -974,7 +1070,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.3.1</span>
+          <span className="version">0.3.2</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -1394,7 +1490,7 @@ export default function App() {
                 {workspace === "design"
                   ? "Combine flight-ready OpenRocket designs with the geometry that makes them real."
                   : workspace === "cfd"
-                    ? "Experimental inviscid Euler solver · local execution · actual mesh and flow fields"
+                    ? "Experimental exterior-flow solvers · local execution · actual mesh and flow fields"
                     : workspace === "structure"
                       ? "Beam and fin estimates + isotropic linear static tetrahedral FEA"
                       : "Transparent calculations. Useful insights. Explicit limitations."}
@@ -1426,9 +1522,11 @@ export default function App() {
                 <small>
                   {activeJob && jobKind === "flight"
                     ? "Calculating flight · playback starts when ready"
-                    : flight
-                      ? "Launch again to recalculate · drag to adjust camera"
-                      : "On launch rail · check motor and recovery"}
+                    : staleFlight
+                      ? "Setup changed · recalculate to launch the updated rocket"
+                      : flight
+                        ? "Launch again to recalculate · drag to adjust camera"
+                        : "On launch rail · check motor and recovery"}
                 </small>
               </div>
             ) : (
@@ -1444,14 +1542,26 @@ export default function App() {
           </div>
           <div className="viewport-wrapper viewport-stage">
             <Viewport
-              meshes={meshes}
-              originalMeshes={originalMeshes}
+              meshes={
+                workspace === "flight" && flight && flightSnapshot
+                  ? flightSnapshot.meshes
+                  : meshes
+              }
+              originalMeshes={
+                workspace === "flight" && flight && flightSnapshot
+                  ? flightSnapshot.originalMeshes
+                  : originalMeshes
+              }
               selectedId={selectedId}
               alignmentPreview={alignmentProposal?.preview_mesh || null}
               onSelect={setSelectedId}
               overlays={overlays}
               aero={aero}
               flightRow={workspace === "flight" ? row : null}
+              flightDisplayRow={
+                workspace === "flight" ? flightDisplayRow : null
+              }
+              flightStructuralMode={flightStructuralMode}
               fea={workspace === "structure" ? fea : null}
               cfd={workspace === "cfd" ? selectedCfd : null}
               flowSettings={flowSettings}
@@ -1525,11 +1635,40 @@ export default function App() {
               {workspace === "flight" && (
                 <div className="toolbar-group">
                   <Toggle
-                    label="Estimated component stress"
+                    label={
+                      flightStructuralMode === "dynamic_fins"
+                        ? "Dynamic fin FEA stress"
+                        : "Estimated component stress"
+                    }
                     value={overlays.stress}
                     onChange={() => toggleOverlay("stress")}
-                    disabled={!row?.structural_components?.length}
+                    disabled={
+                      flightStructuralMode === "dynamic_fins"
+                        ? !row?.dynamic_structural_components?.some(
+                            (component: any) => component.supported,
+                          )
+                        : !row?.structural_components?.length
+                    }
                   />
+                  {flight?.dynamic_structural_analysis && (
+                    <FieldSelect
+                      label="Flight stress display"
+                      value={flightStructuralMode}
+                      onChange={(mode) =>
+                        setFlightStructuralMode(
+                          mode as "quasi_static" | "dynamic_fins",
+                        )
+                      }
+                      hint="Dynamic fin FEA colors use actual calculated per-component beam peak stresses, not a 3D solid stress field. Unsupported parts and intervals appear gray and have no heatmap result. Estimated component stress is the separate quasi-static whole-vehicle estimate."
+                    >
+                      <option value="quasi_static">
+                        Quasi-static component estimate
+                      </option>
+                      <option value="dynamic_fins">
+                        Actual dynamic fin beam FEA
+                      </option>
+                    </FieldSelect>
+                  )}
                 </div>
               )}
               {workspace === "structure" && (
@@ -1874,6 +2013,51 @@ export default function App() {
               <div className="flight-results">
                 {flight ? (
                   <>
+                    <div
+                      className={`flight-run-status ${staleFlight ? "stale" : ""}`}
+                      role="status"
+                      data-testid="flight-run-status"
+                      data-stale={staleFlight}
+                    >
+                      <div>
+                        <strong>
+                          {staleFlight
+                            ? "Setup changed since this flight"
+                            : "Saved flight · current setup"}
+                        </strong>
+                        <p>
+                          {staleFlight
+                            ? "Playback, geometry and loads still use this run's original inputs. Recalculate to see the changed rocket, wind or solver settings."
+                            : "Playback follows computed samples. Camera motion and attitude are smoothly interpolated for viewing."}
+                        </p>
+                      </div>
+                      <button
+                        className="secondary"
+                        disabled={!canRun}
+                        onClick={launch}
+                        aria-label="Recalculate flight"
+                      >
+                        <RefreshCw size={14} /> Recalculate flight
+                      </button>
+                    </div>
+                    <LiveFlightEnvironment
+                      sourceConditions={flight.inputs?.conditions || conditions}
+                      selectedTime={playTime}
+                      stale={staleFlight}
+                      disabled={!canRun}
+                      units={units}
+                      onApply={applyLiveEnvironment}
+                      onClear={() => {
+                        setConditions((current) => ({
+                          ...current,
+                          wind_events: [],
+                        }));
+                        invalidateAnalysis();
+                        setNotice(
+                          "Environment schedule cleared for the next launch. Recalculate to run the new setup.",
+                        );
+                      }}
+                    />
                     <div className="playback">
                       <button
                         className="play-button"
@@ -2000,6 +2184,30 @@ export default function App() {
                         }
                         unit={unitLabel("stress", units)}
                       />
+                      {flight.dynamic_structural_analysis && (
+                        <Metric
+                          label="Dynamic fin bending stress"
+                          value={
+                            typeof row?.dynamic_stress === "number"
+                              ? displayValue(
+                                  row.dynamic_stress,
+                                  "stress",
+                                  units,
+                                )
+                              : undefined
+                          }
+                          unit={unitLabel("stress", units)}
+                          definition="Time-integrated one-dimensional fin beam FEA stress at this actual flight sample. A missing result is unavailable, not zero; recovery and unsupported load intervals are not structurally solved."
+                        />
+                      )}
+                      {typeof row?.angle_of_attack_deg === "number" && (
+                        <Metric
+                          label="Calculated angle of attack"
+                          value={row.angle_of_attack_deg}
+                          unit="°"
+                          definition="Incidence between the actual computed rocket nose axis and its air-relative velocity. The rigid-body model integrates this axis; large angles exceed the small-angle aerodynamic estimates."
+                        />
+                      )}
                     </div>
                     <div className="phase-row">
                       <span className="phase-badge">{row?.phase}</span>
@@ -2010,12 +2218,28 @@ export default function App() {
                         {quantity(row?.mass, "mass", units)}
                       </span>
                     </div>
+                    <p className="flight-inspection-note">
+                      Inspecting actual solver sample at {fmt(row?.time, 4)} s.
+                      Display position and attitude are interpolated; loads,
+                      stress and engineering values are from this sample.
+                    </p>
+                    <FlightStructureCoverage
+                      analysis={flight.dynamic_structural_analysis}
+                      row={row}
+                    />
                     <FlightCharts
                       trajectory={flight.trajectory}
                       units={units}
                       time={playTime}
+                      flightModel={flight.inputs?.conditions?.flight_model}
+                      windModel={flight.inputs?.conditions?.wind_model}
+                      structuralMode={flight.inputs?.options?.structural_mode}
                     />
-                    <Fidelity data={flight} currentConditions={conditions} />
+                    <Fidelity
+                      data={flight}
+                      currentConditions={conditions}
+                      currentOptions={flightOptions}
+                    />
                     <div className="export-row">
                       <button onClick={() => exportResult("flight", "csv")}>
                         <Download size={14} /> Flight data CSV
@@ -2215,7 +2439,12 @@ export default function App() {
               <div className="analysis-results">
                 <div className="section-heading">
                   <span>FLOW SOLUTION</span>
-                  <span className="result-tag">EXPERIMENTAL · INVISCID</span>
+                  <span className="result-tag">
+                    EXPERIMENTAL ·{" "}
+                    {cfd?.summary?.physics_model === "laminar"
+                      ? "LAMINAR"
+                      : "INVISCID"}
+                  </span>
                 </div>
                 {cfd ? (
                   <>
@@ -2238,7 +2467,9 @@ export default function App() {
                           cfdSummary?.mode === "transient"
                             ? "Instantaneous pressure force"
                             : cfdSummary?.converged
-                              ? "Inviscid pressure drag"
+                              ? cfdSummary?.physics_model === "laminar"
+                                ? "Pressure drag component"
+                                : "Inviscid pressure drag"
                               : "Partial pressure force"
                         }
                         value={displayValue(
@@ -2248,6 +2479,47 @@ export default function App() {
                         )}
                         unit={unitLabel("force", units)}
                       />
+                      {typeof cfdSummary?.viscous_drag_n === "number" && (
+                        <Metric
+                          label="Computed viscous force component"
+                          definition="Computed molecular-viscous surface traction projected along freestream. Coarse-grid numerical diffusion can overwhelm physical viscosity; this is not a validated skin-friction prediction."
+                          value={displayValue(
+                            cfdSummary.viscous_drag_n,
+                            "force",
+                            units,
+                          )}
+                          unit={unitLabel("force", units)}
+                        />
+                      )}
+                      {typeof cfdSummary?.total_drag_n === "number" && (
+                        <Metric
+                          label={
+                            cfdSummary?.mode === "transient"
+                              ? "Instantaneous total force component"
+                              : "Pressure + viscous drag"
+                          }
+                          definition="Sum of this actual state's computed pressure and viscous force components along freestream. Transient or unconverged values are instantaneous forces; no convergence or drag accuracy is implied."
+                          value={displayValue(
+                            cfdSummary.total_drag_n,
+                            "force",
+                            units,
+                          )}
+                          unit={unitLabel("force", units)}
+                        />
+                      )}
+                      {typeof cfdSummary?.max_wall_shear_stress_pa ===
+                        "number" && (
+                        <Metric
+                          label="Fluid wall shear stress"
+                          definition="Tangential traction exerted by the computed fluid on the stair-stepped surface. This is fluid shear stress, not stress inside the rocket material or an FEA result."
+                          value={displayValue(
+                            cfdSummary.max_wall_shear_stress_pa,
+                            "pressure",
+                            units,
+                          )}
+                          unit={unitLabel("pressure", units)}
+                        />
+                      )}
                       <Metric
                         label="Grid cells"
                         value={cfd.summary?.cell_count}
@@ -2296,6 +2568,30 @@ export default function App() {
                         Actual calculation: <strong>{cfd.backend}</strong> ·{" "}
                         {fmt(cfd.summary?.measured_steps_per_second, 1)} steps/s
                       </p>
+                      {cfdSummary?.physics_model === "laminar" && (
+                        <p>
+                          Laminar Navier–Stokes with molecular viscosity. No
+                          turbulence closure or transition model.
+                          Initial-freestream reference numerical/molecular
+                          diffusivity ratio:{" "}
+                          {fmt(
+                            cfdSummary.transport
+                              ?.estimated_numerical_to_molecular_diffusivity_ratio,
+                            1,
+                          )}
+                          . This reference is from flow time{" "}
+                          {fmt(cfdSummary.transport?.reference_time_s ?? 0, 3)}{" "}
+                          s
+                          {typeof cfdSummary.transport
+                            ?.reference_flight_time_s === "number"
+                            ? ` (launch time ${fmt(cfdSummary.transport.reference_flight_time_s, 3)} s)`
+                            : ""}
+                          , not the currently selected frame. Large ratios mean
+                          the grid's numerical dissipation can overwhelm
+                          physical viscosity. Fluid wall traction is not
+                          material stress.
+                        </p>
+                      )}
                       {cfdSummary?.mode === "transient" ? (
                         <p>
                           Selected frame freestream Mach{" "}
@@ -2354,7 +2650,7 @@ export default function App() {
                       currentConditions={conditions}
                       currentOptions={cfdRequestOptions(
                         cfdOptions,
-                        resultJobs.flight,
+                        currentFlightJobId,
                       )}
                     />
                     {cfd.inputs?.flight_source && (
@@ -2457,11 +2753,14 @@ export default function App() {
                     icon={Activity}
                     title="Explore flow around actual geometry."
                   >
-                    The Cartesian Euler solver computes inviscid compressible
-                    flow on a voxel grid. Inspect continuous streamlines, solved
-                    speed colors and pressure samples from computed fields. This
-                    solver does not predict skin friction, turbulence, or
-                    validated transonic drag.
+                    {cfdOptions.physics_model === "laminar"
+                      ? "Experimental laminar Navier–Stokes adds molecular viscosity and heat conduction on the Cartesian grid."
+                      : "The Cartesian Euler solver computes inviscid compressible pressure flow."}{" "}
+                    Inspect continuous streamlines, speed colors and pressure
+                    samples from actual computed fields. Neither mode provides
+                    physical turbulent boundary layers, transition or validated
+                    rocket drag; coarse-grid numerical diffusion can dominate
+                    molecular viscosity.
                   </Empty>
                 )}
               </div>
@@ -2603,9 +2902,11 @@ export default function App() {
                               {comparison.replacement.cfd.summary.converged
                                 ? "numerically converged"
                                 : "not converged"}{" "}
-                              ({comparison.replacement.cfd.summary.status}).
-                              Pressure forces are experimental and unvalidated;
-                              they exclude skin friction.
+                              ({comparison.replacement.cfd.summary.status}). The
+                              values shown compare experimental pressure-only
+                              components, excluding viscous shear. Neither
+                              numerical convergence nor the laminar option
+                              establishes accurate total rocket drag.
                             </p>
                           </div>
                         </>
@@ -3519,7 +3820,7 @@ export default function App() {
                                   geometry_mode: "replacement",
                                 }),
                               );
-                              clearResults();
+                              invalidateAnalysis();
                               setAlignmentProposal(null);
                               setAutomaticAlignment(false);
                               setNotice(
@@ -3644,6 +3945,11 @@ export default function App() {
                       </>
                     )}
                     <div className="panel-divider" />
+                    <FlightConfigurationDynamics
+                      configuration={configurationDraft}
+                      onChange={changeConfig}
+                      units={units}
+                    />
                     <Toggle
                       label="Recovery settings confirmed"
                       value={configurationDraft?.recovery_defined ?? false}
@@ -3876,6 +4182,19 @@ export default function App() {
                         onChange={(n) => setCondition("seed", n)}
                         step={1}
                         min={0}
+                      />
+                      <FlightDynamicsControls
+                        conditions={conditions}
+                        onConditions={(next) => {
+                          setConditions(next);
+                          invalidateAnalysis();
+                        }}
+                        options={flightOptions}
+                        onOptions={(next) => {
+                          setFlightOptions(next);
+                          invalidateAnalysis();
+                        }}
+                        units={units}
                       />
                       <div className="configuration-card">
                         <Rocket size={15} />
@@ -4217,13 +4536,14 @@ export default function App() {
                         <Info size={15} />
                         <p>
                           CFD pressure transfer is one-way and quasi-static,
-                          using nearest surface samples; no fluid-structure
-                          coupling. Linear static solid FEA. Use mesh size at
-                          most half the wall thickness for thin parts. For
-                          original fin sets, select Fin radial root. Root faces
-                          are fully clamped. Isotropic material assumptions and
-                          mesh convergence must be reviewed. Exaggerated
-                          deformation is a display aid.
+                          using nearest surface pressure samples; viscous shear
+                          is excluded. No fluid-structure coupling. Linear
+                          static solid FEA. Use mesh size at most half the wall
+                          thickness for thin parts. For original fin sets,
+                          select Fin radial root. Root faces are fully clamped.
+                          Isotropic material assumptions and mesh convergence
+                          must be reviewed. Exaggerated deformation is a display
+                          aid.
                         </p>
                       </div>
                     </>
@@ -4232,8 +4552,32 @@ export default function App() {
                     <>
                       <div className="panel-divider" />
                       <div className="subheading">
-                        <Activity size={13} /> CARTESIAN EULER SOLVER
+                        <Activity size={13} /> CARTESIAN COMPRESSIBLE FLOW
                       </div>
+                      <FieldSelect
+                        label="CFD physics model"
+                        value={cfdOptions.physics_model}
+                        onChange={(physics_model) =>
+                          setCfdOptions({ ...cfdOptions, physics_model })
+                        }
+                        hint="Euler resolves inviscid compressible pressure flow. Experimental laminar Navier–Stokes adds molecular viscosity and heat conduction. Neither includes turbulent boundary layers, transition or wall functions; a coarse first-order rocket grid cannot establish accurate skin-friction drag."
+                      >
+                        <option value="euler">
+                          Euler · inviscid pressure flow
+                        </option>
+                        <option value="laminar">
+                          Experimental laminar Navier–Stokes
+                        </option>
+                      </FieldSelect>
+                      {cfdOptions.physics_model === "laminar" && (
+                        <p className="field-error">
+                          Experimental laminar flow only. This does not resolve
+                          real high-Reynolds-number rocket turbulence. Numerical
+                          dissipation can dominate molecular viscosity; inspect
+                          the ratio, refine the mesh/domain and compare against
+                          trusted data before using loads.
+                        </p>
+                      )}
                       <FieldSelect
                         label="Simulation mode"
                         value={cfdOptions.mode}
@@ -4275,7 +4619,7 @@ export default function App() {
                           {cfdOptions.transient_source === "launch" ? (
                             <>
                               <p className="microcopy">
-                                {resultJobs.flight
+                                {currentFlightJobId
                                   ? `Uses the current calculated flight${launchEndTime != null ? ` (${fmt(launchEndTime, 2)} s)` : ""}.`
                                   : "Calculates a launch first using this configuration, motor, recovery and conditions."}{" "}
                                 Boundary airspeed, wind and atmosphere follow
@@ -4662,11 +5006,13 @@ export default function App() {
                       <div className="engineering-note">
                         <AlertTriangle size={15} />
                         <p>
-                          Experimental inviscid compressible Euler: pressure
-                          forces only. No boundary layers, viscous friction,
-                          turbulence closure, or validated transonic drag. Check
-                          residuals and grid refinement before interpreting a
-                          solution.
+                          {cfdOptions.physics_model === "laminar"
+                            ? "Experimental laminar Navier–Stokes includes molecular viscosity and heat conduction with no-slip walls. Coarse first-order grids can be dominated by numerical diffusion."
+                            : "Experimental inviscid compressible Euler computes pressure forces with slip walls, omitting molecular viscous drag."}{" "}
+                          Neither mode includes turbulence closure, transition
+                          or validated transonic drag. Check residuals,
+                          mesh/domain sensitivity and physical validation before
+                          interpreting loads.
                         </p>
                       </div>
                       <p className="microcopy">
@@ -4723,13 +5069,13 @@ export default function App() {
                             }
                             disabled={!canRun}
                           >
-                            <Activity size={14} /> Compare with Euler CFD
+                            <Activity size={14} /> Compare with CFD
                           </button>
                           <p className="microcopy">
                             CFD comparison runs two steady-state solutions using
-                            the current grid settings, until convergence or
-                            Cancel. Empirical CP values remain subject to model
-                            limitations.
+                            the selected physics model and current grid
+                            settings, until convergence or Cancel. Empirical CP
+                            values remain subject to model limitations.
                           </p>
                         </>
                       ) : (
@@ -4878,11 +5224,13 @@ export default function App() {
                             </p>
                           )}
                           {studyOptions.flight &&
-                            studyOptions.parameter === "angle_of_attack" && (
+                            ["angle_of_attack", "sideslip"].includes(
+                              studyOptions.parameter,
+                            ) && (
                               <p className="microcopy">
-                                This varies only the fixed structural-load
-                                reference angle. The point-mass trajectory does
-                                not integrate attitude or angle of attack.
+                                {conditions.flight_model === "rigid_body"
+                                  ? "Rigid-body flight calculates incidence from its integrated attitude. This static-test angle does not set flight incidence; vary wind or launch orientation instead."
+                                  : "This varies only the fixed structural-load reference angle. The point-mass trajectory does not integrate attitude or angle of attack."}
                               </p>
                             )}
                           <div className="engineering-note">
@@ -4942,9 +5290,10 @@ export default function App() {
                         <Globe size={15} /> Find motor online
                       </button>
                       <p className="microcopy">
-                        Use the red Launch button above the 3D view.
-                        Calculations finish before automatic flight playback
-                        begins.
+                        Use the red Launch button above the 3D view. Changed
+                        inputs mark an existing flight as stale. Recalculate to
+                        run the current setup; automatic playback begins when
+                        calculation completes.
                       </p>
                     </div>
                   )}

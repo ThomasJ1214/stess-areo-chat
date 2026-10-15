@@ -18,6 +18,18 @@ export interface CfdTransientFrame {
   pressure_coefficient_defined: boolean;
   altitude_msl_m: number | null;
   flight_time_s: number | null;
+  surface_viscous_traction_pa?: number[][];
+  surface_shear_traction_pa?: number[][];
+  surface_shear_stress_pa?: number[];
+  surface_total_traction_pa?: number[][];
+  surface_wall_fluid_temperature_k?: number[];
+  pressure_force_n?: number[];
+  viscous_force_n?: number[];
+  total_force_n?: number[];
+  viscous_drag_n?: number;
+  total_drag_n?: number;
+  viscous_moment_about_origin_nm?: number[];
+  total_moment_about_origin_nm?: number[];
 }
 
 const finiteVector = (value: unknown): value is number[] =>
@@ -113,6 +125,26 @@ export function selectCfdFrame(data: any, requestedIndex: number): any | null {
     ].every(Number.isFinite)
   )
     return null;
+  const laminar = data.summary?.physics_model === "laminar";
+  if (
+    laminar &&
+    (!vectorField(frame.surface_viscous_traction_pa, surfacePositions.length) ||
+      !vectorField(frame.surface_shear_traction_pa, surfacePositions.length) ||
+      !scalarField(frame.surface_shear_stress_pa, surfacePositions.length) ||
+      !vectorField(frame.surface_total_traction_pa, surfacePositions.length) ||
+      !scalarField(
+        frame.surface_wall_fluid_temperature_k,
+        surfacePositions.length,
+      ) ||
+      (frame.pressure_force_n !== undefined &&
+        !finiteVector(frame.pressure_force_n)) ||
+      !finiteVector(frame.viscous_force_n) ||
+      !finiteVector(frame.total_force_n) ||
+      !finiteVector(frame.viscous_moment_about_origin_nm) ||
+      !finiteVector(frame.total_moment_about_origin_nm) ||
+      ![frame.viscous_drag_n, frame.total_drag_n].every(Number.isFinite))
+  )
+    return null;
   const samples = positions.map((position: number[], i: number) => ({
     position,
     pressure_pa: frame.sample_pressure_pa[i],
@@ -134,6 +166,15 @@ export function selectCfdFrame(data: any, requestedIndex: number): any | null {
       ? (frame.surface_pressure_pa[i] - frame.freestream_pressure_pa) /
         frame.dynamic_pressure_pa
       : null,
+    ...(laminar
+      ? {
+          viscous_traction_pa: frame.surface_viscous_traction_pa![i],
+          shear_traction_pa: frame.surface_shear_traction_pa![i],
+          shear_stress_pa: frame.surface_shear_stress_pa![i],
+          total_traction_pa: frame.surface_total_traction_pa![i],
+          wall_fluid_temperature_k: frame.surface_wall_fluid_temperature_k![i],
+        }
+      : {}),
   }));
   const selected = {
     ...data,
@@ -152,6 +193,22 @@ export function selectCfdFrame(data: any, requestedIndex: number): any | null {
       force_n: frame.force_n,
       moment_about_origin_nm: frame.moment_about_origin_nm,
       pressure_drag_n: frame.pressure_drag_n,
+      ...(laminar
+        ? {
+            pressure_force_n: frame.pressure_force_n ?? frame.force_n,
+            viscous_force_n: frame.viscous_force_n,
+            total_force_n: frame.total_force_n,
+            viscous_drag_n: frame.viscous_drag_n,
+            total_drag_n: frame.total_drag_n,
+            viscous_moment_about_origin_nm:
+              frame.viscous_moment_about_origin_nm,
+            total_moment_about_origin_nm: frame.total_moment_about_origin_nm,
+            max_wall_shear_stress_pa: Math.max(
+              0,
+              ...frame.surface_shear_stress_pa!,
+            ),
+          }
+        : {}),
       freestream_pressure_pa: frame.freestream_pressure_pa,
       dynamic_pressure_pa: frame.dynamic_pressure_pa,
       freestream_velocity_m_s: frame.freestream_velocity_m_s,

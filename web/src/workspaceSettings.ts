@@ -11,6 +11,7 @@ export const defaultCfdOptions = {
   cfl: 0.35,
   convergence_tolerance: 0.00001,
   backend: "auto",
+  physics_model: "euler",
   mode: "steady",
   transient_source: "launch",
   duration_s: 0.01,
@@ -43,12 +44,20 @@ export const defaultStudyOptions = {
   flight: false,
   seed: 42,
 };
+export const defaultFlightOptions = {
+  structural_mode: "quasi_static",
+  damping_ratio: 0.01,
+  elements: 12,
+  steps_per_period: 30,
+  allow_isotropic_surrogate: false,
+};
 type WorkspaceSettings = {
   conditions: Conditions;
   cfd_options: typeof defaultCfdOptions;
   fea_options: typeof defaultFeaOptions;
   study_options: typeof defaultStudyOptions;
   study_mode: "sweep" | "monte_carlo" | "comparison";
+  flight_options: typeof defaultFlightOptions;
 };
 
 /** Preserve solver extension fields while giving malformed known controls defaults. */
@@ -85,12 +94,20 @@ export function restoreSettings(saved?: AnalysisSettings): WorkspaceSettings {
     cfd_options: restoreCfdOptions(saved?.cfd_options),
     fea_options: mergeOptions(defaultFeaOptions, saved?.fea_options),
     study_options: mergeOptions(defaultStudyOptions, saved?.study_options),
+    flight_options: restoreFlightOptions(saved?.flight_options),
     study_mode: ["sweep", "monte_carlo", "comparison"].includes(
       saved?.study_mode || "",
     )
       ? saved!.study_mode
       : "sweep",
   };
+}
+
+export function restoreFlightOptions(saved?: Record<string, unknown>) {
+  const restored = mergeOptions(defaultFlightOptions, saved);
+  if (!["quasi_static", "dynamic_fins"].includes(restored.structural_mode))
+    restored.structural_mode = "quasi_static";
+  return restored;
 }
 
 /** Restore older projects without retaining obsolete execution time ceilings. */
@@ -107,6 +124,8 @@ export function restoreCfdOptions(saved?: Record<string, unknown>) {
     delete (restored as Record<string, unknown>)[key];
   if (!["steady", "transient"].includes(restored.mode))
     restored.mode = "steady";
+  if (!["euler", "laminar"].includes(restored.physics_model))
+    restored.physics_model = "euler";
   if (!["launch", "fixed"].includes(restored.transient_source))
     restored.transient_source = "launch";
   if (
@@ -285,6 +304,9 @@ export function usePersistentSettings(
     studyOptions: settings.study_options,
     setStudyOptions: (value: WorkspaceSettings["study_options"]) =>
       update("study_options", value),
+    flightOptions: settings.flight_options,
+    setFlightOptions: (value: WorkspaceSettings["flight_options"]) =>
+      update("flight_options", value),
     studyMode: settings.study_mode,
     setStudyMode: (value: string) => {
       if (["sweep", "monte_carlo", "comparison"].includes(value))

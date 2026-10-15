@@ -49,7 +49,7 @@ const designSteps: TutorialStep[] = [
     check:
       "Recovery matches your hardware. If recovery was missing from the import, explicitly confirm the entered setup. Main deployment altitude is above launch level (AGL).",
     workspace: "design",
-    note: "The flight model uses fully deployed, constant canopy drag. It does not resolve inflation, opening shock, separated parts, or cord loads.",
+    note: "Main and drogue inflation times optionally grow the lumped recovery drag area linearly. Zero keeps instantaneous deployment. Neither option resolves canopy shape, opening shock, separated parts or cord loads.",
   },
   {
     title: "Replace just the selected component with CAD",
@@ -121,20 +121,20 @@ const flightSteps: TutorialStep[] = [
   {
     title: "Prepare the rocket on its launch rail",
     instruction:
-      "Check the selected configuration's motor and recovery setup. Enter Launch rail length, Angle from vertical, and Launch azimuth. The Flight view places the rocket on a rail above an open flat launch plane.",
+      "Check the selected configuration's motor and recovery setup. Enter Launch rail length, Angle from vertical, and Launch azimuth. Choose Flight dynamics model: rigid body solves attitude; point mass retains the earlier gravity-turn model. The rocket starts on a rail above a flat launch plane.",
     check:
       "Rail angle and orientation match your intended launch. 0° launch angle is vertical; azimuth 0° is north and 90° is east.",
     workspace: "flight",
-    note: "The flat plane is a launch-relative reference surface. This model does not import terrain or determine obstacle clearance.",
+    note: "Rigid-body forces and moments still use small-angle engineering coefficients. Review inertia and damping warnings; neither flight model provides validated large-angle/tumbling aerodynamics or terrain clearance.",
   },
   {
     title: "Set wind and simulation duration",
     instruction:
-      "Enter wind speed, direction, and gust intensity. Flight wind direction is the bearing the air moves toward. Set Duration limit long enough for recovery; Time step is the integration step ceiling. Keep a fixed Random seed for repeatable comparisons.",
+      "Enter wind speed, toward-bearing direction and gust intensity. Choose smooth gusts or Dryden in Wind model; Dryden also needs a justified length scale and optional transport speed. Set Duration limit for recovery; Time step is the integration ceiling. Keep a fixed Random seed for comparisons.",
     check:
       "Wind, launch conditions, motor, and deployment settings are plausible. A 90° wind blows toward east; 270° blows toward west.",
     workspace: "flight",
-    note: "Gusts are a deterministic sensitivity model, not a measured atmospheric turbulence spectrum. Flight integrates position and velocity, not full vehicle attitude or weathercocking.",
+    note: "Dryden is a seeded temporal disturbance with assumed scales, not measured weather or resolved turbulent CFD. Wind shear is an optional height power law. Rigid-body attitude can respond to wind within its supported aerodynamic domain.",
   },
   {
     title: "Launch and watch progress",
@@ -151,16 +151,16 @@ const flightSteps: TutorialStep[] = [
     check:
       "The map and camera use the same recorded trajectory. Landing is shown only when the computed flight reaches ground; an unfinished run must not invent a landing point.",
     workspace: "flight",
-    note: "The map is a local east/north distance plot, not a satellite map or live GPS tracking. Rocket attitude and enlarged rendering are illustrative aids for this point-mass trajectory.",
+    note: "The map uses local east/north distances, not satellite imagery or live GPS. Rigid-body playback uses the saved quaternion; point-mass orientation is prescribed. Smooth display interpolation and enlargement do not add computed physics.",
   },
   {
     title: "Inspect the important moments",
     instruction:
-      "Pause or scrub the timeline. Click events such as Rail exit, Max Q, Burnout, Apogee, and Recovery to inspect the corresponding time. Enable Forces, wind, or stress overlays. Switch flight graphs between Overview, Loads, and Wind & air to inspect actual trajectory data and air-relative loads.",
+      "Pause or scrub the timeline. Click Rail exit, Max Q, Burnout, Apogee and Recovery to inspect their times. Enable Forces, wind or stress overlays. Use Overview, Loads, Wind & air, and Attitude & recovery graphs to inspect saved trajectory data; Dynamic fin FEA appears for the supported structural mode.",
     check:
-      "Read altitude, air-relative speed, Mach, dynamic pressure, and deployment state at that moment. Flight stress colors are quasi-static beam/fin estimates, not transient FEA.",
+      "Read altitude, air-relative speed, Mach, dynamic pressure, and deployment state at the actual saved sample. Check the stress source: estimates and dynamic fin beam FEA are separate; fin colors show component peaks rather than a 3D stress field.",
     workspace: "flight",
-    note: "Max acceleration can include the idealized instant canopy force change; it is not a resolved recovery opening-shock prediction. Recovery marks ground contact, not a claim of a safe landing.",
+    note: "Prescribed inflation changes lumped canopy-force buildup, not resolved opening shock. Recovery marks ground contact, not a claim of safe landing. Read completion and unsupported-angle warnings before using a rigid-body trajectory.",
   },
   {
     title: "Record and compare the flight",
@@ -169,6 +169,24 @@ const flightSteps: TutorialStep[] = [
     check:
       "You have both the results and the exact inputs. If Duration limit ended first, increase it and rerun before comparing landing distance.",
     workspace: "flight",
+  },
+  {
+    title: "Change the environment at a selected moment",
+    instruction:
+      "Pause or scrub to the desired time. Open Live environment, set wind, gust strength, transition time and optional temperature deviation, then Apply from selected time. The actual launch is recalculated with the scheduled change and playback resumes there. Use Recalculate flight first if setup is stale.",
+    check:
+      "The schedule lists the selected timestamp and intended new conditions. Earlier prescribed wind history stays unchanged; the new calculated trajectory and loads show the response. Clear schedule for next launch removes these events from the next run.",
+    workspace: "flight",
+    note: "This schedules atmospheric inputs and recalculates a complete launch; it is not throttle, steering or a live telemetry connection. Saved playback always keeps its original run inputs until recalculation finishes.",
+  },
+  {
+    title: "Calculate supported dynamic fin bending",
+    instruction:
+      "Choose Dynamic fin bending in Flight structural model before launching. It supports original trapezoidal fins. Set justified modal damping, inspect beam elements and time resolution, and explicitly acknowledge any isotropic composite approximation. After calculation, use Dynamic fin FEA graphs and the structural coverage panel.",
+    check:
+      "Results identify each supported fin and load interval. Missing values and recovery intervals remain gaps; a colored quasi-static overlay is still an estimate. Compare beam refinement and damping sensitivity before interpreting peak stress or deflection.",
+    workspace: "flight",
+    note: "This is actual time-integrated one-dimensional beam FEA, not shell/solid FEA of the entire rocket, bonded-joint analysis, composite laminate failure, flutter or fluid–structure coupling.",
   },
 ];
 
@@ -185,11 +203,11 @@ const cfdSteps: TutorialStep[] = [
   {
     title: "Begin with a manageable grid",
     instruction:
-      "Set Lengthwise grid cells, Transverse grid cells, Cell budget, and Farfield padding. Start with a modest grid and choose CPU, automatic or GPU. If GPU is unavailable, open GPU diagnostics for the failed check; a working 3D view does not establish NVIDIA CUDA numerical support.",
+      "Choose CFD physics model: Euler for inviscid pressure flow, or experimental laminar Navier–Stokes for molecular viscosity and heat conduction. Set Lengthwise grid cells, Transverse grid cells, Cell budget and Farfield padding. Choose CPU, automatic or GPU; GPU diagnostics checks numerical CUDA support.",
     check:
       "The cell budget covers the proposed domain. Thin fins and small openings need enough cells to remain visible to the solver.",
     workspace: "cfd",
-    note: "Farfield padding is a multiple of each axis's geometry extent. A larger domain at the same cell resolution increases memory and work; neither a large budget nor GPU use proves accuracy.",
+    note: "Laminar transport has no turbulence or transition model. Rocket boundary layers are generally thinner than this grid; numerical diffusion can dominate molecular viscosity. Check Reynolds/resolution diagnostics and refine both grid and domain rather than treating solver completion as validated drag.",
   },
   {
     title: "Choose steady or time-resolved flow",
@@ -207,7 +225,7 @@ const cfdSteps: TutorialStep[] = [
     check:
       "All convergence measures settle and the pressure/force values are finite. Review the result warnings, actual backend, and exterior-flow diagnostics.",
     workspace: "cfd",
-    note: "Direction tracers use visual timing on the selected snapshot, not physical particle histories. Higher display quality and cutaway do not change the numerical solution or create internal airflow. This experimental Euler solver excludes skin friction, boundary layers and physical turbulence; smooth lines do not validate drag accuracy.",
+    note: "Direction tracers use visual timing on the selected snapshot, not physical particle histories. Higher display quality and cutaway do not change the solution or create internal airflow. Euler omits viscosity; laminar wall shear is a grid-dependent fluid load, not solid stress or a turbulence prediction. Smooth lines do not validate drag.",
   },
   {
     title: "Test grid and domain sensitivity",

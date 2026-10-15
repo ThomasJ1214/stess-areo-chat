@@ -119,7 +119,8 @@ export default function UserGuide({
             Later edits need <strong>Apply alignment / mode</strong>. Attachment
             replaces the selected component; it does not delete neighboring
             components. Imported assets and actual material geometry remain
-            available for mass, viewing and FEA.
+            available for mass, viewing and FEA. Touching parts are not
+            automatically fused or structurally bonded.
           </p>
           <p>
             In <strong>Component</strong>, check the selected material, optional
@@ -157,11 +158,22 @@ export default function UserGuide({
           </p>
           <p>
             Open <strong>Flight</strong>, check rail length, launch angles and
-            wind, then click the red <strong>Launch</strong> button. The rocket
-            starts on a launch rail over a flat ground plane. Watch progress and
-            ETA; cancellation is available. After completion, play, pause or
-            scrub the timeline and select events such as rail exit, max Q and
-            apogee. <strong>Follow</strong> tracks actual position;
+            wind. Choose <strong>Flight dynamics model</strong>: point mass uses
+            a prescribed gravity-turn axis; rigid body calculates attitude and
+            angular rates with small-angle aerodynamic forces. Review its
+            inertia and damping warnings. Significant unsupported incidence can
+            stop a rigid-body run early; it does not predict tumbling. Under
+            <strong> Wind model</strong>, Dryden adds seeded stochastic gusts
+            with assumed scales. Optional wind shear changes wind with height.
+            These inputs do not supply measured weather or turbulent CFD.
+          </p>
+          <p>
+            Click the red <strong>Launch</strong> button. The rocket starts on a
+            launch rail over a flat ground plane. The app calculates the
+            trajectory before playback; watch progress and ETA or use Cancel.
+            After calculation, play, pause or scrub the timeline and select
+            events such as rail exit, max Q and apogee. <strong>Follow</strong>{" "}
+            tracks actual position;
             <strong> Overview</strong> fits the trajectory with an enlarged
             model;
             <strong> Inspect</strong> shows local geometry. Orbit, pan, or zoom
@@ -170,10 +182,41 @@ export default function UserGuide({
             <strong> Resume follow</strong> to resume immediately. The top-down
             map plots local east/north position, launch, flight events, and the
             computed landing point. It is a distance map, not satellite imagery.
-            An incomplete trajectory has no predicted landing point. Rocket
-            attitude is illustrative because flight uses a point-mass model.
-            Flight stress colors show beam/fin estimates, not a changing FEA
-            solution.
+            An incomplete trajectory has no predicted landing point. Rigid-body
+            playback shows solved attitude; point-mass attitude is illustrative.
+            Smooth pose interpolation is for viewing; engineering values use
+            actual saved samples.
+          </p>
+          <p>
+            To change wind or air during a flight, pause or scrub to a time,
+            open
+            <strong> Live environment</strong>, set the new wind, gust strength,
+            transition time and optional temperature deviation, then click
+            <strong> Apply from selected time</strong>. The app recalculates the
+            launch with that scheduled change and resumes playback there.
+            Earlier prescribed wind stays unchanged. Transition windows cannot
+            overlap. If setup has changed, use{" "}
+            <strong>Recalculate flight</strong> first; old playback retains its
+            original inputs and geometry.
+          </p>
+          <p>
+            For dynamic bending, choose{" "}
+            <strong>Dynamic fin bending · 1D beam FEA</strong> in{" "}
+            <strong>Flight structural model</strong> before launch. It supports
+            original trapezoidal fins under saved flight loads. Set justified
+            damping and acknowledge any isotropic composite approximation.
+            Inspect <strong>Dynamic fin FEA</strong> graphs, coverage and the
+            selected stress source. Dynamic colors show each supported fin's
+            solved peak beam stress, not a 3D stress distribution. Gray parts
+            and missing intervals have no result. Whole-vehicle stress remains a
+            separate quasi-static estimate.
+          </p>
+          <p>
+            Main and drogue inflation times in{" "}
+            <strong>Design → Flight setup</strong> grow the assumed canopy drag
+            area linearly; zero keeps instant deployment. This changes recovery
+            drag buildup but does not solve canopy shape, line shock or
+            suspension motion.
           </p>
           <div className="guide-actions">
             <button className="secondary" onClick={() => go("aero")}>
@@ -196,9 +239,13 @@ export default function UserGuide({
             <strong> Farfield padding</strong> separately to assess mesh and
             domain-size sensitivity. Padding is a multiple of each axis’s
             geometry extent; larger domains may require a larger cell budget.
-            This experimental inviscid solver excludes skin friction, boundary
-            layers and physical turbulence; a converged run alone is not
-            validated aerodynamic accuracy.
+            Choose <strong>CFD physics model</strong>: Euler solves inviscid
+            pressure flow; experimental laminar Navier–Stokes adds molecular
+            viscosity, heat conduction and no-slip adiabatic walls. Neither
+            includes turbulence or transition. On practical rocket grids,
+            numerical diffusion can overwhelm molecular transport and boundary
+            layers can be thinner than a cell. Check the laminar reference
+            diagnostics; convergence alone does not validate drag.
           </p>
           <p>
             Enable <strong>Streamlines</strong> to see continuous lines through
@@ -223,20 +270,21 @@ export default function UserGuide({
           </p>
           <p>
             For <strong>Transient</strong>, choose{" "}
-            <strong>Actual calculated launch history</strong>
-            to follow the configured motor, airspeed, wind and atmosphere. A
-            current launch is reused when available; otherwise a launch is
-            calculated first. Select <strong>Whole available flight</strong> or
-            a short interval around an event. Every physical CFD step is
-            resolved, so full-flight computation may take hours or longer.{" "}
-            <strong>Fixed freestream</strong>
-            instead advances the stated duration under the current wind-test
-            conditions. Scrub the saved numerical frames with the flow timeline.
-            Each interval starts from uniform freestream and includes numerical
-            startup effects. Transient completion does not imply steady
-            convergence. This is one-way flow on fixed rigid geometry, without
-            moving-mesh attitude or canopy deployment, and its forces do not
-            revise the flight trajectory.
+            <strong>Actual calculated launch history</strong> to follow the
+            configured motor, airspeed, wind and atmosphere. A current launch is
+            reused when available; otherwise a launch is calculated first.
+            Select <strong>Whole available flight</strong> or a short interval
+            around an event. Every physical CFD step is resolved, so full-flight
+            computation may take hours or longer.{" "}
+            <strong>Fixed freestream</strong> instead advances the stated
+            duration under the current wind-test conditions. Scrub the saved
+            numerical frames with the flow timeline. Each interval starts from
+            uniform freestream and includes numerical startup effects. Transient
+            completion does not imply steady convergence. Rigid-body histories
+            use their solved attitude to express airflow in the CAD axes. This
+            remains one-way flow on fixed rigid geometry, without moving walls,
+            rotating-frame physics or canopy deployment; its forces do not
+            revise the trajectory.
           </p>
           <p>
             In <strong>Structures</strong>, select the component, material, mesh
@@ -245,22 +293,21 @@ export default function UserGuide({
             misleading stresses. Use uniform pressure, end traction, body
             acceleration, or a converged, geometry-matched CFD pressure field.
             Only exterior CFD faces receive transferred pressure; missing
-            coverage is reported. Review equilibrium, mesh convergence and
-            material assumptions. Deformation scale changes display only. Linear
-            isotropic solid FEA excludes composite layups, contact, buckling and
-            recovery shock.
+            coverage is reported. Transfer is pressure-only even for laminar
+            results; it excludes viscous traction. Review equilibrium, mesh
+            convergence and material assumptions. Deformation scale changes
+            display only. Linear isotropic solid FEA excludes composite layups,
+            contact, buckling and recovery shock.
           </p>
           <p>
             Check <strong>Mesh readiness</strong> first.{" "}
-            <strong>Automatic mesh sizing</strong>
-            applies a thickness-aware suggestion when the current budget can fit
-            it.
+            <strong>Automatic mesh sizing</strong> applies a thickness-aware
+            suggestion when the current budget can fit it.
             <strong> Use recommended mesh</strong> can raise the displayed
             element budget. Thin whole parts may require too many elements; use{" "}
-            <strong>Use beam/fin estimates</strong>
-            or prepare a smaller CAD part externally. CAD thickness must still
-            be measured. A coarse solid mesh must not be used to bypass the
-            thin-part safeguard.
+            <strong>Use beam/fin estimates</strong> or prepare a smaller CAD
+            part externally. CAD thickness must still be measured. A coarse
+            solid mesh must not be used to bypass the thin-part safeguard.
           </p>
           <div className="guide-actions">
             <button className="secondary" onClick={() => go("cfd")}>

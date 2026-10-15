@@ -8,6 +8,8 @@ import {
   feaRequestOptions,
   mergeOptions,
   restoreSettings,
+  defaultFlightOptions,
+  restoreFlightOptions,
 } from "./workspaceSettings";
 
 describe("portable analysis setup", () => {
@@ -55,6 +57,39 @@ describe("portable analysis setup", () => {
         custom_solver: { mesh_order: 1 },
       }),
     ).toHaveProperty("clamp_tolerance", 0.0001);
+  });
+  it("restores actual flight solver options with backward-compatible physics defaults", () => {
+    const older = restoreSettings();
+    expect(older.flight_options).toEqual(defaultFlightOptions);
+    expect(older.conditions.flight_model).toBe("point_mass");
+    expect(older.conditions.wind_model).toBe("legacy_gust");
+    expect(older.conditions.wind_events).toEqual([]);
+    expect(
+      restoreFlightOptions({
+        structural_mode: "dynamic_fins",
+        damping_ratio: 0.02,
+        elements: 24,
+        allow_isotropic_surrogate: true,
+        custom_validation: "reference",
+      }),
+    ).toMatchObject({
+      structural_mode: "dynamic_fins",
+      damping_ratio: 0.02,
+      elements: 24,
+      allow_isotropic_surrogate: true,
+      custom_validation: "reference",
+    });
+    expect(
+      restoreFlightOptions({ structural_mode: "invented", damping_ratio: NaN })
+        .structural_mode,
+    ).toBe("quasi_static");
+    expect(
+      restoreCfdOptions({ physics_model: "imaginary-turbulence" })
+        .physics_model,
+    ).toBe("euler");
+    expect(restoreCfdOptions({ physics_model: "laminar" }).physics_model).toBe(
+      "laminar",
+    );
   });
   it("preserves explicit zero pressure while preventing a hidden zero aerodynamic load", () => {
     const uniform = feaRequestOptions({

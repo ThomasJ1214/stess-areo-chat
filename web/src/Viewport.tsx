@@ -31,10 +31,12 @@ import {
   inertialToScene,
   followCameraDistance,
   railDirection,
+  solvedGeometryQuaternion,
   trajectoryPoints,
 } from "./launchScene";
 import type { FlightEvent } from "./launchScene";
 import FollowCamera from "./FollowCamera";
+import type { FlightPresentationSample } from "./flightPlaybackMath";
 
 interface Props {
   meshes: MeshResponse | null;
@@ -45,6 +47,9 @@ interface Props {
   overlays: Overlays;
   aero: any;
   flightRow: any;
+  /** Smooth visual pose only. Labels, heatmaps and forces still use flightRow. */
+  flightDisplayRow?: FlightPresentationSample | null;
+  flightStructuralMode?: "quasi_static" | "dynamic_fins";
   fea: any;
   cfd: any;
   flowSettings?: CfdFlowSettings;
@@ -87,6 +92,7 @@ function Solid({
   onSelect,
   ghost = false,
   stressValue,
+  stressUnavailable = false,
   maxStress = 1,
   xray = false,
   clippingPlanes,
@@ -98,6 +104,7 @@ function Solid({
   onSelect: () => void;
   ghost?: boolean;
   stressValue?: number;
+  stressUnavailable?: boolean;
   maxStress?: number;
   xray?: boolean;
   clippingPlanes?: THREE.Plane[];
@@ -116,9 +123,11 @@ function Solid({
         color={
           typeof stressValue === "number"
             ? heat(stressValue, 0, maxStress)
-            : selected
-              ? "#e4b87d"
-              : palette[index % palette.length]
+            : stressUnavailable
+              ? "#87939b"
+              : selected
+                ? "#e4b87d"
+                : palette[index % palette.length]
         }
         metalness={ghost ? 0 : 0.28}
         roughness={0.48}
@@ -381,7 +390,7 @@ function LaunchEnvironment({
     direction,
   );
   const azimuth = (conditions.launch_azimuth * Math.PI) / 180;
-  const sideways = new THREE.Vector3(Math.cos(azimuth), 0, -Math.sin(azimuth));
+  const sideways = new THREE.Vector3(Math.cos(azimuth), 0, Math.sin(azimuth));
   const railOffset = sideways.multiplyScalar(Math.max(0.06, radius * 0.65));
   const railCenter = direction
     .clone()
@@ -428,12 +437,12 @@ function LaunchEnvironment({
       <Line
         points={[
           [0, 0.003, 0],
-          [0, 0.003, Math.max(2, rocketSize)],
+          [0, 0.003, -Math.max(2, rocketSize)],
         ]}
         color="#86bfb1"
         lineWidth={2}
       />
-      <Html position={[0, 0.03, Math.max(2, rocketSize)]} center>
+      <Html position={[0, 0.03, -Math.max(2, rocketSize)]} center>
         <span className="scene-label">N</span>
       </Html>
       <Html
@@ -460,6 +469,176 @@ function LaunchEnvironment({
             color="#77cdd5"
           />
         ))}
+    </group>
+  );
+}
+
+/** An illustrative plume driven by actual motor thrust, not a combustion/CFD
+ * result. Particle count is fixed, materials/geometries are shared. */
+function MotorExhaust({
+  row,
+  tail,
+  size,
+  radius,
+  peakThrust,
+}: {
+  row: any;
+  tail: number;
+  size: number;
+  radius: number;
+  peakThrust: number;
+}) {
+  const particles = useRef<THREE.InstancedMesh>(null);
+  const transform = useMemo(() => new THREE.Object3D(), []);
+  const ratio = Math.max(
+    0,
+    Math.min(1, (row?.thrust || 0) / Math.max(peakThrust, 1)),
+  );
+  const length = size * (0.28 + 0.7 * Math.sqrt(ratio));
+  const width = Math.max(radius * 0.28, size * 0.007) * (0.5 + ratio);
+  const active = Number.isFinite(row?.thrust) && row.thrust > 0.01;
+  useFrame(() => {
+    if (!particles.current || !active) return;
+    const clock = row?.time || 0;
+    for (let i = 0; i < 72; i++) {
+      const fraction =
+        (((clock * (1.5 + ratio) + i * 0.61803398875) % 1) + 1) % 1;
+      const angle = i * 2.39996322973;
+      const spread = width * (0.3 + fraction * 2.4);
+      transform.position.set(
+        tail + length * fraction * 1.3,
+        Math.sin(angle) * spread,
+        Math.cos(angle) * spread,
+      );
+      const particleSize =
+        width * (0.12 + fraction * 0.12) * (1 - fraction * 0.65);
+      transform.scale.setScalar(particleSize);
+      transform.updateMatrix();
+      particles.current.setMatrixAt(i, transform.matrix);
+    }
+    particles.current.instanceMatrix.needsUpdate = true;
+  });
+  return active ? (
+    <group name="illustrative-thrust-driven-exhaust">
+      <mesh
+        position={[tail + length * 0.5, 0, 0]}
+        rotation={[0, 0, -Math.PI / 2]}
+      >
+        <coneGeometry args={[width, length, 20, 1, true]} />
+        <meshBasicMaterial
+          color="#ff9c41"
+          transparent
+          opacity={0.28 + ratio * 0.12}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <mesh
+        position={[tail + length * 0.24, 0, 0]}
+        rotation={[0, 0, -Math.PI / 2]}
+      >
+        <coneGeometry args={[width * 0.55, length * 0.48, 16, 1, true]} />
+        <meshBasicMaterial
+          color="#d5f2ff"
+          transparent
+          opacity={0.65}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <instancedMesh
+        ref={particles}
+        args={[undefined, undefined, 72]}
+        frustumCulled={false}
+      >
+        <sphereGeometry args={[1, 6, 4]} />
+        <meshBasicMaterial
+          color="#ffc88a"
+          transparent
+          opacity={0.28}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </instancedMesh>
+    </group>
+  ) : null;
+}
+
+/** Canopy geometry is illustrative; inflation comes from the integrated state.
+ * No cloth shape, reefing or material deformation is implied by this display. */
+function RecoveryCanopy({
+  row,
+  point,
+  size,
+}: {
+  row: any;
+  point: number[];
+  size: number;
+}) {
+  const fraction = Math.max(
+    0,
+    Math.min(1, row?.recovery_inflation_fraction || 0),
+  );
+  const area = Math.max(0, row?.recovery_cd_area_m2 || 0);
+  const direction = new THREE.Vector3(
+    ...inertialToScene(
+      (row?.velocity_vector || [0, 0, -1]).map(
+        (value: number, i: number) => (row?.wind_vector?.[i] || 0) - value,
+      ),
+    ),
+  );
+  if (direction.lengthSq() < 1e-8) direction.set(0, 1, 0);
+  direction.normalize();
+  const rotation = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction,
+  );
+  const canopyRadius =
+    Math.max(size * 0.1, Math.min(size * 8, Math.sqrt(area / Math.PI))) *
+    Math.sqrt(Math.max(fraction, 0.01));
+  const suspension = size * (1.1 + fraction * 0.7) + canopyRadius * 0.5;
+  const top = new THREE.Vector3(
+    ...(point as [number, number, number]),
+  ).addScaledVector(direction, suspension);
+  if (fraction <= 0 || area <= 0) return null;
+  return (
+    <group
+      name="illustrative-modeled-canopy"
+      position={top}
+      quaternion={rotation}
+    >
+      <mesh>
+        <sphereGeometry
+          args={[canopyRadius, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2]}
+        />
+        <meshStandardMaterial
+          color={row.phase === "main" ? "#ed9668" : "#e0c77c"}
+          side={THREE.DoubleSide}
+          roughness={0.85}
+        />
+      </mesh>
+      {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => {
+        const angle = (i * Math.PI) / 4;
+        return (
+          <Line
+            key={i}
+            points={[
+              [
+                Math.cos(angle) * canopyRadius,
+                0,
+                Math.sin(angle) * canopyRadius,
+              ],
+              [0, -suspension, 0],
+            ]}
+            color="#d7d9d2"
+            transparent
+            opacity={0.6}
+            lineWidth={1}
+          />
+        );
+      })}
     </group>
   );
 }
@@ -554,6 +733,7 @@ function Scene({
     ).union(box);
   }, [p.workspace, p.overlays.flow, p.cfd, box]);
   const min = box.min.x;
+  const displayRow = p.flightDisplayRow || p.flightRow;
   const cg = p.flightRow?.cg ?? p.aero?.cg_m;
   const cp = p.flightRow?.cp ?? p.aero?.cp_m;
   const conditions = p.launchConditions || defaultConditions;
@@ -575,13 +755,23 @@ function Scene({
   const extent = flightBox.isEmpty()
     ? size
     : Math.max(...flightBox.getSize(new THREE.Vector3()).toArray(), size);
-  const anchorX = Number.isFinite(cg) ? cg : center[0];
+  const anchorX = Number.isFinite(displayRow?.cg)
+    ? displayRow.cg
+    : Number.isFinite(cg)
+      ? cg
+      : center[0];
+  const anchorGeometry: [number, number, number] =
+    displayRow?.cg_geometry_m?.length === 3 &&
+    displayRow.cg_geometry_m.every(Number.isFinite)
+      ? (displayRow.cg_geometry_m as [number, number, number])
+      : [anchorX, 0, 0];
   const pose = flightPose(
-    p.flightRow,
+    displayRow,
     conditions,
     p.flightEvents || [],
     box.max.x,
     anchorX,
+    p.trajectory[0],
   );
   const rocketPoint: [number, number, number] = tracking
     ? pose.position.toArray()
@@ -611,10 +801,63 @@ function Scene({
       : tracking && !pose.onRail
         ? Math.max(1, followDistance / (size * 28))
         : 1;
-  const wind = ambientWind(p.flightRow, conditions);
+  const wind = ambientWind(displayRow, conditions);
+  const peakThrust = useMemo(
+    () =>
+      (p.trajectory || []).reduce(
+        (peak, row) =>
+          Math.max(peak, Number.isFinite(row.thrust) ? row.thrust : 0),
+        1,
+      ),
+    [p.trajectory],
+  );
+  const eventMarkers = useMemo(
+    () =>
+      (p.flightEvents || [])
+        .filter((event) =>
+          [
+            "rail_exit",
+            "burnout",
+            "max_q",
+            "apogee",
+            "main",
+            "recovery",
+          ].includes(event.name),
+        )
+        .map((event) => {
+          const row =
+            event.index != null
+              ? p.trajectory[event.index]
+              : p.trajectory.reduce(
+                  (closest, candidate) =>
+                    !closest ||
+                    Math.abs(candidate.time - event.time) <
+                      Math.abs(closest.time - event.time)
+                      ? candidate
+                      : closest,
+                  null,
+                );
+          return row
+            ? {
+                ...event,
+                position: inertialToScene([
+                  row.east || 0,
+                  row.north || 0,
+                  row.altitude || 0,
+                ]),
+              }
+            : null;
+        })
+        .filter(Boolean),
+    [p.flightEvents, p.trajectory],
+  );
   const estimated =
     p.workspace === "flight" && p.overlays.stress
-      ? (p.flightRow?.structural_components || []).filter(
+      ? (
+          (p.flightStructuralMode === "dynamic_fins"
+            ? p.flightRow?.dynamic_structural_components
+            : p.flightRow?.structural_components) || []
+        ).filter(
           (c: any) => c.supported !== false && Number.isFinite(c.stress_pa),
         )
       : [];
@@ -625,9 +868,23 @@ function Scene({
 
   return (
     <>
-      <color attach="background" args={[tracking ? "#172934" : "#141e29"]} />
-      <ambientLight intensity={1.3} />
-      <directionalLight position={[-size, size, size]} intensity={2.2} />
+      <color attach="background" args={[tracking ? "#a9c3d2" : "#141e29"]} />
+      {tracking && (
+        <fog
+          attach="fog"
+          args={[
+            "#a9c3d2",
+            Math.max(180, extent * 0.6),
+            Math.max(600, extent * 3),
+          ]}
+        />
+      )}
+      <ambientLight intensity={tracking ? 0.6 : 1.3} />
+      {tracking && <hemisphereLight args={["#d9ecff", "#556848", 1.6]} />}
+      <directionalLight
+        position={[-size, size * 2, size]}
+        intensity={tracking ? 3 : 2.2}
+      />
       <directionalLight
         position={[size, -size, 0]}
         intensity={0.6}
@@ -637,12 +894,10 @@ function Scene({
         <>
           <FollowCamera
             target={pose.position}
-            velocity={inertialToScene(
-              p.flightRow?.velocity_vector || [0, 0, 0],
-            )}
+            velocity={inertialToScene(displayRow?.velocity_vector || [0, 0, 0])}
             railDirection={railDirection(conditions)}
             onRail={pose.onRail}
-            flightTime={p.flightRow?.time ?? null}
+            flightTime={displayRow?.time ?? null}
             playing={Boolean(p.playing)}
             box={flightBox}
             rocketSize={size}
@@ -690,8 +945,37 @@ function Scene({
       {tracking && (
         <>
           {path.length > 1 && (
-            <Line points={path} color="#7697a8" lineWidth={1.5} />
+            <Line
+              points={path}
+              color="#365f71"
+              lineWidth={1.8}
+              transparent
+              opacity={0.7}
+            />
           )}
+          {overview &&
+            eventMarkers.map((event: any) => (
+              <group key={event.name} position={event.position}>
+                <mesh>
+                  <sphereGeometry
+                    args={[Math.max(size * 0.05, extent * 0.0025), 12, 8]}
+                  />
+                  <meshBasicMaterial
+                    color={event.name === "apogee" ? "#f8ce78" : "#e7ece7"}
+                  />
+                </mesh>
+                <Html center>
+                  <span className="scene-label">
+                    {event.name.replaceAll("_", " ")}
+                  </span>
+                </Html>
+              </group>
+            ))}
+          <RecoveryCanopy
+            row={displayRow}
+            point={rocketPoint}
+            size={size * rocketScale}
+          />
           <mesh position={rocketPoint}>
             <sphereGeometry args={[size * 0.018, 16, 16]} />
             <meshBasicMaterial color="#ddb37e" transparent opacity={0.45} />
@@ -724,7 +1008,26 @@ function Scene({
           quaternion={tracking ? pose.quaternion : new THREE.Quaternion()}
           scale={rocketScale}
         >
-          <group position={tracking ? [-anchorX, 0, 0] : [0, 0, 0]}>
+          <group
+            position={
+              tracking
+                ? (anchorGeometry.map((value) => -value) as [
+                    number,
+                    number,
+                    number,
+                  ])
+                : [0, 0, 0]
+            }
+          >
+            {tracking && (
+              <MotorExhaust
+                row={displayRow}
+                tail={box.max.x}
+                size={size}
+                radius={Math.max(dimensions.y, dimensions.z) / 2}
+                peakThrust={peakThrust}
+              />
+            )}
             <Line
               points={[
                 [min - size * 0.12, 0, 0],
@@ -756,6 +1059,12 @@ function Scene({
                   stressValue={
                     estimated.find((c: any) => c.component_id === part.id)
                       ?.stress_pa
+                  }
+                  stressUnavailable={
+                    p.workspace === "flight" &&
+                    p.overlays.stress &&
+                    p.flightStructuralMode === "dynamic_fins" &&
+                    !estimated.some((c: any) => c.component_id === part.id)
                   }
                   maxStress={maxStress}
                   xray={xray}
@@ -997,7 +1306,7 @@ export default function Viewport(p: Props) {
   const wind = ambientWind(p.flightRow, conditions);
   const windAzimuth =
     Math.hypot(wind[0], wind[2]) > 1e-8
-      ? ((Math.atan2(wind[0], wind[2]) * 180) / Math.PI + 360) % 360
+      ? ((Math.atan2(wind[0], -wind[2]) * 180) / Math.PI + 360) % 360
       : conditions.wind_direction;
   const resume = () => {
     manualUntil.current = 0;
@@ -1006,9 +1315,15 @@ export default function Viewport(p: Props) {
     setMode("follow");
   };
   useEffect(() => {
-    if (p.launchReady || p.playing) resume();
+    // Starting a launch may frame the pad; resuming midway must preserve a
+    // user's camera and its existing five-second idle grace.
+    if (p.launchReady || (p.playing && !(p.flightRow?.time > 0))) resume();
   }, [p.launchReady, p.playing]);
-  const peak = p.flightRow?.structural_components?.find(
+  const stressComponents =
+    p.flightStructuralMode === "dynamic_fins"
+      ? p.flightRow?.dynamic_structural_components
+      : p.flightRow?.structural_components;
+  const peak = stressComponents?.find(
     (c: any) =>
       c.component_id === p.selectedId &&
       c.supported !== false &&
@@ -1017,12 +1332,12 @@ export default function Viewport(p: Props) {
   const flightStress =
     p.workspace === "flight" &&
     p.overlays.stress &&
-    p.flightRow?.structural_components?.some(
+    stressComponents?.some(
       (c: any) => c.supported !== false && Number.isFinite(c.stress_pa),
     );
   const [legendMin, legendMax] = useMemo(() => {
     const field: number[] = flightStress
-      ? (p.flightRow.structural_components || [])
+      ? (stressComponents || [])
           .filter(
             (c: any) => c.supported !== false && Number.isFinite(c.stress_pa),
           )
@@ -1037,7 +1352,7 @@ export default function Viewport(p: Props) {
       : field.reduce((a, b) => Math.min(a, b), Infinity);
     const max = field.reduce((a, b) => Math.max(a, b), -Infinity);
     return [min, max];
-  }, [flightStress, p.flightRow, p.fea, p.cfd, p.overlays.stress]);
+  }, [flightStress, stressComponents, p.fea, p.cfd, p.overlays.stress]);
   const legendKind =
     flightStress || (p.overlays.stress && p.fea) ? "stress" : "pressure";
   return (
@@ -1047,6 +1362,28 @@ export default function Viewport(p: Props) {
       data-scene={flightScene ? "launch" : "engineering"}
       data-ground-plane={String(flightScene)}
       data-launch-state={launchState}
+      data-flight-presentation={String(
+        Boolean(p.flightDisplayRow?.presentation_interpolated),
+      )}
+      data-flight-display-time={
+        p.flightDisplayRow?.time ?? p.flightRow?.time ?? ""
+      }
+      data-flight-actual-time={p.flightRow?.time ?? ""}
+      data-flight-stress-source={p.flightStructuralMode || "quasi_static"}
+      data-flight-stress-available={String(Boolean(flightStress))}
+      data-attitude-source={
+        solvedGeometryQuaternion(
+          (p.flightDisplayRow || p.flightRow)?.body_quaternion_world,
+        )
+          ? "solved"
+          : "illustrative"
+      }
+      data-motor-exhaust={String(
+        flightScene && Number(p.flightRow?.thrust || 0) > 0.01,
+      )}
+      data-canopy-inflation={
+        (p.flightDisplayRow || p.flightRow)?.recovery_inflation_fraction ?? 0
+      }
       data-rail-length={conditions.rail_length}
       data-camera-mode={mode}
       data-auto-follow={String(flightScene && mode === "follow" && automatic)}
@@ -1208,8 +1545,16 @@ export default function Viewport(p: Props) {
       )}
       {flightScene && (
         <div className="flight-scene-note">
-          Actual trajectory · rail / velocity orientation is illustrative · wind
-          arrows show direction
+          {solvedGeometryQuaternion(
+            (p.flightDisplayRow || p.flightRow)?.body_quaternion_world,
+          )
+            ? "Solved rigid-body attitude · smooth pose playback"
+            : "Actual trajectory · point-mass orientation illustrative"}
+          {p.flightRow?.thrust > 0.01 ||
+          p.flightRow?.recovery_inflation_fraction > 0
+            ? " · plume / canopy illustrative"
+            : ""}
+          {" · engineering values use actual samples"}
         </div>
       )}
       {((p.overlays.stress && p.fea) ||
@@ -1218,7 +1563,9 @@ export default function Viewport(p: Props) {
         <div className="heat-legend">
           <span>
             {flightStress
-              ? "Estimated peak per component · not FEA"
+              ? p.flightStructuralMode === "dynamic_fins"
+                ? "Dynamic fin beam FEA · peak component color"
+                : "Estimated peak per component · not FEA"
               : p.overlays.stress && p.fea
                 ? "Von Mises · solver field"
                 : "Pressure · CFD samples"}
@@ -1236,9 +1583,33 @@ export default function Viewport(p: Props) {
           <span>
             Peak estimate {quantity(peak.stress_pa, "stress", p.units)}
           </span>
-          <small>Beam / fin estimate · uniform component color</small>
+          <small>
+            {p.flightStructuralMode === "dynamic_fins"
+              ? "1D bending dynamics · uniform component color, not 3D solid stress"
+              : "Beam / fin estimate · uniform component color"}
+          </small>
         </div>
       )}
+      {p.workspace === "flight" &&
+        p.overlays.stress &&
+        p.flightStructuralMode === "dynamic_fins" &&
+        !flightStress && (
+          <div className="flight-stress-note">
+            <strong>Dynamic fin stress unavailable at this sample</strong>
+            <span>
+              {stressComponents?.find(
+                (component: any) => component.component_id === p.selectedId,
+              )?.reason ||
+                stressComponents?.find(
+                  (component: any) => component.supported === false,
+                )?.reason ||
+                "No supported dynamic fin state was computed."}
+            </span>
+            <small>
+              Gray parts have no dynamic stress result · unavailable is not zero
+            </small>
+          </div>
+        )}
       {!p.meshes?.components.length && (
         <div className="viewport-empty">
           Import an OpenRocket project or create the example rocket to begin.

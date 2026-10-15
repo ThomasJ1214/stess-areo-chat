@@ -21,11 +21,19 @@ describe("engineering presentation", () => {
       "density",
       "acceleration",
       "energy",
+      "inertia",
     ] as const)
       for (const units of ["metric", "us"] as const)
         expect(
           fromDisplay(displayValue(1234.5, kind, units), kind, units),
         ).toBeCloseTo(1234.5, 6);
+  });
+  it("converts mass moments of inertia from kilogram metres squared to slug feet squared", () => {
+    // 1 slug = 14.5939029372 kg and 1 international foot = 0.3048 m.
+    expect(
+      displayValue(14.5939029372 * 0.3048 ** 2, "inertia", "us"),
+    ).toBeCloseTo(1, 10);
+    expect(fromDisplay(1, "inertia", "us")).toBeCloseTo(1.3558179483, 9);
   });
   it("preserves small nonzero engineering results instead of displaying apparent zero", () => {
     expect(fmt(1.234e-8)).toBe("1.23e-8");
