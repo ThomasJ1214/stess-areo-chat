@@ -138,7 +138,8 @@ def test_cancelled_transient_retains_actual_initial_and_latest_fields(small_clos
         assert surface["pressure_pa"] == pressure
 
 
-def test_time_varying_prescribed_boundary_is_used_at_real_physical_time(small_closed_domain):
+@pytest.mark.parametrize("scheme", ["first_order", "muscl_mc"])
+def test_time_varying_prescribed_boundary_is_used_at_real_physical_time(small_closed_domain, scheme):
     requested_times = []
     events = []
     def provider(time_s):
@@ -150,7 +151,7 @@ def test_time_varying_prescribed_boundary_is_used_at_real_physical_time(small_cl
 
     result = cfd.solve(Project(), _static_conditions(), options={
         "mode": "transient", "duration_s": 0.006,
-        "snapshot_count": 8, "backend": "cpu",
+        "snapshot_count": 8, "backend": "cpu", "spatial_scheme": scheme,
     }, freestream_provider=provider, telemetry=events.append)
     frames = result["transient"]["frames"]
     assert result["summary"]["status"] == "transient_complete"
@@ -167,6 +168,8 @@ def test_time_varying_prescribed_boundary_is_used_at_real_physical_time(small_cl
     assert result["summary"]["freestream_kind"] == "time_varying_prescribed"
     assert not result["summary"]["pressure_force_steady"]
     assert any("one-way" in warning for warning in result["warnings"])
+    if scheme == "muscl_mc":
+        assert any("changing-boundary/source integration remains first order" in warning for warning in result["warnings"])
     for event in events:
         if event.get("phase") != "integration":
             continue
@@ -223,3 +226,21 @@ def test_prescribed_mach_boundary_tolerance_only_allows_floating_point_roundoff(
     assert accepted["velocity_m_s"][0] > 2.05 * sound  # no clamping
     with pytest.raises(ValueError, match="Mach 2"):
         cfd._freestream_environment(provider(2.05 + 1e-9), 0)
+
+
+@pytest.mark.parametrize('physics', ['euler', 'laminar'])
+def test_muscl_actual_solve_declares_method_and_limits(small_closed_domain, physics):
+    result = cfd.solve(Project(), _static_conditions(), options={
+        'mode': 'transient', 'duration_s': .001, 'snapshot_count': 3,
+        'backend': 'cpu', 'physics_model': physics, 'spatial_scheme': 'muscl_mc',
+    })
+    summary = result['summary']
+    assert summary['status'] == 'transient_complete'
+    assert summary['spatial_scheme'] == 'muscl_mc'
+    assert summary['time_integrator'] == 'ssprk2'
+    assert 'MUSCL' in result['fidelity'] and 'first-order wall' in result['fidelity']
+    assert summary['low_mach_preconditioned'] is False
+    assert not summary['pressure_force_validated']
+    assert any('Stair-step geometry' in warning for warning in result['warnings'])
+    assert all(frame['time_s'] >= 0 for frame in result['transient']['frames'])
+    json.dumps(result, allow_nan=False)

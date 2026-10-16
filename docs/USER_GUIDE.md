@@ -453,6 +453,21 @@ flutter or transient opening shock. The separate dynamic fin beam option in
 **Flight** retains its own limited geometry, load coverage and damping assumptions.
 See [STRUCTURAL.md](STRUCTURAL.md).
 
+### Choose CFD reconstruction
+
+On **CFD**, **Numerical reconstruction → First order · baseline** preserves the
+existing calculation. **Experimental MUSCL–MC · SSPRK2** reduces diffusion for
+supported smooth interior flow using limited face states and two time stages.
+It works with either Euler or experimental Laminar, in steady or transient mode.
+It requires more calculation and memory. Save/export the result to retain the
+actual selected method and assumptions.
+
+Refine the grid and enlarge the domain before comparing loads. This option does
+not resolve thin fins, add turbulence, fix low-Mach pressure drag, or change the
+source CAD. Near walls and farfield boundaries reconstruction remains first
+order; launch-driven boundary/source integration also remains first order in
+time. See [the numerical method and reference checks](CFD.md).
+
 ### Use flat-fin plate FEA
 
 1. Select an original trapezoidal or triangular finset, then open **Structures**.

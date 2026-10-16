@@ -1339,6 +1339,23 @@ def main():
             page.screenshot(path=str(args.artifacts / "laminar-transient-flow.png"), full_page=True)
             no_errors()
             receipt.append("Real experimental laminar transient CFD exposes molecular transport and finite fluid traction with actual frame playback and explicit no-turbulence/no-structural-stress scope")
+
+            # Explicit higher-order choice must reach the actual numerical job,
+            # immutable options, exported fidelity and saved project settings.
+            page.get_by_label("Numerical reconstruction", exact=True).select_option("muscl_mc")
+            high_order = job("Solve flow field", timeout=120)
+            assert high_order["summary"]["spatial_scheme"] == "muscl_mc"
+            assert high_order["summary"]["time_integrator"] == "ssprk2"
+            assert high_order["summary"]["status"] == "transient_complete"
+            assert "MUSCL" in high_order["fidelity"] and "first-order wall" in high_order["fidelity"]
+            assert high_order["inputs"]["options"]["spatial_scheme"] == "muscl_mc"
+            assert not high_order["summary"]["low_mach_preconditioned"]
+            assert all(math.isfinite(v) for v in high_order["summary"]["total_force_n"])
+            (args.artifacts / "muscl-transient-flow.json").write_text(json.dumps(high_order, indent=2, allow_nan=False), "utf8")
+            page.screenshot(path=str(args.artifacts / "muscl-transient-flow.png"), full_page=True)
+            no_errors()
+            receipt.append("Explicit MUSCL–MC/SSPRK2 runs real laminar CFD with immutable numerical-method inputs and first-order-boundary/low-Mach limitations")
+
             assert not external, external
             browser.close()
         (args.artifacts / "receipt.json").write_text(json.dumps({"status": "passed", "checks": receipt,

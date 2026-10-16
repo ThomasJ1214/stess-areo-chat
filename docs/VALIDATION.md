@@ -1,5 +1,44 @@
 # Validation checkpoint
 
+## 0.3.5 MUSCL source validation in progress
+
+The selected experimental method uses primitive-variable MC reconstruction,
+shared conservative Rusanov fluxes and two-stage SSPRK2. Default first-order
+calculations and the exterior-connected geometry policy remain available.
+Smooth-interior accuracy is distinct from first-order boundary reconstruction
+and start-of-step launch-profile/source sampling. The current source is not yet
+a verified 0.3.5 Windows download.
+
+Local full regression passed 558 Python tests. The final targeted run passed
+36 reconstruction/mode tests, including the two added changing-boundary and
+invalid-second-stage cases. Clean-source CI must confirm the final suite count. The frontend passed
+90 tests and production type/build checks. Browser/Windows verification remain
+separate release gates.
+
+Independent nondimensional reference measurements:
+
+| Case | Resolution | Density mean absolute error | Observed refinement order |
+| --- | --- | --- | --- |
+| Periodic entropy advection, each of X/Y/Z | 24 cells | 0.0015108241 | — |
+| Same exact finite-volume cell averages | 48 cells | 0.0004033928 | 1.905 |
+| Same exact finite-volume cell averages | 96 cells | 0.0001059340 | 1.929 |
+| Sod shock tube, baseline | 180 cells | 0.0183464152 | Discontinuous reference; no smooth-order claim |
+| Sod shock tube, MUSCL–MC/SSPRK2 | 180 cells | 0.0038513788 | Same exact reference and physical end time |
+
+These test errors do not establish rocket pressure, drag, transonic or turbulent
+flow accuracy. The smooth wave uses exact cell averages; shock checks also retain
+mass/energy conservation and the independent boundary-pressure momentum impulse.
+The new kernel checks multi-axis conservation, positive reconstructed faces,
+first-order wall/boundary stencils, stage rejection without clipping, and closed
+Euler/laminar wall mass/energy. Real CAD checks require sealed-exterior identity
+and unchanged source geometry/mass in both numerical methods.
+
+Reproduce numerical properties with:
+`uv run --no-sync pytest tests/test_cfd_reconstruction.py -o junit_family=legacy --junitxml=build/cfd-muscl-reference.xml`.
+Generated XML/browser receipts are local build artifacts; CI/download links and
+exact source identity will identify packaged evidence after completion.
+
+
 ## Verified 0.3.4 original-fin plate release
 
 The new MITC4 static flat-plate path preserves original swept/tapered/triangular

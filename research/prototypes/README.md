@@ -14,8 +14,10 @@ the tested element and square-plate cases.
   checks. Use production tests and [release evidence](../../docs/VALIDATION.md)
   to determine what has actually passed; this draft is not a solver option.
 - `cfd_reconstruction.py.txt`: proposed primitive-variable MUSCL face reconstruction.
-  Still requires conservative solver/SSPRK2 integration, positivity and boundary
-  verification, independent convergence/shock references and GPU checks.
+  A separate production implementation now has shared-flux/SSPRK2 integration,
+  smooth-wave convergence, shock, conservation, positivity and boundary tests.
+  See [CFD methods](../../docs/CFD.md) and the validation checkpoint before
+  claiming packaged or GPU verification. The draft is archival.
 
 No thin-shell/plate or higher-order CFD capability should be advertised from
 these files. Preserve the existing solid-FEA thickness guards and current CFD
@@ -23,4 +25,5 @@ accuracy warnings until verified replacements are integrated.
 
 Initial rectangular plate references are now repeatable through
 `../validate_plate_draft.py`; see [the evidence and remaining limits](../PLATE_REFERENCE.md).
-The MUSCL draft remains unvalidated and unintegrated.
+The archival MUSCL draft is not imported by the app; production code and its
+separate validation evidence define the available method.

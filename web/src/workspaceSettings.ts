@@ -12,6 +12,7 @@ export const defaultCfdOptions = {
   convergence_tolerance: 0.00001,
   backend: "auto",
   physics_model: "euler",
+  spatial_scheme: "first_order",
   mode: "steady",
   transient_source: "launch",
   duration_s: 0.01,
@@ -133,6 +134,8 @@ export function restoreCfdOptions(saved?: Record<string, unknown>) {
     restored.mode = "steady";
   if (!["euler", "laminar"].includes(restored.physics_model))
     restored.physics_model = "euler";
+  if (!["first_order", "muscl_mc"].includes(restored.spatial_scheme))
+    restored.spatial_scheme = "first_order";
   if (!["launch", "fixed"].includes(restored.transient_source))
     restored.transient_source = "launch";
   if (

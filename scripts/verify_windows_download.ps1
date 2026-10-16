@@ -172,6 +172,10 @@ try {
         Require ($advanced.status -eq 'ok' -and $advanced.application_version -eq $ExpectedVersion -and $advanced.causal_environment.checked_prefix_samples -ge 10 -and $advanced.dynamic_fin_fem.substeps -gt 0 -and $advanced.laminar_cfd.frame_count -ge 2) 'Freshly installed advanced physics returned incomplete actual solver evidence.'
         $proof.advanced_physics = [ordered]@{ baseline = $advanced.baseline; causal_environment = $advanced.causal_environment; dynamic_fin_fem = $advanced.dynamic_fin_fem; laminar_cfd = $advanced.laminar_cfd }
         $checks.Add('fresh_installed_6dof_dryden_causal_environment_dynamic_fin_and_launch_driven_laminar_fields_pass')
+        if ([version]$ExpectedVersion -ge [version]'0.3.5') {
+            Require ($advanced.laminar_cfd.spatial_scheme -eq 'muscl_mc' -and $advanced.laminar_cfd.time_integrator -eq 'ssprk2') 'Fresh installed higher-order numerical method evidence is incomplete.'
+            $checks.Add('fresh_installed_actual_muscl_mc_ssprk2_launch_driven_laminar_flow_pass')
+        }
         if ([version]$ExpectedVersion -ge [version]'0.3.4') {
             Require ($advanced.plate_fea.quadrilaterals -gt 0 -and $advanced.plate_fea.force_balance_relative_error -lt 1e-6) 'Fresh installed plate verification is incomplete.'
             $proof.advanced_physics.plate_fea = $advanced.plate_fea

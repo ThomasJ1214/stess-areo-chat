@@ -35,7 +35,7 @@ dU/dt + dFx/dx + dFy/dy + dFz/dz = 0
 
 The flux in direction `i` is `U*velocity_i`, with `p` added to normal momentum
 flux and energy flux replaced by `(E+p)*velocity_i`. At each shared fluid/fluid face, the
-first-order Rusanov (local Lax-Friedrichs) numerical flux is
+baseline first-order Rusanov (local Lax-Friedrichs) numerical flux is
 
 ```text
 Fface = (Fleft + Fright)/2 - amax*(Uright-Uleft)/2
@@ -74,9 +74,52 @@ Strong temperature/density gradients or fine cells can require much smaller
 steps than Euler. Density and pressure positivity checks still apply.
 
 First-order dissipation smears contacts and shocks. It also makes force values
-grid-dependent. This release has neither adaptive refinement nor a higher-order
-reconstruction. It solves a transient initial-value problem initialized with a
+grid-dependent. Adaptive refinement is not implemented. An explicit experimental
+higher-order interior option is described below. The solver advances a transient initial-value problem initialized with a
 uniform free stream, so the early steps show genuine numerical startup effects.
+
+## Experimental MUSCL–MC reconstruction
+
+**Numerical reconstruction** selects `spatial_scheme:first_order` (the default,
+including older projects) or `muscl_mc`. This is separate from Euler versus
+Laminar physics and steady versus transient stopping policy.
+
+MUSCL reconstructs primitive `[rho,u,v,w,p]` face states with monotonized-central
+slopes: minmod of twice each one-sided difference and the centered difference.
+Both adjacent cells share one Rusanov flux. Slopes are zero in a solid and in
+cells touching a solid in any face direction. At each prescribed/extrapolated
+exterior, the first/last cell has zero slope in that direction. Periodic faces
+share the same reconstructed pair on both ends. Directional exterior treatment
+retains genuine one-dimensional reconstruction on a singleton transverse grid.
+Positive face density/pressure are protected by common slope rescaling relative
+to the positive cell value; evolved states are never clipped.
+
+Two-stage SSPRK2 applies `U1=U+dt L(U)` and
+`Unew=(U+U1+dt L(U1))/2`. Each stage includes the selected conservative Euler and
+optional molecular viscous/thermal fluxes. Solid-cell state remains unchanged.
+A nonphysical intermediate stage rejects the entire attempt before further
+primitive recovery; the production driver retries from the original state with
+half `dt`, retaining its finite retry guard and actual rejection count.
+
+Smooth-interior convergence is second order in the tested periodic entropy-wave
+case. The limiter reduces order at extrema/discontinuities; walls and farfield
+reconstruction remain first order. Stair-step geometry, low-Mach acoustic
+dissipation, unresolved boundary layers and lack of turbulence closure remain.
+The method takes two flux evaluations per step and additional stage/face memory.
+This is not a guarantee of more accurate rocket drag or pressure on a given grid.
+
+For fixed boundary data the semi-discrete SSPRK2 update is second order in time.
+**Launch/time-varying profiles remain start-of-step boundary sampling with a
+separately split translational frame source. Their overall temporal order remains
+first order.** Output retains `spatial_scheme`, `time_integrator`, reconstruction
+and temporal scope, immutable input options and method-specific fidelity text.
+Flow display quality is independent of numerical reconstruction.
+
+References: van Leer, *Towards the ultimate conservative difference scheme. II.
+Monotonicity and conservation combined in a second-order scheme*, Journal of
+Computational Physics 14 (1974), 361–370; Gottlieb, Shu and Tadmor, *Strong
+Stability-Preserving High-Order Time Discretization Methods*, SIAM Review 43
+(2001), 89–112. These identify underlying methods, not rocket-flow validation.
 
 ## Geometry and boundary conditions
 

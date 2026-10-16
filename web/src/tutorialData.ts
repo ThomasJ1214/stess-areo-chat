@@ -203,7 +203,7 @@ const cfdSteps: TutorialStep[] = [
   {
     title: "Begin with a manageable grid",
     instruction:
-      "Choose CFD physics model: Euler for inviscid pressure flow, or experimental laminar Navier–Stokes for molecular viscosity and heat conduction. Set Lengthwise grid cells, Transverse grid cells, Cell budget and Farfield padding. Choose CPU, automatic or GPU; GPU diagnostics checks numerical CUDA support.",
+      "Choose CFD physics model: Euler for inviscid pressure flow, or experimental laminar Navier–Stokes for molecular viscosity and heat conduction. Set Lengthwise grid cells, Transverse grid cells, Cell budget and Farfield padding. Choose CPU, automatic or GPU; GPU diagnostics checks numerical CUDA support. Numerical reconstruction offers the first-order baseline or experimental MUSCL–MC/SSPRK2 for reduced smooth-interior diffusion. This does not fix low-Mach drag, stair-step walls or turbulence; launch profile sampling remains first order in time.",
     check:
       "The cell budget covers the proposed domain. Thin fins and small openings need enough cells to remain visible to the solver.",
     workspace: "cfd",

@@ -176,7 +176,8 @@ def test_voxel_grid_preserves_actual_closed_geometry_and_enforces_cell_budget():
         cfd._voxel_domain(mesh, {"grid_resolution": 128, "max_cells": 1000})
 
 
-def test_sealed_cad_cavity_has_identical_exterior_flow_without_changing_material_geometry():
+@pytest.mark.parametrize("scheme", ["first_order", "muscl_mc"])
+def test_sealed_cad_cavity_has_identical_exterior_flow_without_changing_material_geometry(scheme):
     """A sealed cavity changes material/mass, never the exterior pressure boundary."""
     from rocket_workbench.geometry import component_mesh, project_mesh
     from rocket_workbench.solvers.aero import mass_properties
@@ -200,7 +201,7 @@ def test_sealed_cad_cavity_has_identical_exterior_flow_without_changing_material
     assert before_mass["mass_kg"] == pytest.approx(material_volume * 1500)
 
     options = {"grid_resolution": 16, "transverse_resolution": 16, "max_steps": 4,
-               "backend": "cpu", "sample_limit": 200, "surface_limit": 30000}
+               "backend": "cpu", "sample_limit": 200, "surface_limit": 30000, "spatial_scheme": scheme}
     outer_diagnostics, hollow_diagnostics = {}, {}
     solid, spacing, origin, _ = cfd._voxel_domain(outer, options, diagnostics=outer_diagnostics)
     shell, shell_spacing, shell_origin, _ = cfd._voxel_domain(
@@ -219,7 +220,7 @@ def test_sealed_cad_cavity_has_identical_exterior_flow_without_changing_material
     for _ in range(4):
         for i, mask in enumerate((solid, shell)):
             dt = cfd.stable_timestep(states[i], mask, spacing)
-            states[i] = cfd.finite_volume_step(states[i], mask, spacing, dt, farfield)
+            states[i] = cfd.finite_volume_step(states[i], mask, spacing, dt, farfield, spatial_scheme=scheme)
     results = [cfd._surface(state, mask, spacing, origin, farfield,
                             101325, np.linalg.norm([180, 20, 0]), 1.2, 30000)
                for state, mask in zip(states, (solid, shell))]

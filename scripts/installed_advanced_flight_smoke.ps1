@@ -209,6 +209,7 @@ try {
     $proof.dynamic_fin_fem = [ordered]@{ substeps = $structural.summary.substeps; max_stress_pa = $structural.summary.max_stress_pa; max_deflection_m = $structural.summary.max_deflection_m; available_rows = $available; unavailable_rows = $unavailable; coverage = $structural.summary.coverage; isotropic_surrogate_explicitly_acknowledged = $true }
 
     $options = @{ mode = 'transient'; physics_model = 'laminar'; transient_source = 'launch'; flight_job_id = $changed.id; flight_start_s = 1.0; flight_end_s = 1.0001; backend = 'cpu'; grid_resolution = 12; transverse_resolution = 12; max_cells = 50000; sample_limit = 30; surface_limit = 30; snapshot_count = 4 }
+    if ([version]$ExpectedVersion -ge [version]'0.3.5') { $options.spatial_scheme = 'muscl_mc' }
     $cfdStart = Api '/api/jobs' 'POST' @{ kind = 'cfd'; conditions = $changedConditions; configuration_id = $project.active_configuration_id; options = $options }
     $cfd = Wait-JobResult $cfdStart.id
     $result = $cfd.result; $frames = @($result.transient.frames)
@@ -226,8 +227,12 @@ try {
         }
         foreach ($shear in @($frame.surface_shear_stress_pa)) { $maximumShear = [Math]::Max($maximumShear, [double] $shear) }
     }
+    if ([version]$ExpectedVersion -ge [version]'0.3.5') {
+        Require ($result.summary.spatial_scheme -eq 'muscl_mc' -and $result.summary.time_integrator -eq 'ssprk2' -and $result.fidelity -match 'MUSCL') 'Installed launch-driven CFD did not execute the requested MUSCL/SSPRK2 method.'
+        Require ($result.summary.temporal_order_scope -match 'changing profiles.*first order') 'Launch-driven MUSCL must disclose first-order boundary/source sampling.'
+    }
     Require ($maximumClosureError -lt 1e-8 -and $maximumShear -gt 0) 'Actual laminar pressure-plus-viscous force closure or no-slip shear check failed.'
-    $proof.laminar_cfd = [ordered]@{ job_id = $cfd.id; backend = $result.backend; frame_count = $frames.Count; physical_time_s = $result.summary.physical_time_s; resolved_launch_attitude = $true; maximum_total_force_closure_error_n = $maximumClosureError; maximum_sampled_wall_shear_pa = $maximumShear; validated_viscous_force = $false }
+    $proof.laminar_cfd = [ordered]@{ job_id = $cfd.id; backend = $result.backend; frame_count = $frames.Count; physical_time_s = $result.summary.physical_time_s; resolved_launch_attitude = $true; maximum_total_force_closure_error_n = $maximumClosureError; maximum_sampled_wall_shear_pa = $maximumShear; validated_viscous_force = $false; spatial_scheme = $result.summary.spatial_scheme; time_integrator = $result.summary.time_integrator }
     $proof.status = 'ok'
     Write-Output "Installed $ExpectedVersion advanced physics passed: actual 6DOF/Dryden, causal environment prefix, dynamic fin FEM and $($frames.Count) laminar transient fields. No physical GPU or turbulent-flow validation claim."
 } catch {

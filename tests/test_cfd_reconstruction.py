@@ -27,7 +27,9 @@ def _advance(state, solid, spacing, end, boundary="periodic", scheme="muscl_mc")
 
 
 @pytest.mark.parametrize("axis", [0, 1, 2])
-def test_advected_entropy_cell_averages_show_second_order_l1_convergence(axis):
+def test_advected_entropy_cell_averages_show_second_order_l1_convergence(
+    axis, record_property
+):
     errors = []
     for n in (24, 48, 96):
         shape = [2, 2, 2]
@@ -54,10 +56,12 @@ def test_advected_entropy_cell_averages_show_second_order_l1_convergence(axis):
         np.testing.assert_allclose(pressure, 1, atol=1e-13)
         np.testing.assert_allclose(vel, velocity, atol=1e-13)
     orders = np.log2(np.array(errors[:-1]) / errors[1:])
+    record_property("density_l1_errors", [float(value) for value in errors])
+    record_property("observed_orders", orders.tolist())
     assert np.min(orders) > 1.7, (errors, orders)
 
 
-def test_sod_shock_improves_density_error_without_nonphysical_states():
+def test_sod_shock_improves_density_error_without_nonphysical_states(record_property):
     n = 180
     dx = 1 / n
     x = (np.arange(n) + 0.5) * dx
@@ -74,6 +78,9 @@ def test_sod_shock_improves_density_error_without_nonphysical_states():
         integral = result.sum((0, 1, 2)) * dx
         np.testing.assert_allclose(integral[[0, 4]], initial[[0, 4]], atol=2e-8)
         assert integral[1] == pytest.approx(0.18, abs=2e-8)
+    record_property(
+        "density_l1_errors_first_order_muscl", [float(value) for value in errors]
+    )
     assert errors[1] < 0.65 * errors[0], errors
     assert errors[1] < 0.015
 
@@ -135,14 +142,18 @@ def test_reconstruction_preserves_positive_faces_and_downgrades_at_walls(boundar
         np.testing.assert_array_equal(flux[wall][:, [0, 4]], 0)
 
 
-def test_invalid_stage_is_rejected_without_reconstruction_or_clipping(monkeypatch):
+@pytest.mark.parametrize("invalid_stage", [1, 2])
+def test_invalid_stage_is_rejected_without_reconstruction_or_clipping(
+    monkeypatch, invalid_stage
+):
     initial = np.broadcast_to(cfd.conserved(1, [1, 0, 0], 1), (4, 2, 2, 5)).copy()
     calls = []
 
     def invalid(*args):
         calls.append(True)
         state = args[0].copy()
-        state[..., 0] = -1
+        if len(calls) == invalid_stage:
+            state[..., 0] = -1
         return state
 
     monkeypatch.setattr(cfd, "_forward_step", invalid)
@@ -154,5 +165,49 @@ def test_invalid_stage_is_rejected_without_reconstruction_or_clipping(monkeypatc
         initial[0, 0, 0],
         spatial_scheme="muscl_mc",
     )
-    assert len(calls) == 1 and np.all(result[..., 0] == -1)
+    assert len(calls) == invalid_stage and np.all(result[..., 0] == -1)
     assert np.all(initial[..., 0] == 1)
+
+
+@pytest.mark.parametrize("physics", ["euler", "laminar"])
+def test_closed_walls_preserve_mass_energy_and_source_arrays(physics):
+    shape = (7, 6, 5)
+    coords = np.indices(shape)
+    rho = 1.2 + 0.02 * np.sin(coords[0])
+    velocity = np.zeros(shape + (3,))
+    velocity[:] = [3, 2, -1]
+    state = cfd.conserved(rho, velocity, 101325 + 30 * np.cos(coords[1]))
+    solid = np.zeros(shape, bool)
+    solid[2:5, 2:4, 2] = True
+    saved = state.copy()
+    saved_solid = solid.copy()
+    initial = state[~solid].sum(axis=0)
+    for _ in range(5):
+        dt = cfd.stable_timestep(
+            state, solid, [0.02, 0.03, 0.04], physics_model=physics
+        )
+        state = cfd.finite_volume_step(
+            state,
+            solid,
+            [0.02, 0.03, 0.04],
+            dt,
+            saved[0, 0, 0],
+            boundary="periodic",
+            spatial_scheme="muscl_mc",
+            physics_model=physics,
+        )
+        assert cfd._physical(state, solid)
+    np.testing.assert_allclose(
+        state[~solid].sum(axis=0)[[0, 4]], initial[[0, 4]], rtol=2e-14
+    )
+    np.testing.assert_array_equal(solid, saved_solid)
+    np.testing.assert_array_equal(state[solid], saved[solid])
+    assert not np.array_equal(state[~solid], saved[~solid])
+
+
+@pytest.mark.parametrize("scheme", [None, False, [], "weno", 2])
+def test_invalid_scheme_is_rejected_before_geometry(scheme):
+    from rocket_workbench.models import Project, Conditions
+
+    with pytest.raises(ValueError, match="spatial_scheme"):
+        cfd.solve(Project(), Conditions(), options={"spatial_scheme": scheme})

@@ -1066,7 +1066,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.3.4</span>
+          <span className="version">0.3.5</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -4815,6 +4815,21 @@ export default function App() {
                         </option>
                         <option value="laminar">
                           Experimental laminar Navier–Stokes
+                        </option>
+                      </FieldSelect>
+                      <FieldSelect
+                        label="Numerical reconstruction"
+                        value={cfdOptions.spatial_scheme}
+                        onChange={(spatial_scheme) =>
+                          setCfdOptions({ ...cfdOptions, spatial_scheme })
+                        }
+                        hint="First order is the existing baseline. Experimental MUSCL–MC limits reconstructed fluid states and uses two-stage SSPRK2, reducing smooth-interior diffusion. Walls and exterior boundaries retain first-order reconstruction. It does not add turbulence, improve stair-step geometry, or correct low-Mach pressure drag. Launch boundary/source sampling remains first order in time."
+                      >
+                        <option value="first_order">
+                          First order · baseline
+                        </option>
+                        <option value="muscl_mc">
+                          Experimental MUSCL–MC · SSPRK2
                         </option>
                       </FieldSelect>
                       {cfdOptions.physics_model === "laminar" && (

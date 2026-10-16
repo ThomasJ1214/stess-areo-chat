@@ -13,6 +13,11 @@ linear static solid/fin-plate FEA. Results and warnings
 identify the method used. This is a design and learning tool: matching a maximum
 Mach setting does not establish validated supersonic accuracy.
 
+Version 0.3.5 development source adds experimental MUSCL–MC/SSPRK2 numerical
+reconstruction with independent smooth-wave, shock and conservation checks.
+Packaged 0.3.5 verification is pending; the verified 0.3.4 download below does
+not include this new option.
+
 ## Install on Windows
 
 Open the [verified version 0.3.4 installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832085653#artifacts),
@@ -76,7 +81,7 @@ download checks separately.
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
 | Fin plate FEA | Actual original trapezoidal/triangular planforms, MITC4 bending/shear, root clamps, signed pressure or declared estimated directional aero loads, material-density inertial loading and per-fin equilibrium; CPU static isotropic model, no CAD/curved shells/laminates |
 | Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
-| CFD | Experimental 3D compressible Euler or laminar Navier–Stokes finite volumes; steady-state and actual transient modes, launch-driven airflow/attitude transforms, saved frame playback, molecular traction diagnostics, cancellation and qualified ETA; no runtime/step ceilings |
+| CFD | Experimental 3D compressible Euler or laminar Navier–Stokes finite volumes; optional limited MUSCL–MC/SSPRK2 in 0.3.5 source; steady-state and actual transient modes, launch-driven airflow/attitude transforms, saved frame playback, molecular traction diagnostics, cancellation and qualified ETA; no runtime/step ceilings |
 | Pressure-transfer FEA | One-way mapping from a completed, numerically converged and geometry-matched CFD job; mapped coverage/distances are reported |
 | Studies | Parameter/wind sweeps, seeded Monte Carlo, configuration and original/replacement comparisons |
 | Data | Self-contained project JSON with imported mesh assets; simulation JSON/CSV and HTML reports; metric and US customary display units |

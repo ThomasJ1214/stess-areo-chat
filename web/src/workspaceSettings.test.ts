@@ -229,3 +229,20 @@ describe("portable analysis setup", () => {
     ).not.toHaveProperty("flight_job_id");
   });
 });
+
+describe("CFD numerical method persistence", () => {
+  it("preserves explicit MUSCL choice while older and malformed projects use baseline", () => {
+    expect(restoreCfdOptions().spatial_scheme).toBe("first_order");
+    expect(
+      restoreCfdOptions({ spatial_scheme: "unknown" }).spatial_scheme,
+    ).toBe("first_order");
+    const saved = restoreSettings({
+      ...restoreSettings(),
+      cfd_options: { spatial_scheme: "muscl_mc" },
+    });
+    expect(saved.cfd_options.spatial_scheme).toBe("muscl_mc");
+    expect(cfdRequestOptions(saved.cfd_options).spatial_scheme).toBe(
+      "muscl_mc",
+    );
+  });
+});

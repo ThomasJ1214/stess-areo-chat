@@ -671,6 +671,10 @@ def solve(project, conditions, configuration_id: str | None = None,
     if not isinstance(physics_model, str) or physics_model not in {"euler", "laminar"}:
         raise ValueError("CFD physics_model must be euler or laminar.")
     laminar = physics_model == "laminar"
+    spatial_scheme = options.get("spatial_scheme", "first_order")
+    if not isinstance(spatial_scheme, str) or spatial_scheme not in {"first_order", "muscl_mc"}:
+        raise ValueError("CFD spatial_scheme must be first_order or muscl_mc.")
+    muscl = spatial_scheme == "muscl_mc"
     solver_label = "Laminar Navier–Stokes" if laminar else "Euler"
     mode = options.get("mode", "steady")
     if not isinstance(mode, str) or mode not in {"steady", "transient"}:
@@ -754,11 +758,14 @@ def solve(project, conditions, configuration_id: str | None = None,
     warnings.extend([
         ("Experimental resolved laminar Navier–Stokes: Newtonian viscosity and Fourier heat conduction with no-slip adiabatic walls. No transition, turbulence closure, wall functions, wall heat-transfer boundary condition or validated high-Reynolds-number drag. High-power rocket boundary layers are generally far thinner than this Cartesian grid; unresolved shear/viscous drag must not be treated as accurate skin friction." if laminar else
          "Experimental inviscid Euler: no skin friction, boundary layers, transition, viscous separation, heat transfer, turbulence or wall/shear stress."),
-        "Unvalidated first-order stair-step grid. Supersonic shocks can be represented, but transonic/drag predictions need grid/domain convergence and comparison to trusted measurements or a validated viscous solver.",
+        ("Experimental MUSCL–MC primitive reconstruction and SSPRK2; limited smooth-interior accuracy only. Reconstruction is first order next to solids and along prescribed/extrapolated boundaries. Stair-step geometry, unresolved boundary layers and acoustic-speed low-Mach dissipation remain. Grid/domain convergence and independent physical validation are required." if muscl else
+         "Unvalidated first-order stair-step grid. Supersonic shocks can be represented, but transonic/drag predictions need grid/domain convergence and comparison to trusted measurements or a validated viscous solver."),
         "Prescribed freestream on all six domain faces can reflect disturbances, especially for subsonic flow; enlarge the domain and inspect sensitivity.",
         ("Pressure uses the reflected Euler wall Riemann flux and viscous traction uses the exact resolved half-cell no-slip stencil. Gauge-pressure, tangential fluid shear and full viscous traction are distinct from material/structural stress. Existing pressure-transfer FEA does not transfer viscous shear." if laminar else
          "Surface pressure uses the exact reflected Euler slip-wall Riemann momentum flux; absolute pressure and gauge pressure forces are available, but these are not structural stress results."),
     ])
+    if muscl and freestream_provider is not None:
+        warnings.append("MUSCL/SSPRK2 uses the prescribed freestream sampled at the start of each accepted step and a separately split translational frame source. The changing-boundary/source integration remains first order in time; second-order temporal accuracy is not claimed for launch-driven CFD.")
     farfield_cpu = conserved(rho_inf, velocity, pressure_inf)
     farfield = xp.asarray(farfield_cpu)
     solid = xp.asarray(solid_cpu)
@@ -883,7 +890,7 @@ def solve(project, conditions, configuration_id: str | None = None,
         accepted = False
         for _ in range(9):
             candidate = finite_volume_step(state, solid, spacing, dt, farfield, xp=xp,
-                                           physics_model=physics_model)
+                                           physics_model=physics_model, spatial_scheme=spatial_scheme)
             acceleration = environment.get("frame_acceleration_m_s2", [0, 0, 0])
             if any(acceleration):
                 candidate = _accelerating_frame_update(candidate, solid, acceleration, dt, xp)
@@ -1013,6 +1020,11 @@ def solve(project, conditions, configuration_id: str | None = None,
         warnings.append("Pressure-resultant CP is undefined at negligible lateral force; no CP is inferred from axial drag.")
     summary = dict(status=status, mode=mode, completed=status in {"converged", "transient_complete"},
                    physics_model=physics_model,
+                   spatial_scheme=spatial_scheme,
+                   time_integrator="ssprk2" if muscl else "forward_euler",
+                   reconstruction_scope="Limited primitive MC slopes in smooth fluid interior; first-order cells touching solids and directional exterior boundaries" if muscl else "Piecewise constant cell states",
+                   temporal_order_scope="Second order for autonomous semi-discrete flow with constant boundary data; changing profiles and split frame source remain first order" if muscl else "First-order explicit evolution",
+                   profile_time_sampling="Start of accepted timestep; held constant through flow stages",
                    converged=status == "converged", steps=steps,
                    physical_time_s=physical_time, target_physical_time_s=target_time,
                    elapsed_seconds=time.perf_counter() - start, flow_through_time_s=flow_time,
@@ -1108,6 +1120,8 @@ def solve(project, conditions, configuration_id: str | None = None,
     if laminar:
         from .cfd_viscous import FIDELITY as laminar_fidelity
         fidelity = laminar_fidelity
+    if muscl:
+        fidelity = fidelity.replace("first-order Cartesian finite volume", "MUSCL–MC Rusanov / SSPRK2 Cartesian finite volume; first-order wall and farfield reconstruction")
     result = dict(samples=samples, flow_grid=flow_grid, surface=surface, history=history, summary=summary,
                   fidelity=fidelity, warnings=warnings, backend=backend)
     if recorder:
