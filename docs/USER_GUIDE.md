@@ -468,6 +468,29 @@ source CAD. Near walls and farfield boundaries reconstruction remains first
 order; launch-driven boundary/source integration also remains first order in
 time. See [the numerical method and reference checks](CFD.md).
 
+### Compare CFD methods and mesh refinement
+
+1. Save the project and choose one configuration, geometry, physics model and
+   set of conditions. Start with a small enough case to complete on your machine.
+2. Run **First order · baseline**, then export JSON and the report. Run
+   **Experimental MUSCL–MC · SSPRK2** on the same grid/domain and export again.
+   Check that `mesh_sha256` and `aerodynamic_voxel_sha256` match between this pair;
+   the only intended numerical choice is reconstruction/time integration.
+3. For steady runs, inspect the state, wall-pressure and load convergence rates.
+   For transient runs, compare the same physical time and prescribed launch
+   history. A completed duration or smoother field does not establish steady drag.
+4. Repeat on progressively finer grids, then with a larger farfield domain.
+   Compare integrated force/moment, pressure distribution and feature resolution.
+   The voxel hash should change with grid/domain; the source mesh hash should
+   stay the same. Streamline quality changes display sampling only.
+5. Retain assumptions, backend, method, mesh/domain, stopping status and all
+   exports together. Compare with a suitable trusted solver or relevant measured
+   data before using the loads to establish structural margins.
+
+The built-in benchmark improvement does not supply a universal error estimate
+for your rocket. Below Mach 0.3, the unresolved acoustic-dissipation limitation
+remains even after selecting MUSCL or reaching numerical convergence.
+
 ### Use flat-fin plate FEA
 
 1. Select an original trapezoidal or triangular finset, then open **Structures**.
