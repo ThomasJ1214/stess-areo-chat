@@ -1,22 +1,23 @@
 # Validation checkpoint
 
-## 0.3.5 MUSCL source validation in progress
+## Verified 0.3.5 MUSCL release
 
 The selected experimental method uses primitive-variable MC reconstruction,
 shared conservative Rusanov fluxes and two-stage SSPRK2. Default first-order
 calculations and the exterior-connected geometry policy remain available.
 Smooth-interior accuracy is distinct from first-order boundary reconstruction
-and start-of-step launch-profile/source sampling. The current source is not yet
-a verified 0.3.5 Windows download.
+and start-of-step launch-profile/source sampling. The Windows installer and
+original-download verification have both passed.
 
-Local full regression passed 558 Python tests. The final targeted run passed
-36 reconstruction/mode tests, including the added changing-boundary and
-invalid-second-stage cases, plus four actual Mach-0.2/Mach-2 geometry cases
-covering both methods. Clean-source CI must confirm the final suite count. The frontend passed
-90 tests and production type/build checks. The real-browser run passed all
-36 workflows, including actual laminar MUSCL/SSPRK2 inputs, method labels and
-finite solved loads. Engine smoke and locked native imports passed at 0.3.5.
-Windows packaging and original-download verification remain separate gates.
+The [clean-source cross-platform CI](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38842792967)
+passed all four jobs at `6d242da7e4629a9522c93ff1d37c25e64fe30d04`:
+562 Python tests on each of Windows/Linux,
+90 frontend tests/type/build and 36 real browser workflows. Browser checks
+include actual laminar MUSCL flow, immutable method inputs, the correct viewport
+physics/method badge and nonoverlapping engineering metric labels. Artifact
+`12022231954` contains approximately 15.8 MB of browser evidence; ZIP SHA-256:
+`4fb2ae26ef615bea1fd5c7809069684998bbe2bda6b73add888aa1fd8b33b93f`.
+Local engine/native-import smoke and a second 36-workflow browser run also passed.
 
 Independent nondimensional reference measurements:
 
@@ -38,9 +39,32 @@ and unchanged source geometry/mass in both numerical methods.
 
 Reproduce numerical properties with:
 `uv run --no-sync pytest tests/test_cfd_reconstruction.py -o junit_family=legacy --junitxml=build/cfd-muscl-reference.xml`.
-Generated XML/browser receipts are local build artifacts; CI/download links and
-exact source identity will identify packaged evidence after completion.
+Generated XML/browser receipts are local build artifacts. The links and exact
+source identity below identify packaged evidence.
 
+The additional local quiescent exterior-box steady reference passed 3,362
+accepted steps, zero force/moment and unchanged source geometry; see
+`research/validate_cfd_quiescent.py`. This is not nonzero-drag validation.
+
+The [Windows offline installer](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38842792907)
+passed frozen/installed numerical and desktop checks, including actual
+launch-driven laminar MUSCL–MC/SSPRK2, static fin-plate equilibrium, dynamic fin
+integration, 6DOF/causal wind, baseline Euler flow and normal-startup bundled CUDA
+import/offline compilation. Binary source is exactly `6d242da7e4629a9522c93ff1d37c25e64fe30d04`.
+Installer artifact `12022487168` is approximately 1.5 GB, named
+`RocketWorkbench-windows-x64-installer`. ZIP SHA-256:
+`7acc591a6820f159f767f3d4f91086122a038e962ace376fcad6c83ce291eba9`.
+
+The [independent original-download check](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38843107431)
+passed: original bytes matched their shipped checksum and exact clean source,
+installed on a fresh Windows runner, and repeated real engine, plate, flight,
+launch-driven MUSCL flow, CUDA compiler and native UI/software-WebGL checks.
+Setup EXE SHA-256: `ed3eea1437d316ffd8d98b42a5292dc1b13db6c9ae9bd7ccb3765bc32edc3fd2`.
+Proof artifact `12022763519` contains evidence, not the installer; proof ZIP
+SHA-256: `e690cd47114d8ca0713b244e182f17ab0a094b8639113ec399bbb276100eb16c`.
+Documentation/verification-only commits after the binary source do not change
+these bytes. Physical NVIDIA execution, rocket drag/pressure validation,
+all-speed low-Mach behavior and turbulent/boundary-layer accuracy remain open.
 
 ## Verified 0.3.4 original-fin plate release
 

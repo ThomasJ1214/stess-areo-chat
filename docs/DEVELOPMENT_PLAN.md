@@ -58,8 +58,12 @@ The next structural step is an independently checked CAD midsurface/curved-shell
 path with explicit thickness, supports and material mapping. It must preserve
 source geometry and cannot infer structural bonds merely because parts touch.
 Flight-driven plate dynamics and composite layups require separate formulations
-and validation. CFD priorities remain low-Mach behavior, spatial reconstruction
-and grid/domain studies before claiming trustworthy detailed-CAD drag changes.
+and validation. Version 0.3.5 adds optional limited primitive MUSCL–MC reconstruction and
+SSPRK2 with independent smooth-wave, shock, conservation, positivity and boundary
+checks. This does not establish all-speed, turbulent or detailed-CAD force
+accuracy. CFD priorities remain low-Mach behavior, wall/farfield treatment and
+grid/domain studies against trusted data before claiming reliable geometry
+comparison. Launch-profile boundary/source sampling remains first order in time.
 
 ## Research and accuracy backlog
 

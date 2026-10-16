@@ -18,12 +18,13 @@ motor/recovery setup, playback, numerical solvers and saving/exporting your work
 
 ## Get the one-download package
 
-Open the [verified **0.3.4** installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832085653#artifacts).
+Open the [verified **0.3.5** installer run](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38842792907#artifacts).
 The approximately 1.5 GB package includes guided tutorials, a resizable workspace,
 live motor search, launch playback, a local flight map, CAD automatic placement,
 launch-driven transient CFD, optional solved 6DOF attitude, Dryden gusts/shear,
 causal live wind/temperature recalculation, dynamic original-fin beam FEA,
-experimental laminar CFD, static original-fin plate FEA, load/stress/wind graphs,
+experimental laminar CFD, optional MUSCL–MC/SSPRK2 reconstruction, static fin-plate
+FEA, load/stress/wind graphs,
 and X-ray/cutaway flow viewing.
 See the [validation record](VALIDATION.md) for recorded
 checks; require a successful run before using its installer.
@@ -41,9 +42,9 @@ checks; require a successful run before using its installer.
    includes `START_HERE.txt` and `USER_GUIDE.txt`; the app also has an offline
    **User guide**, **Getting started**, and per-page **Tutorial** buttons.
 5. Optionally check the installer in PowerShell with
-   `Get-FileHash .\RocketWorkbench-0.3.4-windows-x64-setup.exe -Algorithm SHA256`
+   `Get-FileHash .\RocketWorkbench-0.3.5-windows-x64-setup.exe -Algorithm SHA256`
    and compare it with the `.sha256` file supplied in that artifact.
-6. Double-click `RocketWorkbench-0.3.4-windows-x64-setup.exe`. Select a user-local
+6. Double-click `RocketWorkbench-0.3.5-windows-x64-setup.exe`. Select a user-local
    install location and optionally enable the desktop shortcut. No administrator
    privileges are required for the default location.
 7. Open **Rocket Workbench** from Start or the desktop shortcut.
@@ -65,7 +66,7 @@ mean the installer build failed.
 1. Save your open project, then close every Rocket Workbench window.
 2. Extract the new package and run its setup EXE. Use the same installation
    folder as before so your Start menu shortcut opens the new version.
-3. Open the app and check that the header shows **0.3.4**. Your separately saved
+3. Open the app and check that the header shows **0.3.5**. Your separately saved
    projects and the session directory are outside the application installation.
 4. Open **CFD → GPU diagnostics** before a large GPU run. On a supported NVIDIA
    system, the report should identify the GPU and a successful device allocation
@@ -253,8 +254,8 @@ Workbench → Uninstall**. Your separately saved project files are yours to keep
 
 ## Build status
 
-The linked version **0.3.4** installer was built from source
-`f6e8c9151d5d07607bb940b24a9d1cd8aa2b6201`. Its Windows checks passed frozen and
+The linked version **0.3.5** installer was built from source
+`6d242da7e4629a9522c93ff1d37c25e64fe30d04`. Its Windows checks passed frozen and
 installed engineering calculations, actual CuPy native imports, bundled CUDA DLL
 and header discovery, normal-startup uncached `compute_75` and `compute_89`
 compilation without test-only DLL preloads, silent installation, native
@@ -265,14 +266,15 @@ fresh consumer PC need separate hardware checks. See [VALIDATION.md](VALIDATION.
 for receipts and artifact identity. Documentation-only commits after the binary's
 source revision do not rebuild it; generated binaries are kept out of Git history.
 
-The [independent download/reinstall workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832913110)
-passed using the original uploaded 0.3.4 bytes on a fresh Windows runner. It
+The [independent download/reinstall workflow](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38843107431)
+passed using the original uploaded 0.3.5 bytes on a fresh Windows runner. It
 repeated real flight/solid and fin-plate FEA, 6DOF/Dryden, causal changes, exact
-fin integration, partial-study exclusion, launch-driven Euler/laminar CFD, normal-path CUDA
-compilation and native desktop/API/WebGL checks. The actual setup EXE SHA-256 is
-`7c871b6952fc8f5f33b31fdaeb6d5843dbce6f28e6ffdd5e6ff940380aa6cca6`.
+fin integration, partial-study exclusion, launch-driven Euler and laminar
+MUSCL–MC/SSPRK2 CFD, normal-path CUDA compilation and native desktop/API/WebGL
+checks. The actual setup EXE SHA-256 is
+`ed3eea1437d316ffd8d98b42a5292dc1b13db6c9ae9bd7ccb3765bc32edc3fd2`.
 The installer ZIP SHA-256 is
-`34a4bee70b82b83a1f03135807673580bb469fedd539ae479f2e3a45b1cb3c27`.
+`7acc591a6820f159f767f3d4f91086122a038e962ace376fcad6c83ce291eba9`.
 Download the installer from the original installer run linked above; this separate
 verification run contains only small evidence files. These checks verify the
 packaged numerical paths, not measured flight accuracy or physical GPU execution.
