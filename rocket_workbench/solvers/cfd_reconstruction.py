@@ -1,0 +1,99 @@
+"""Limited primitive MUSCL reconstruction for Cartesian Euler face states.
+
+This is a smooth-interior accuracy option, not a higher-order geometry method.
+The limiter reduces order at extrema/discontinuities; every cell touching a
+solid or a nonperiodic exterior boundary keeps its cell-centered face values.
+All operations accept the numerical solver's NumPy/CuPy array namespace.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+
+def _minmod_three(a, b, c, xp=np):
+    same_sign = (xp.sign(a) == xp.sign(b)) & (xp.sign(a) == xp.sign(c))
+    return xp.where(
+        same_sign,
+        xp.sign(a) * xp.minimum(xp.abs(a), xp.minimum(xp.abs(b), xp.abs(c))),
+        0.0,
+    )
+
+
+def first_order_cells(solid, axis, boundary="farfield", xp=np):
+    """Cells whose stencil touches material or a prescribed/extrapolated face."""
+    if boundary not in {"periodic", "farfield", "outflow"}:
+        raise ValueError("Unknown boundary policy.")
+    disabled = solid.copy()
+    for neighbor_axis in range(3):
+        disabled |= xp.roll(solid, 1, axis=neighbor_axis) | xp.roll(
+            solid, -1, axis=neighbor_axis
+        )
+    if boundary != "periodic":
+        first, last = [slice(None)] * solid.ndim, [slice(None)] * solid.ndim
+        first[axis], last[axis] = 0, -1
+        disabled[tuple(first)] = True
+        disabled[tuple(last)] = True
+    return disabled
+
+
+def primitive_slopes(primitive, solid, axis, boundary="farfield", xp=np):
+    """Monotonized-central slopes in cell-index units, with explicit downgrade.
+
+    Positive cell-centered density/pressure retain positive reconstructed face
+    values: an MC slope has magnitude at most twice either one-sided jump.
+    A common roundoff guard rescales all primitive slopes only if a face would
+    approach a nonpositive density or pressure. No evolved state is clipped.
+    """
+    previous = xp.roll(primitive, 1, axis=axis)
+    following = xp.roll(primitive, -1, axis=axis)
+    backward, forward = primitive - previous, following - primitive
+    slope = _minmod_three(2 * backward, 0.5 * (backward + forward), 2 * forward, xp)
+    slope = xp.where(
+        first_order_cells(solid, axis, boundary, xp)[..., None], 0.0, slope
+    )
+    scale = xp.ones(solid.shape, dtype=primitive.dtype)
+    # Primitive layout [rho, u, v, w, p]; the tolerance is relative to each
+    # positive cell value, avoiding dimensional absolute density/pressure floors.
+    for index in (0, 4):
+        half_change = 0.5 * xp.abs(slope[..., index])
+        allowed = primitive[..., index] * (1 - 16 * xp.finfo(primitive.dtype).eps)
+        safe_denominator = xp.where(half_change > 0, half_change, 1.0)
+        scale = xp.minimum(
+            scale, xp.where(half_change > allowed, allowed / safe_denominator, 1.0)
+        )
+    return slope * scale[..., None]
+
+
+def face_primitives(
+    primitive, solid, axis, farfield_primitive, boundary="farfield", xp=np
+):
+    """Return reconstructed primitive pairs and solid flags at every axis face."""
+    slope = primitive_slopes(primitive, solid, axis, boundary, xp)
+    minus, plus = primitive - 0.5 * slope, primitive + 0.5 * slope
+    first, last = xp.take(primitive, [0], axis=axis), xp.take(
+        primitive, [-1], axis=axis
+    )
+    empty = xp.zeros(first.shape[:-1], dtype=bool)
+    if boundary == "periodic":
+        left_ghost = xp.take(plus, [-1], axis=axis)
+        right_ghost = xp.take(minus, [0], axis=axis)
+        left_solid, right_solid = xp.take(solid, [-1], axis=axis), xp.take(
+            solid, [0], axis=axis
+        )
+    elif boundary == "outflow":
+        left_ghost, right_ghost = first, last
+        left_solid = right_solid = empty
+    elif boundary == "farfield":
+        left_ghost, right_ghost = xp.broadcast_to(
+            farfield_primitive, first.shape
+        ), xp.broadcast_to(farfield_primitive, last.shape)
+        left_solid = right_solid = empty
+    else:
+        raise ValueError("Unknown boundary policy.")
+    return (
+        xp.concatenate((left_ghost, plus), axis=axis),
+        xp.concatenate((minus, right_ghost), axis=axis),
+        xp.concatenate((left_solid, solid), axis=axis),
+        xp.concatenate((solid, right_solid), axis=axis),
+    )

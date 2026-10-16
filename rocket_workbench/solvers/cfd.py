@@ -85,7 +85,21 @@ def wall_riemann_pressure(density, pressure, velocity_toward_wall, gamma=GAMMA, 
     return xp.where(toward >= 0, shock, rarefaction)
 
 
-def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, xp=np):
+def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, xp=np,
+               spatial_scheme="first_order"):
+    if spatial_scheme == "muscl_mc":
+        from .cfd_reconstruction import face_primitives
+        rho, velocity, pressure, _ = primitives(state, gamma, xp)
+        primitive = xp.concatenate((rho[..., None], velocity, pressure[..., None]), axis=-1)
+        frho, fvelocity, fpressure, _ = primitives(xp.asarray(farfield), gamma, xp)
+        incoming = xp.concatenate((frho[..., None], fvelocity, fpressure[..., None]), axis=-1)
+        pl, pr, solid_left, solid_right = face_primitives(
+            primitive, solid, axis, incoming, boundary, xp)
+        left = conserved(pl[..., 0], pl[..., 1:4], pl[..., 4], gamma, xp)
+        right = conserved(pr[..., 0], pr[..., 1:4], pr[..., 4], gamma, xp)
+        return _face_flux(left, right, solid_left, solid_right, axis, gamma, xp)
+    if spatial_scheme != "first_order":
+        raise ValueError("CFD spatial_scheme must be first_order or muscl_mc.")
     first = xp.take(state, [0], axis=axis)
     last = xp.take(state, [-1], axis=axis)
     first_solid = xp.zeros(first.shape[:-1], dtype=bool)
@@ -107,6 +121,10 @@ def _axis_flux(state, solid, axis, farfield, boundary="farfield", gamma=GAMMA, x
     right = xp.concatenate((state, right_ghost), axis=axis)
     solid_left = xp.concatenate((first_solid, solid), axis=axis)
     solid_right = xp.concatenate((solid, last_solid), axis=axis)
+    return _face_flux(left, right, solid_left, solid_right, axis, gamma, xp)
+
+
+def _face_flux(left, right, solid_left, solid_right, axis, gamma, xp):
     # Rusanov is used only on fluid/fluid faces. Solid-face entries below are
     # overwritten by the analytic reflected Riemann flux, avoiding full-grid
     # mirror-state copies and their additional CPU/GPU memory allocations.
@@ -144,11 +162,30 @@ def stable_timestep(state, solid, spacing, cfl=0.35, gamma=GAMMA, xp=np,
 
 
 def finite_volume_step(state, solid, spacing, dt, farfield, boundary="farfield", gamma=GAMMA, xp=np,
-                       physics_model="euler"):
-    """One unsplit conservative forward-Euler step; useful independently for tests."""
+                       physics_model="euler", spatial_scheme="first_order"):
+    """Unsplit conservative update; MUSCL uses two-stage SSPRK2.
+
+    A nonphysical intermediate stage is returned to the caller for rejection,
+    never passed into primitive reconstruction or repaired by clipping.
+    Boundaries and any separately split sources are frozen over this step.
+    """
+    first = _forward_step(state, solid, spacing, dt, farfield, boundary, gamma,
+                          xp, physics_model, spatial_scheme)
+    if spatial_scheme == "first_order" or not _physical(first, solid, xp, gamma):
+        return first
+    second = _forward_step(first, solid, spacing, dt, farfield, boundary, gamma,
+                           xp, physics_model, spatial_scheme)
+    if not _physical(second, solid, xp, gamma):
+        return second
+    return xp.where(solid[..., None], state, 0.5 * state + 0.5 * second)
+
+
+def _forward_step(state, solid, spacing, dt, farfield, boundary, gamma, xp,
+                  physics_model, spatial_scheme):
     derivative = xp.zeros_like(state)
     for axis in range(3):
-        flux, _, _ = _axis_flux(state, solid, axis, farfield, boundary, gamma, xp)
+        flux, _, _ = _axis_flux(state, solid, axis, farfield, boundary, gamma, xp,
+                                spatial_scheme)
         derivative -= xp.diff(flux, axis=axis) / spacing[axis]
     if physics_model == "laminar":
         from .cfd_viscous import viscous_rhs
@@ -159,9 +196,9 @@ def finite_volume_step(state, solid, spacing, dt, farfield, boundary="farfield",
     return xp.where(solid[..., None], state, updated)
 
 
-def _physical(state, solid, xp=np) -> bool:
+def _physical(state, solid, xp=np, gamma=GAMMA) -> bool:
     rho = state[..., 0]
-    pressure = (GAMMA - 1) * (state[..., 4] - 0.5 * xp.sum(state[..., 1:4] ** 2, axis=-1) / rho)
+    pressure = (gamma - 1) * (state[..., 4] - 0.5 * xp.sum(state[..., 1:4] ** 2, axis=-1) / rho)
     invalid = (~xp.isfinite(state).all(axis=-1)) | (rho <= 0) | (pressure <= 0)
     return not bool(xp.any(invalid & ~solid))
 
