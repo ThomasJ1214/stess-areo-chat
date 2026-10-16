@@ -298,7 +298,8 @@ body {
   font-size: 10px;
 }
 .workspace-results .metrics-row {
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr));
   padding: 16px 12px;
   gap: 13px;
 }
@@ -309,11 +310,15 @@ body {
 .workspace-results .metric > span {
   font-size: 10px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
+  white-space: normal;
+  min-height: 2.8em;
 }
 .workspace-results .metric strong {
   font-size: 19px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .workspace-results .fidelity {
   font-size: 11px;

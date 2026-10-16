@@ -375,7 +375,19 @@ export function CfdFlowLegend({
             : "Sparse solved vectors · rerun for streamlines"}
         </span>
         <small>
-          {data.backend || "Backend unavailable"} · inviscid Euler · unvalidated
+          {data.backend || "Backend unavailable"} ·{" "}
+          {data.summary?.physics_model === "laminar"
+            ? "Laminar Navier–Stokes"
+            : data.summary?.physics_model === "euler"
+              ? "Inviscid Euler"
+              : "Physics unavailable"}
+          {" · "}
+          {data.summary?.spatial_scheme === "muscl_mc"
+            ? "MUSCL–MC / SSPRK2"
+            : data.summary?.spatial_scheme === "first_order"
+              ? "First order"
+              : "Numerical method unavailable"}
+          {" · unvalidated"}
         </small>
         {grid && (
           <small>

@@ -1351,6 +1351,12 @@ def main():
             assert high_order["inputs"]["options"]["spatial_scheme"] == "muscl_mc"
             assert not high_order["summary"]["low_mach_preconditioned"]
             assert all(math.isfinite(v) for v in high_order["summary"]["total_force_n"])
+            expect(page.locator(".cfd-field-status")).to_contain_text("Laminar Navier–Stokes")
+            expect(page.locator(".cfd-field-status")).to_contain_text("MUSCL–MC / SSPRK2")
+            expect(page.locator(".cfd-field-status")).not_to_contain_text("Inviscid Euler")
+            metric_layout = page.locator(".workspace-results .metrics-row").evaluate_all("rows => rows.map(row => ({display: getComputedStyle(row).display, labels: [...row.querySelectorAll('.metric > span')].map(label => ({wrap: getComputedStyle(label).whiteSpace, width: label.getBoundingClientRect().width, scroll: label.scrollWidth}))}))")
+            assert metric_layout and all(row["display"] == "grid" for row in metric_layout)
+            assert all(label["wrap"] == "normal" and label["scroll"] <= label["width"] + 2 for row in metric_layout for label in row["labels"])
             (args.artifacts / "muscl-transient-flow.json").write_text(json.dumps(high_order, indent=2, allow_nan=False), "utf8")
             page.screenshot(path=str(args.artifacts / "muscl-transient-flow.png"), full_page=True)
             no_errors()
