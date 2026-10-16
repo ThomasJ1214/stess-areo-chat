@@ -45,6 +45,22 @@ Automated reference tests are necessary but do not replace physical benchmarks.
 The hosted CI's installed smoke test does not prove every viewport feature or
 GPU kernel on every driver. Keep those validation gaps explicit.
 
+## Current structural milestone
+
+Version 0.3.4 adds static MITC4 original-fin plate FEA, including triangular
+and swept/tapered planforms, explicit pressure or estimated directional aero
+loads, normal inertial loading, per-fin equilibrium, stress and deformation.
+This is distinct from the existing flight-driven dynamic beam analysis.
+The [validation checkpoint](VALIDATION.md) identifies the exact tested source
+and whether Windows download verification is complete.
+
+The next structural step is an independently checked CAD midsurface/curved-shell
+path with explicit thickness, supports and material mapping. It must preserve
+source geometry and cannot infer structural bonds merely because parts touch.
+Flight-driven plate dynamics and composite layups require separate formulations
+and validation. CFD priorities remain low-Mach behavior, spatial reconstruction
+and grid/domain studies before claiming trustworthy detailed-CAD drag changes.
+
 ## Research and accuracy backlog
 
 The first release should not quietly inflate its fidelity. Work requiring

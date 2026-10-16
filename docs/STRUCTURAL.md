@@ -176,6 +176,11 @@ Options: `plate_load_mode:pressure|aero_resultant`, signed `plate_pressure_pa`,
 requests are rejected. UI requests remove inactive solid controls. Model and
 options persist in projects and immutable run-input snapshots.
 
+The element follows Bathe and Dvorkin, *A four-node plate bending element
+based on Mindlin/Reissner plate theory and a mixed interpolation*,
+International Journal for Numerical Methods in Engineering 21 (1985), 367–383.
+The implemented scope is the flat isotropic bending/shear formulation above.
+
 Independent automated checks in `test_plate_fea.py` cover Navier square-plate
 references at three thickness ratios with mesh refinement, distorted constant-
 curvature patches, geometry rejection, an exact cylindrical cantilever

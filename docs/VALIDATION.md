@@ -1,6 +1,6 @@
 # Validation checkpoint
 
-## 0.3.4 original-fin plate source pass
+## Verified 0.3.4 original-fin plate release
 
 The new MITC4 static flat-plate path preserves original swept/tapered/triangular
 fin planforms, actual azimuth/cant/radial placement, measured thickness and
@@ -12,10 +12,39 @@ laminates, joints, CFD transfer and transient plates are unsupported.
 
 Local checks passed 539 Python tests, 89 frontend tests, production build,
 24 plate-specific kernel/adapter/API/export checks and native Qt
-shell/software-WebGL/API/project startup. The expanded 34-workflow browser run passed; a final rerun also checks
-plate force arrows/deformation. Packaged Windows verification must pass separately before
-presenting this source as a verified 0.3.4 download. The verified 0.3.3 installer
-below does not contain plate FEA.
+shell/software-WebGL/API/project startup. The final
+[cross-platform CI](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832085552)
+passed all four jobs at corrected source
+`f6e8c9151d5d07607bb940b24a9d1cd8aa2b6201`, including the 35-workflow browser
+suite with a plate-only cold-start Forces/deformation check. Browser evidence
+artifact `12017423517` is approximately 15 MB; ZIP SHA-256
+`0438691f4c773eb7bef1a066998ad7625a192fb61033e75f63eaa7703e2b7adf`.
+A focused signed-pressure UI check also passed; its receipt explicitly identifies
+the uncommitted viewer prerequisite fix before that source commit. The previous
+candidate required an aerodynamic result before enabling plate force arrows;
+the corrected source removes that prerequisite.
+
+The [corrected Windows build](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832085653)
+passed frozen/installed engine, flight, solid and actual MITC4 fin-plate FEA,
+launch-driven Euler/laminar CFD, CUDA native import/offline compilation and
+native desktop/API/software-WebGL checks. The plate receipt records real mesh,
+stress/displacement and equilibrium results; no physical NVIDIA execution is
+claimed. Installer binary source is exactly `f6e8c9151d5d07607bb940b24a9d1cd8aa2b6201`.
+Artifact `12018645971` is approximately 1.5 GB and is named
+`RocketWorkbench-windows-x64-installer`. Installer ZIP SHA-256:
+`34a4bee70b82b83a1f03135807673580bb469fedd539ae479f2e3a45b1cb3c27`.
+
+The [independent original-download verification](https://github.com/ThomasJ1214/stess-areo-chat/actions/runs/38832913110)
+passed on a fresh Windows runner. It downloaded the existing original artifact
+without rebuilding, checked the shipped checksum and exact clean source identity,
+installed it and repeated the packaged numerical, plate equilibrium, CUDA
+compiler and native UI checks. Actual setup EXE SHA-256:
+`7c871b6952fc8f5f33b31fdaeb6d5843dbce6f28e6ffdd5e6ff940380aa6cca6`.
+Proof artifact `12018606729` contains evidence, not the installer; proof ZIP
+SHA-256 `562f3218897067c4fec36c99cf083a99df462dd3a97c7973fce05f06a106a1cf`.
+Documentation/verification-only commits after the binary source do not change
+these installer bytes. Physical GPU execution and measured flight/wind-tunnel
+validation remain open; numerical reference tests do not establish those claims.
 
 ## Verified 0.3.3 release
 

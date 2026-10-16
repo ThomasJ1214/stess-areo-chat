@@ -4,12 +4,15 @@ These drafts preserve unfinished work for the next engineering pass. They are
 text files outside the application package and are not installed solver options.
 The plate kernel now has a separately tested application implementation in
 rocket_workbench/solvers/plate_elements.py and plate_fea.py for original flat
-fins; see docs/STRUCTURAL.md. This text is an archival draft, not a runtime import. Initial plate references below cover only
+fins; see [the structural method](../../docs/STRUCTURAL.md). This text is an
+archival draft, not a runtime import. Initial draft references below cover only
 the tested element and square-plate cases.
 
-- `plate_fea.py.txt`: proposed MITC4 thin-plate element, meshing and static solve.
-  Still requires broader fin-planform/stress/convergence checks, an actual component
-  adapter, preflight, supports/load mapping, GUI and installed-executable tests.
+- `plate_fea.py.txt`: archival MITC4 thin-plate element, meshing and static solve.
+  The separate production implementation adds fin-planform/stress references,
+  the component adapter, preflight, supports/load mapping, GUI and packaged
+  checks. Use production tests and [release evidence](../../docs/VALIDATION.md)
+  to determine what has actually passed; this draft is not a solver option.
 - `cfd_reconstruction.py.txt`: proposed primitive-variable MUSCL face reconstruction.
   Still requires conservative solver/SSPRK2 integration, positivity and boundary
   verification, independent convergence/shock references and GPU checks.

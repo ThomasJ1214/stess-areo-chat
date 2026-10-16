@@ -470,8 +470,8 @@ See [STRUCTURAL.md](STRUCTURAL.md).
    isotropic surrogate; no laminate safety factor is reported.
 6. Review **Mesh readiness**. Plate sizing controls in-plane resolution rather
    than volume layers. The limit is 20,000 quadrilaterals across all fins. Run
-   the analysis, enable stress/deformation and **Forces**, and inspect **Per-fin plate loads and
-   equilibrium**. Symmetry can cancel a net force without making each fin unloaded.
+   the analysis, enable stress/deformation and **Forces**, and inspect
+   **Per-fin plate loads and equilibrium**. Symmetry can cancel a net force without making each fin unloaded.
 7. Refine the surface mesh and compare displacement, energy and stress away from
    the clamp. Export CSV/JSON and the engineering report. Midsurface colors are
    recovered stress averages; deformation scale changes display only.
