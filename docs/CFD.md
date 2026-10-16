@@ -568,6 +568,13 @@ For consequential design decisions, compare a grid/domain convergence study
 against a trusted solver and relevant experiments, and use an appropriate
 viscous/turbulence model where those effects matter.
 
+`uv run --no-sync python research/validate_cfd_quiescent.py` runs an additional
+actual steady MUSCL solve on an exterior-connected CAD box. The exact quiescent
+reference retains zero force/moment and unchanged source geometry, and must
+satisfy the real minimum flow-through time plus the convergence streak. It can
+take several minutes on CPU. The receipt is written under `build/`; it is not
+a nonzero-drag, low-Mach-error or physical-GPU validation case.
+
 Reference methods and benchmarks:
 
 - E. F. Toro, *Riemann Solvers and Numerical Methods for Fluid Dynamics*, third
