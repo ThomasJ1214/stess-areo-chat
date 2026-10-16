@@ -63,14 +63,14 @@ class MeshSizing:
                 f"Solid bending FEA requires mesh_size <= thickness/2 ({self.maximum_bending_mesh_size:g} m) for this procedural component; "
                 "a coarse solid mesh would give misleading stiffness. Use the recommended mesh if it fits the element budget. "
                 "Otherwise use the separate beam/fin estimates where supported, or import a smaller physical CAD part prepared outside the app. "
-                "A shell solver and region-cutting tool are not included."
+                "Original flat fins can use the separate plate option; curved-shell FEA and region cutting are not included."
             )
         if not self.budget_satisfied:
             result.append(
                 f"Estimated solid mesh is too large for the {self.max_elements:,}-element budget. "
                 "Use a higher budget within the 300,000-element limit if the recommendation permits it, "
                 "or import a smaller physical CAD part prepared outside the app. "
-                "The separate beam/fin estimates support original tubes/fins; a shell solver and region-cutting tool are not included."
+                "The separate beam/fin estimates support original tubes/fins; original flat fins can use the separate plate option; curved-shell FEA and region cutting are not included."
             )
         return result
 
@@ -108,6 +108,11 @@ def mesh_sizing(surface, component: Component, options: dict) -> MeshSizing:
 
 def preflight(project: Project, component_id: str, options: dict | None = None) -> dict:
     """Report actionable mesh sizing and geometry limits; never mesh or mutate."""
+    if (options or {}).get("element_model", "solid") not in {"plate", "solid"}:
+        raise ValueError("FEA element_model must be solid or plate.")
+    if (options or {}).get("element_model") == "plate":
+        from .solvers.plate_fea import preflight as plate_preflight
+        return plate_preflight(project, component_id, options or {})
     component = next((part for part in project.components if part.id == component_id), None)
     if component is None:
         raise ValueError("Select an existing component for FEA.")

@@ -190,9 +190,20 @@ function FEA({
   stress: boolean;
 }) {
   const g = useMemo(() => {
-    if (!data?.vertices?.length || !data?.tetrahedra?.length) return null;
+    if (
+      !data?.vertices?.length ||
+      (!data?.tetrahedra?.length &&
+        !(
+          data?.mesh_kind === "plate_midsurface" && data?.surface_faces?.length
+        ))
+    )
+      return null;
     const faces = new Map<string, number[]>();
-    for (const tet of data.tetrahedra) {
+    if (data.mesh_kind === "plate_midsurface")
+      data.surface_faces.forEach((face: number[], i: number) =>
+        faces.set(String(i), face),
+      );
+    for (const tet of data.tetrahedra || []) {
       for (const f of [
         [tet[0], tet[1], tet[2]],
         [tet[0], tet[3], tet[1]],
@@ -1147,99 +1158,149 @@ function Scene({
                     </group>
                   ),
               )}
-            {p.overlays.forces && (p.aero || p.flightRow) && (
-              <>
-                {p.workspace !== "flight" && (
-                  <Arrow
-                    start={[min - size * 0.1, 0, 0]}
-                    direction={p.aero.freestream_m_s || [1, 0, 0]}
-                    length={size * 0.12}
-                    color="#829dba"
-                  />
-                )}
-                {Math.abs(p.flightRow?.drag ?? p.aero?.drag_n ?? 0) > 0 && (
-                  <Arrow
-                    start={[cg ?? center[0], 0, dimensions.z * 0.7]}
-                    direction={
-                      p.flightRow
-                        ? tracking
-                          ? flightLocalDrag(p.flightRow, pose.quaternion)
-                          : flightDragDirection(p.flightRow)
-                        : [1, 0, 0]
-                    }
-                    length={size * 0.22}
-                    color="#e9a777"
-                  />
-                )}
-                {!overview && (
-                  <Html
-                    position={[
-                      (cg ?? center[0]) + size * 0.15,
-                      0,
-                      dimensions.z * 0.7 + size * 0.025,
-                    ]}
-                    center
-                  >
-                    <div className="scene-label force-label">
-                      Drag{" "}
-                      {quantity(
-                        p.flightRow?.drag ?? p.aero?.drag_n,
-                        "force",
-                        p.units,
+            {p.overlays.forces &&
+              p.workspace === "structure" &&
+              p.fea?.mesh_kind === "plate_midsurface" &&
+              p.fea.fins.map((fin: any) => {
+                const force = fin.applied_force_n as number[];
+                const magnitude = Math.hypot(...force);
+                const maximum = Math.max(
+                  1e-30,
+                  ...p.fea.fins.map((f: any) =>
+                    Math.hypot(...f.applied_force_n),
+                  ),
+                );
+                if (magnitude < 1e-12 || !fin.load_centroid_world_m)
+                  return null;
+                const start = fin.load_centroid_world_m.map(
+                  (n: number, i: number) =>
+                    n +
+                    (p.overlays.deformation
+                      ? fin.load_centroid_displacement_m[i] * p.deformationScale
+                      : 0),
+                );
+                const length = (size * 0.12 * magnitude) / maximum;
+                return (
+                  <group key={`plate-load-${fin.fin_index}`}>
+                    <Arrow
+                      start={start}
+                      direction={force}
+                      length={length}
+                      color="#7acac0"
+                    />
+                    <Html
+                      position={start.map(
+                        (n: number, i: number) =>
+                          n + (force[i] / magnitude) * length,
                       )}
-                    </div>
-                  </Html>
-                )}
-                {p.workspace !== "flight" && (
-                  <>
-                    {Math.abs(p.aero.normal_force_n || 0) > 0 && (
-                      <Arrow
-                        start={[cp ?? center[0], 0, dimensions.z * 0.7]}
-                        direction={[0, Math.sign(p.aero.normal_force_n), 0]}
-                        length={size * 0.13}
-                        color="#74c6bd"
-                      />
-                    )}
+                      center
+                    >
+                      <span className="scene-label force-label teal">
+                        Fin {fin.fin_index + 1}:{" "}
+                        {quantity(magnitude, "force", p.units)}
+                      </span>
+                    </Html>
+                  </group>
+                );
+              })}
+            {p.overlays.forces &&
+              !(
+                p.workspace === "structure" &&
+                p.fea?.mesh_kind === "plate_midsurface"
+              ) &&
+              (p.aero || p.flightRow) && (
+                <>
+                  {p.workspace !== "flight" && (
+                    <Arrow
+                      start={[min - size * 0.1, 0, 0]}
+                      direction={p.aero.freestream_m_s || [1, 0, 0]}
+                      length={size * 0.12}
+                      color="#829dba"
+                    />
+                  )}
+                  {Math.abs(p.flightRow?.drag ?? p.aero?.drag_n ?? 0) > 0 && (
+                    <Arrow
+                      start={[cg ?? center[0], 0, dimensions.z * 0.7]}
+                      direction={
+                        p.flightRow
+                          ? tracking
+                            ? flightLocalDrag(p.flightRow, pose.quaternion)
+                            : flightDragDirection(p.flightRow)
+                          : [1, 0, 0]
+                      }
+                      length={size * 0.22}
+                      color="#e9a777"
+                    />
+                  )}
+                  {!overview && (
                     <Html
                       position={[
-                        cp ?? center[0],
-                        size * 0.19,
-                        dimensions.z * 0.7,
+                        (cg ?? center[0]) + size * 0.15,
+                        0,
+                        dimensions.z * 0.7 + size * 0.025,
                       ]}
                       center
                     >
-                      <div className="scene-label force-label teal">
-                        Normal{" "}
-                        {quantity(p.aero.normal_force_n, "force", p.units)}
+                      <div className="scene-label force-label">
+                        Drag{" "}
+                        {quantity(
+                          p.flightRow?.drag ?? p.aero?.drag_n,
+                          "force",
+                          p.units,
+                        )}
                       </div>
                     </Html>
-                    {Math.abs(p.aero.side_force_n || 0) > 0 && (
-                      <>
+                  )}
+                  {p.workspace !== "flight" && (
+                    <>
+                      {Math.abs(p.aero.normal_force_n || 0) > 0 && (
                         <Arrow
-                          start={[cp ?? center[0], 0, 0]}
-                          direction={[0, 0, Math.sign(p.aero.side_force_n)]}
+                          start={[cp ?? center[0], 0, dimensions.z * 0.7]}
+                          direction={[0, Math.sign(p.aero.normal_force_n), 0]}
                           length={size * 0.13}
-                          color="#a3b8ec"
+                          color="#74c6bd"
                         />
-                        <Html
-                          position={[
-                            cp ?? center[0],
-                            0,
-                            Math.sign(p.aero.side_force_n) * size * 0.19,
-                          ]}
-                          center
-                        >
-                          <div className="scene-label force-label">
-                            Side{" "}
-                            {quantity(p.aero.side_force_n, "force", p.units)}
-                          </div>
-                        </Html>
-                      </>
-                    )}
-                  </>
-                )}
-              </>
-            )}
+                      )}
+                      <Html
+                        position={[
+                          cp ?? center[0],
+                          size * 0.19,
+                          dimensions.z * 0.7,
+                        ]}
+                        center
+                      >
+                        <div className="scene-label force-label teal">
+                          Normal{" "}
+                          {quantity(p.aero.normal_force_n, "force", p.units)}
+                        </div>
+                      </Html>
+                      {Math.abs(p.aero.side_force_n || 0) > 0 && (
+                        <>
+                          <Arrow
+                            start={[cp ?? center[0], 0, 0]}
+                            direction={[0, 0, Math.sign(p.aero.side_force_n)]}
+                            length={size * 0.13}
+                            color="#a3b8ec"
+                          />
+                          <Html
+                            position={[
+                              cp ?? center[0],
+                              0,
+                              Math.sign(p.aero.side_force_n) * size * 0.19,
+                            ]}
+                            center
+                          >
+                            <div className="scene-label force-label">
+                              Side{" "}
+                              {quantity(p.aero.side_force_n, "force", p.units)}
+                            </div>
+                          </Html>
+                        </>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             <axesHelper
               args={[size * 0.09]}
               position={[
@@ -1389,6 +1450,15 @@ export default function Viewport(p: Props) {
       data-auto-follow={String(flightScene && mode === "follow" && automatic)}
       data-manual-until={manualUntil.current}
       data-alignment-preview={String(alignmentPreviewVisible)}
+      data-fea-mesh-kind={p.fea?.mesh_kind || "solid"}
+      data-force-source={
+        p.overlays.forces
+          ? p.workspace === "structure" &&
+            p.fea?.mesh_kind === "plate_midsurface"
+            ? "plate_resultants"
+            : "aerodynamics"
+          : "off"
+      }
       data-cfd-frame-index={p.cfd?.transient_snapshot?.index ?? ""}
       data-cfd-time={p.cfd?.transient_snapshot?.time_s ?? ""}
       data-cfd-flight-time={p.cfd?.transient_snapshot?.flight_time_s ?? ""}
@@ -1567,7 +1637,9 @@ export default function Viewport(p: Props) {
                 ? "Dynamic fin beam FEA · peak component color"
                 : "Estimated peak per component · not FEA"
               : p.overlays.stress && p.fea
-                ? "Von Mises · solver field"
+                ? p.fea?.mesh_kind === "plate_midsurface"
+                  ? "Plate recovered stress · midsurface"
+                  : "Von Mises · solver field"
                 : "Pressure · CFD samples"}
           </span>
           <div />

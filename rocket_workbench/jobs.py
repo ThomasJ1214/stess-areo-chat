@@ -98,7 +98,7 @@ class JobManager:
                 flight_result = copy.deepcopy(prior["result"])
                 flight_source = {"job_id": prior["id"], "generated_for_cfd": False,
                                  "inputs": copy.deepcopy(prior["result"].get("inputs", {}))}
-        if kind == "fea" and options.get("load_mode") == "cfd_pressure":
+        if kind == "fea" and options.get("load_mode") == "cfd_pressure" and options.get("element_model", "solid") == "solid":
             from .models import active_components
             component = next((c for c in active_components(project, configuration_id) if c.id == options.get("component_id")), None)
             if component is None or not component.external:

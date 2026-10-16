@@ -58,7 +58,7 @@ to keep the controls and results you need visible.
 
 ## What is implemented
 
-The table describes version 0.3.3. The [validation evidence](docs/VALIDATION.md)
+The table describes 0.3.4 source. The verified 0.3.3 download above does not yet contain the new plate option. The [validation evidence](docs/VALIDATION.md)
 records source, packaged and independent download checks separately.
 
 | Workflow | Calculation and practical scope |
@@ -72,6 +72,7 @@ records source, packaged and independent download checks separately.
 | Flight | Passive point-mass or experimental quaternion 6DOF launch, adaptive integration, changing motor mass/inertia, single/dual recovery with assumed inflation, legacy/Dryden gusts and shear; causal live wind/temperature recalculation, smooth playback, actual attitude when solved, following camera and landing map |
 | Dynamic flight structures | Actual original-fin tapered beam mass/stiffness matrices and exact modal response to linearly interpolated recorded directional/inertial loads, or legacy Newmark; scope/coverage, reactions, stresses, deflection, energy and modal frequencies |
 | Structural estimates | Beam/fin stress and deflection with custom isotropic material properties |
+| Fin plate FEA | Actual original trapezoidal/triangular planforms, MITC4 bending/shear, root clamps, signed pressure or declared estimated directional aero loads, material-density inertial loading and per-fin equilibrium; CPU static isotropic model, no CAD/curved shells/laminates |
 | Solid FEA | Read-only solid/mesh preflight, Gmsh tetrahedra, linear isotropic elasticity, declared clamp/load boundaries and solved displacement/von Mises fields; thin-part/resource guards remain enforced |
 | CFD | Experimental 3D compressible Euler or laminar Navier–Stokes finite volumes; steady-state and actual transient modes, launch-driven airflow/attitude transforms, saved frame playback, molecular traction diagnostics, cancellation and qualified ETA; no runtime/step ceilings |
 | Pressure-transfer FEA | One-way mapping from a completed, numerically converged and geometry-matched CFD job; mapped coverage/distances are reported |
@@ -97,7 +98,7 @@ guarantee convergence or physical accuracy. Transient launch flow prescribes a
 one-way boundary history around fixed geometry; solved attitude transforms the
 freestream but does not create moving walls or feedback into flight. Solid FEA may need
 more elements than the budget permits for whole thin parts; use supported beam/fin
-estimates or a smaller physical CAD part. Shell FEA and region cutting are not
+estimates or a smaller physical CAD part. Curved-shell FEA, CAD midsurface extraction and region cutting are not
 included. Rigid-body flight integrates attitude with small-angle reference
 moments, stopping rather than predicting unsupported high-incidence flight.
 Roll/cant aerodynamics, active guidance, fin flutter and suspension dynamics are

@@ -659,6 +659,11 @@ def solve_fea(project: Project, component_id: str, conditions: Conditions, optio
     from .aero import atmosphere, freestream
 
     options = options or {}
+    if options.get("element_model", "solid") == "plate":
+        from .plate_fea import solve
+        return solve(project, component_id, conditions, options, progress, cancelled)
+    if options.get("element_model", "solid") != "solid":
+        raise ValueError("FEA element_model must be solid or plate.")
     component = next((p for p in project.components if p.id == component_id), None)
     if component is None:
         raise ValueError("Select an existing component for FEA.")

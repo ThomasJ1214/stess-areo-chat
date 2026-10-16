@@ -453,6 +453,32 @@ flutter or transient opening shock. The separate dynamic fin beam option in
 **Flight** retains its own limited geometry, load coverage and damping assumptions.
 See [STRUCTURAL.md](STRUCTURAL.md).
 
+### Use flat-fin plate FEA
+
+1. Select an original trapezoidal or triangular finset, then open **Structures**.
+2. Set **FEA element model → Original fins · MITC4 plates**. The external root
+   is fully clamped at the body surface; tabs, adhesive and body flexibility are
+   excluded. CAD midsurfaces and curved body tubes are not supported here.
+3. Choose **Plate loading**: prescribed differential pressure, or estimated
+   directional aerodynamic loads from the current static conditions. The latter
+   requires at least three uncanted fins and uses a uniform pressure equivalent
+   of an engineering force estimate, not CFD pressure.
+4. Enter **Signed fin pressure** for prescribed loading. Negative values reverse
+   bending. Support-specific acceleration contributes the opposite transverse
+   inertial load using material density; in-plane forces are excluded.
+5. Check material properties. For composites, explicitly acknowledge the
+   isotropic surrogate; no laminate safety factor is reported.
+6. Review **Mesh readiness**. Plate sizing controls in-plane resolution rather
+   than volume layers. The limit is 20,000 quadrilaterals across all fins. Run
+   the analysis, enable stress/deformation and **Forces**, and inspect **Per-fin plate loads and
+   equilibrium**. Symmetry can cancel a net force without making each fin unloaded.
+7. Refine the surface mesh and compare displacement, energy and stress away from
+   the clamp. Export CSV/JSON and the engineering report. Midsurface colors are
+   recovered stress averages; deformation scale changes display only.
+
+This is static flat-plate FEA. It does not add transient plate analysis during
+flight, CAD shell extraction, laminate failure, joints, buckling or flutter.
+
 ### If FEA asks for mesh size ≤ thickness/2
 
 This is a bending-resolution check, not an installation error. For a 3 mm
@@ -467,7 +493,8 @@ separate **Use beam/fin estimates** option for supported original tubes/fins, or
 smaller physical CAD part in your CAD program and import that part for a local
 study. Recreate justified support and loading for the local part; cutting out
 a piece does not preserve its full-rocket load path automatically. The app has
-no region-cutting tool or shell-FEA solver. Do not increase mesh size past the
+no region-cutting tool or curved-shell FEA solver. Original flat fins have the
+separate plate option above. Do not increase mesh size past the
 thickness limit merely to obtain a heatmap.
 
 The OpenRocket thickness is not imposed on a CAD replacement. Imported CAD may

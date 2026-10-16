@@ -112,6 +112,25 @@ try {
     Require ($null -ne $health -and $health.status -eq 'ok' -and $health.version -eq $ExpectedVersion) 'Installed advanced API readiness/version check failed.'
     $project = Api '/api/project'
     Require (![string]::IsNullOrWhiteSpace($project.id) -and @($project.components).Count -gt 0) 'Installed API returned no actual demo geometry.'
+    if ([version]$ExpectedVersion -ge [version]'0.3.4') {
+        $fin = @($project.components | Where-Object { $_.id -eq 'fins' })[0]
+        Require ($null -ne $fin) 'Installed demo is missing its actual fin component.'
+        $plateOptions = @{ element_model = 'plate'; component_id = $fin.id; mesh_size = 0.05; max_elements = 20000; plate_pressure_pa = -100; plate_allow_isotropic_surrogate = $true; backend = 'cpu' }
+        $plateReady = Api '/api/fea/preflight' 'POST' @{ component_id = $fin.id; options = $plateOptions }
+        Require ($plateReady.can_run -and $plateReady.element_model -eq 'plate') 'Installed plate preflight did not admit the supported actual fins.'
+        $plateStart = Api '/api/jobs' 'POST' @{ kind = 'fea'; conditions = @{}; options = $plateOptions }
+        $plateJob = Wait-JobResult $plateStart.id
+        $plate = $plateJob.result
+        Require ($plate.mesh_kind -eq 'plate_midsurface' -and @($plate.tetrahedra).Count -eq 0) 'Installed plate solver returned a false solid mesh.'
+        Require (@($plate.plate_quads).Count -eq $plateReady.estimated_elements -and @($plate.surface_faces).Count -eq 2 * @($plate.plate_quads).Count) 'Installed plate mesh disagrees with its exact preflight count.'
+        Require ($plate.summary.max_displacement_m -gt 0 -and $plate.summary.max_von_mises_pa -gt 0 -and $null -eq $plate.summary.safety_factor) 'Installed composite plate lacks actual response or invents a laminate strength margin.'
+        Require ($plate.summary.force_balance_relative_error -lt 1e-6 -and $plate.summary.moment_balance_relative_error -lt 1e-6 -and $plate.summary.relative_equilibrium_residual -lt 1e-5) 'Installed plate equilibrium check failed.'
+        Assert-FiniteField $plate.displacements 'plate displacements'
+        Assert-FiniteField $plate.von_mises_pa 'plate recovered stress'
+        $plateHtml = Api ('/api/jobs/' + $plateJob.id + '/export?format=html')
+        Require ($plateHtml -match 'Individual fin loads and equilibrium') 'Installed plate report omits per-fin loads.'
+        $proof.plate_fea = [ordered]@{ nodes = @($plate.vertices).Count; quadrilaterals = @($plate.plate_quads).Count; max_displacement_m = $plate.summary.max_displacement_m; max_von_mises_pa = $plate.summary.max_von_mises_pa; force_balance_relative_error = $plate.summary.force_balance_relative_error; moment_balance_relative_error = $plate.summary.moment_balance_relative_error; backend = $plate.backend }
+    }
     $conditions = @{ flight_model = 'rigid_body'; wind_model = 'dryden'; wind_speed = 0.2; turbulence = 0.1; seed = 42; launch_angle = 0; max_time = 2; dt = 0.05; initial_angular_velocity_body_rad_s = @(0.1, 0, 0) }
     $baselineStart = Api '/api/jobs' 'POST' @{ kind = 'flight'; conditions = $conditions; configuration_id = $project.active_configuration_id }
     $baseline = Wait-JobResult $baselineStart.id

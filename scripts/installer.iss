@@ -1,6 +1,6 @@
 ; Inno Setup 6. Build through scripts/build_windows.py.
 #ifndef AppVersion
-  #define AppVersion "0.3.3"
+  #define AppVersion "0.3.4"
 #endif
 #ifndef BuildRoot
   #define BuildRoot ".."

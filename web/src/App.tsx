@@ -553,10 +553,7 @@ export default function App() {
       try {
         const check = await post<any>("/fea/preflight", {
           component_id: selected.id,
-          options: {
-            mesh_size: feaOptions.mesh_size,
-            max_elements: feaOptions.max_elements,
-          },
+          options: feaRequestOptions(feaOptions),
         });
         if (disposed) return;
         setFeaPreflight(check);
@@ -584,14 +581,7 @@ export default function App() {
       disposed = true;
       clearTimeout(timer);
     };
-  }, [
-    workspace,
-    selected,
-    project?.materials,
-    feaOptions.mesh_size,
-    feaOptions.max_elements,
-    feaOptions.auto_mesh,
-  ]);
+  }, [workspace, selected, project?.materials, feaOptions]);
   useEffect(() => {
     if (!activeJob || !job) return;
     let disposed = false;
@@ -1070,7 +1060,7 @@ export default function App() {
           <span>
             ROCKET<span className="brand-second">WORKBENCH</span>
           </span>
-          <span className="version">0.3.3</span>
+          <span className="version">0.3.4</span>
         </a>
         <div className="topbar-divider" />
         <div className="project-label">
@@ -1492,7 +1482,7 @@ export default function App() {
                   : workspace === "cfd"
                     ? "Experimental exterior-flow solvers · local execution · actual mesh and flow fields"
                     : workspace === "structure"
-                      ? "Beam and fin estimates + isotropic linear static tetrahedral FEA"
+                      ? "Beam estimates + isotropic solid or original-fin plate FEA"
                       : "Transparent calculations. Useful insights. Explicit limitations."}
               </p>
               <HelpTip
@@ -2274,7 +2264,8 @@ export default function App() {
                   </button>
                 </div>
                 {structural ? (
-                  <>
+                  <details className="flight-advanced" open={!fea}>
+                    <summary>Reference beam / fin estimates</summary>
                     <div className="table-wrap">
                       <table>
                         <thead>
@@ -2323,12 +2314,12 @@ export default function App() {
                       </table>
                     </div>
                     <Fidelity data={structural} />
-                  </>
+                  </details>
                 ) : (
                   <Empty icon={Layers} title="Understand the load path.">
                     Run beam and fin estimates for fast screening, or select a
-                    mesh component and run tetrahedral finite element analysis
-                    with an explicit clamp and load.
+                    component and run solid or original-fin plate finite element
+                    analysis with an explicit clamp and load.
                   </Empty>
                 )}
                 {fea && (
@@ -2362,8 +2353,12 @@ export default function App() {
                       />
                       <Metric label="Nodes" value={fea.vertices?.length} />
                       <Metric
-                        label="Tetrahedra"
-                        value={fea.tetrahedra?.length}
+                        label={
+                          fea.mesh_kind === "plate_midsurface"
+                            ? "Plate quadrilaterals"
+                            : "Tetrahedra"
+                        }
+                        value={fea.summary?.elements ?? fea.tetrahedra?.length}
                       />
                       <Metric
                         label="Safety factor"
@@ -2388,6 +2383,74 @@ export default function App() {
                       currentConditions={conditions}
                       currentOptions={feaRequestOptions(feaOptions)}
                     />
+                    {fea.mesh_kind === "plate_midsurface" && (
+                      <details className="flight-advanced">
+                        <summary>Per-fin plate loads and equilibrium</summary>
+                        <p className="solver-note">
+                          Equal signed pressures can cancel the combined force
+                          while individual fins still bend. Review every fin;
+                          the color field is a recovered midsurface stress
+                          display.
+                        </p>
+                        <div className="table-wrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Fin</th>
+                                <th>
+                                  Surface pressure (
+                                  {unitLabel("pressure", units)})
+                                </th>
+                                <th>
+                                  Inertial pressure (
+                                  {unitLabel("pressure", units)})
+                                </th>
+                                <th>
+                                  Applied force X/Y/Z (
+                                  {unitLabel("force", units)})
+                                </th>
+                                <th>Force balance error</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {fea.fins.map((fin: any) => (
+                                <tr key={fin.fin_index}>
+                                  <td>{fin.fin_index + 1}</td>
+                                  <td>
+                                    {fmt(
+                                      displayValue(
+                                        fin.surface_pressure_pa,
+                                        "pressure",
+                                        units,
+                                      ),
+                                    )}
+                                  </td>
+                                  <td>
+                                    {fmt(
+                                      displayValue(
+                                        fin.inertial_pressure_pa,
+                                        "pressure",
+                                        units,
+                                      ),
+                                    )}
+                                  </td>
+                                  <td>
+                                    {fin.applied_force_n
+                                      .map((n: number) =>
+                                        fmt(displayValue(n, "force", units)),
+                                      )
+                                      .join(" / ")}
+                                  </td>
+                                  <td>
+                                    {fmt(fin.force_balance_relative_error, 8)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
+                    )}
                     {fea.summary?.cfd_pressure_transfer && (
                       <div className="warning-list">
                         <Info size={15} />
@@ -4277,6 +4340,109 @@ export default function App() {
                           {selected?.name || "select a component"}
                         </strong>
                       </p>
+                      <FieldSelect
+                        label="FEA element model"
+                        value={feaOptions.element_model}
+                        onChange={(element_model) =>
+                          setFeaOptions({
+                            ...feaOptions,
+                            element_model,
+                            max_elements:
+                              element_model === "plate" ? 20000 : 30000,
+                            backend: "auto",
+                            auto_mesh: true,
+                          })
+                        }
+                        hint="Solid FEA uses actual material volume. Plate FEA solves original flat fin midsurfaces with a fully clamped exposed root, bending and transverse shear; it does not infer CAD shells or simulate joints."
+                      >
+                        <option value="solid">Solid · tetrahedra</option>
+                        <option value="plate">
+                          Original fins · MITC4 plates
+                        </option>
+                      </FieldSelect>
+                      {feaOptions.element_model === "plate" && (
+                        <>
+                          <FieldSelect
+                            label="Plate loading"
+                            value={feaOptions.plate_load_mode}
+                            onChange={(plate_load_mode) =>
+                              setFeaOptions({ ...feaOptions, plate_load_mode })
+                            }
+                            hint="Signed differential pressure acts normal to every fin. Aerodynamic mode resolves the original-reference finset resultant into per-fin normal forces, uniformly distributed over each actual planform; it is not CFD pressure."
+                          >
+                            <option value="pressure">
+                              Prescribed differential pressure
+                            </option>
+                            <option value="aero_resultant">
+                              Estimated directional aerodynamic loads
+                            </option>
+                          </FieldSelect>
+                          {feaOptions.plate_load_mode === "pressure" && (
+                            <SIField
+                              label="Signed fin pressure"
+                              kind="pressure"
+                              units={units}
+                              value={feaOptions.plate_pressure_pa}
+                              onChange={(n) =>
+                                n !== null &&
+                                setFeaOptions({
+                                  ...feaOptions,
+                                  plate_pressure_pa: n,
+                                })
+                              }
+                              hint="Positive pressure acts along each fin's local thickness normal. Negative values reverse bending. This is a prescribed differential load, not uniform pressure on both faces."
+                            />
+                          )}
+                          <Toggle
+                            label="Allow isotropic plate composite surrogate"
+                            value={feaOptions.plate_allow_isotropic_surrogate}
+                            onChange={() =>
+                              setFeaOptions({
+                                ...feaOptions,
+                                plate_allow_isotropic_surrogate:
+                                  !feaOptions.plate_allow_isotropic_surrogate,
+                              })
+                            }
+                          />
+                          <p className="solver-note">
+                            CPU sparse plate solver. Roots are fully clamped at
+                            the body surface. Tabs, adhesive, membrane loads,
+                            curved shells, CAD midsurfaces and laminate failure
+                            are excluded. Composite surrogates have no laminate
+                            safety factor. Refine the surface mesh; its size
+                            need not be less than half the thickness.
+                          </p>
+                          {["x", "y", "z"].map((axis, i) => (
+                            <SIField
+                              key={axis}
+                              label={`Plate support acceleration ${axis.toUpperCase()}`}
+                              kind="acceleration"
+                              units={units}
+                              value={feaOptions.acceleration_m_s2[i]}
+                              onChange={(n) => {
+                                if (n !== null) {
+                                  const a = [...feaOptions.acceleration_m_s2];
+                                  a[i] = n;
+                                  setFeaOptions({
+                                    ...feaOptions,
+                                    acceleration_m_s2: a,
+                                  });
+                                }
+                              }}
+                              hint="Specific support acceleration: the plate solves the opposite transverse inertial load using material density. In-plane loading is excluded; gravity is not added automatically."
+                            />
+                          ))}
+                          <NumberField
+                            label="Deformation display scale"
+                            value={deformationScale}
+                            onChange={(n) =>
+                              n !== null && setDeformationScale(n)
+                            }
+                            unit="×"
+                            min={0}
+                          />
+                        </>
+                      )}
                       <Toggle
                         label="Automatic mesh sizing"
                         value={feaOptions.auto_mesh}
@@ -4311,7 +4477,11 @@ export default function App() {
                           }
                           step={1000}
                           min={500}
-                          max={300000}
+                          max={
+                            feaOptions.element_model === "plate"
+                              ? 20000
+                              : 300000
+                          }
                         />
                       </div>
                       <div
@@ -4322,7 +4492,7 @@ export default function App() {
                           Mesh readiness{" "}
                           <HelpTip
                             term="Mesh readiness"
-                            definition="Checks the actual selected solid, material, known wall thickness, mesh size, and element-budget screen before volume meshing. Passing this check does not validate support conditions, loads, mesh convergence, or CAD wall thickness."
+                            definition="Checks the selected element model, geometry, material and mesh budget. Solid elements require thickness-resolving volume meshes. Flat fin plates integrate thickness analytically and require in-plane refinement. Passing readiness does not validate supports, loads, or convergence."
                           />
                         </h4>
                         {feaPreflightPending && (
@@ -4339,8 +4509,10 @@ export default function App() {
                           <>
                             <p>
                               {feaPreflight.can_run
-                                ? "Ready for volume meshing; review loads and supports."
-                                : "Resolve the setup below before solid FEA."}
+                                ? feaOptions.element_model === "plate"
+                                  ? "Ready for plate meshing; review root clamp and signed loads."
+                                  : "Ready for volume meshing; review loads and supports."
+                                : "Resolve the setup below before FEA."}
                             </p>
                             {feaPreflight.recommended_mesh_size_m != null && (
                               <p>
@@ -4357,7 +4529,9 @@ export default function App() {
                                   feaPreflight.recommended_estimated_elements,
                                   0,
                                 )}{" "}
-                                elements. Actual count can be higher.
+                                {feaOptions.element_model === "plate"
+                                  ? "quadrilaterals across all fins (exact for this size)."
+                                  : "elements. Actual count can be higher."}
                               </p>
                             )}
                             {feaPreflight.cad_thickness_unknown && (
@@ -4425,173 +4599,187 @@ export default function App() {
                           </>
                         )}
                       </div>
-                      <FieldSelect
-                        label="Clamp type"
-                        value={feaOptions.clamp_type}
-                        onChange={(s) =>
-                          setFeaOptions({ ...feaOptions, clamp_type: s })
-                        }
-                      >
-                        <option value="plane">Coordinate plane</option>
-                        <option
-                          value="radial_root"
-                          disabled={
-                            selected?.geometry_mode === "replacement" ||
-                            ![
-                              "fin",
-                              "finset",
-                              "trapezoidfinset",
-                              "freeformfinset",
-                              "ellipticalfinset",
-                            ].includes(selected?.kind || "")
-                          }
-                        >
-                          Fin radial root · original fins
-                        </option>
-                      </FieldSelect>
-                      <div className="field-pair">
-                        <FieldSelect
-                          label="Clamp axis"
-                          value={feaOptions.clamp_axis}
-                          onChange={(s) =>
-                            setFeaOptions({ ...feaOptions, clamp_axis: s })
-                          }
-                        >
-                          {["x", "y", "z"].map((a) => (
-                            <option key={a}>{a}</option>
-                          ))}
-                        </FieldSelect>
-                        <FieldSelect
-                          label="Clamp side"
-                          value={feaOptions.clamp_side}
-                          onChange={(s) =>
-                            setFeaOptions({ ...feaOptions, clamp_side: s })
-                          }
-                        >
-                          <option value="min">Minimum coordinate</option>
-                          <option value="max">Maximum coordinate</option>
-                        </FieldSelect>
-                      </div>
-                      <FieldSelect
-                        label="Surface load"
-                        value={feaOptions.load_mode}
-                        onChange={(s) =>
-                          setFeaOptions({ ...feaOptions, load_mode: s })
-                        }
-                      >
-                        <option value="aero_pressure">
-                          Estimated aerodynamic pressure
-                        </option>
-                        <option value="uniform_pressure">
-                          Uniform pressure
-                        </option>
-                        <option value="traction">
-                          Prescribed free-end traction
-                        </option>
-                        <option value="cfd_pressure" disabled={!canTransferCfd}>
-                          Converged CFD surface pressure
-                        </option>
-                      </FieldSelect>
-                      {feaOptions.load_mode === "cfd_pressure" &&
-                        !canTransferCfd && (
-                          <p className="field-error">
-                            Rerun and converge the source CFD job in this
-                            session before transferring its pressure. A saved
-                            setup does not include numerical result fields.
-                          </p>
-                        )}
-                      {feaOptions.load_mode === "uniform_pressure" && (
-                        <SIField
-                          label="Applied pressure"
-                          kind="pressure"
-                          units={units}
-                          value={feaOptions.load_pressure_pa}
-                          onChange={(n) =>
-                            n !== null &&
-                            setFeaOptions({
-                              ...feaOptions,
-                              load_pressure_pa: n,
-                            })
-                          }
-                        />
-                      )}
-                      {feaOptions.load_mode === "traction" && (
-                        <div className="triple-fields">
-                          {["X", "Y", "Z"].map((axis, i) => (
+                      {feaOptions.element_model !== "plate" && (
+                        <>
+                          <FieldSelect
+                            label="Clamp type"
+                            value={feaOptions.clamp_type}
+                            onChange={(s) =>
+                              setFeaOptions({ ...feaOptions, clamp_type: s })
+                            }
+                          >
+                            <option value="plane">Coordinate plane</option>
+                            <option
+                              value="radial_root"
+                              disabled={
+                                selected?.geometry_mode === "replacement" ||
+                                ![
+                                  "fin",
+                                  "finset",
+                                  "trapezoidfinset",
+                                  "freeformfinset",
+                                  "ellipticalfinset",
+                                ].includes(selected?.kind || "")
+                              }
+                            >
+                              Fin radial root · original fins
+                            </option>
+                          </FieldSelect>
+                          <div className="field-pair">
+                            <FieldSelect
+                              label="Clamp axis"
+                              value={feaOptions.clamp_axis}
+                              onChange={(s) =>
+                                setFeaOptions({ ...feaOptions, clamp_axis: s })
+                              }
+                            >
+                              {["x", "y", "z"].map((a) => (
+                                <option key={a}>{a}</option>
+                              ))}
+                            </FieldSelect>
+                            <FieldSelect
+                              label="Clamp side"
+                              value={feaOptions.clamp_side}
+                              onChange={(s) =>
+                                setFeaOptions({ ...feaOptions, clamp_side: s })
+                              }
+                            >
+                              <option value="min">Minimum coordinate</option>
+                              <option value="max">Maximum coordinate</option>
+                            </FieldSelect>
+                          </div>
+                          <FieldSelect
+                            label="Surface load"
+                            value={feaOptions.load_mode}
+                            onChange={(s) =>
+                              setFeaOptions({ ...feaOptions, load_mode: s })
+                            }
+                          >
+                            <option value="aero_pressure">
+                              Estimated aerodynamic pressure
+                            </option>
+                            <option value="uniform_pressure">
+                              Uniform pressure
+                            </option>
+                            <option value="traction">
+                              Prescribed free-end traction
+                            </option>
+                            <option
+                              value="cfd_pressure"
+                              disabled={!canTransferCfd}
+                            >
+                              Converged CFD surface pressure
+                            </option>
+                          </FieldSelect>
+                          {feaOptions.load_mode === "cfd_pressure" &&
+                            !canTransferCfd && (
+                              <p className="field-error">
+                                Rerun and converge the source CFD job in this
+                                session before transferring its pressure. A
+                                saved setup does not include numerical result
+                                fields.
+                              </p>
+                            )}
+                          {feaOptions.load_mode === "uniform_pressure" && (
                             <SIField
-                              key={axis}
-                              label={`${axis} end traction`}
+                              label="Applied pressure"
                               kind="pressure"
                               units={units}
-                              value={feaOptions.traction_pa[i]}
-                              onChange={(n) => {
-                                if (n === null) return;
-                                const values = [...feaOptions.traction_pa];
-                                values[i] = n;
+                              value={feaOptions.load_pressure_pa}
+                              onChange={(n) =>
+                                n !== null &&
                                 setFeaOptions({
                                   ...feaOptions,
-                                  traction_pa: values,
-                                });
-                              }}
+                                  load_pressure_pa: n,
+                                })
+                              }
                             />
-                          ))}
-                        </div>
-                      )}
-                      <div className="subheading">
-                        PRESCRIBED BODY ACCELERATION
-                      </div>
-                      <div className="triple-fields">
-                        {["X", "Y", "Z"].map((axis, i) => (
-                          <SIField
-                            key={axis}
-                            label={`${axis} body acceleration`}
-                            kind="acceleration"
-                            units={units}
-                            value={feaOptions.acceleration_m_s2[i]}
-                            onChange={(n) => {
-                              if (n === null) return;
-                              const values = [...feaOptions.acceleration_m_s2];
-                              values[i] = n;
-                              setFeaOptions({
-                                ...feaOptions,
-                                acceleration_m_s2: values,
-                              });
-                            }}
+                          )}
+                          {feaOptions.load_mode === "traction" && (
+                            <div className="triple-fields">
+                              {["X", "Y", "Z"].map((axis, i) => (
+                                <SIField
+                                  key={axis}
+                                  label={`${axis} end traction`}
+                                  kind="pressure"
+                                  units={units}
+                                  value={feaOptions.traction_pa[i]}
+                                  onChange={(n) => {
+                                    if (n === null) return;
+                                    const values = [...feaOptions.traction_pa];
+                                    values[i] = n;
+                                    setFeaOptions({
+                                      ...feaOptions,
+                                      traction_pa: values,
+                                    });
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          <div className="subheading">
+                            PRESCRIBED BODY ACCELERATION
+                          </div>
+                          <div className="triple-fields">
+                            {["X", "Y", "Z"].map((axis, i) => (
+                              <SIField
+                                key={axis}
+                                label={`${axis} body acceleration`}
+                                kind="acceleration"
+                                units={units}
+                                value={feaOptions.acceleration_m_s2[i]}
+                                onChange={(n) => {
+                                  if (n === null) return;
+                                  const values = [
+                                    ...feaOptions.acceleration_m_s2,
+                                  ];
+                                  values[i] = n;
+                                  setFeaOptions({
+                                    ...feaOptions,
+                                    acceleration_m_s2: values,
+                                  });
+                                }}
+                              />
+                            ))}
+                          </div>
+                          <NumberField
+                            label="Deformation display scale"
+                            value={deformationScale}
+                            onChange={(n) =>
+                              n !== null && setDeformationScale(n)
+                            }
+                            unit="×"
+                            min={0}
                           />
-                        ))}
-                      </div>
-                      <NumberField
-                        label="Deformation display scale"
-                        value={deformationScale}
-                        onChange={(n) => n !== null && setDeformationScale(n)}
-                        unit="×"
-                        min={0}
-                      />
-                      <FieldSelect
-                        label="Linear solver backend"
-                        value={feaOptions.backend}
-                        onChange={(s) =>
-                          setFeaOptions({ ...feaOptions, backend: s })
-                        }
-                      >
-                        <option value="auto">Auto · GPU if supported</option>
-                        <option value="cpu">CPU · SciPy</option>
-                        <option value="cuda">CUDA · CuPy</option>
-                      </FieldSelect>
-                      <div className="engineering-note">
-                        <Info size={15} />
-                        <p>
-                          CFD pressure transfer is one-way and quasi-static,
-                          using nearest surface pressure samples; viscous shear
-                          is excluded. No fluid-structure coupling. Linear
-                          static solid FEA. Use mesh size at most half the wall
-                          thickness for thin parts. For original fin sets,
-                          select Fin radial root. Root faces are fully clamped.
-                          Isotropic material assumptions and mesh convergence
-                          must be reviewed. Exaggerated deformation is a display
-                          aid.
-                        </p>
-                      </div>
+                          <FieldSelect
+                            label="Linear solver backend"
+                            value={feaOptions.backend}
+                            onChange={(s) =>
+                              setFeaOptions({ ...feaOptions, backend: s })
+                            }
+                          >
+                            <option value="auto">
+                              Auto · GPU if supported
+                            </option>
+                            <option value="cpu">CPU · SciPy</option>
+                            <option value="cuda">CUDA · CuPy</option>
+                          </FieldSelect>
+                          <div className="engineering-note">
+                            <Info size={15} />
+                            <p>
+                              CFD pressure transfer is one-way and quasi-static,
+                              using nearest surface pressure samples; viscous
+                              shear is excluded. No fluid-structure coupling.
+                              Linear static solid FEA. Use mesh size at most
+                              half the wall thickness for thin parts. For
+                              original fin sets, select Fin radial root. Root
+                              faces are fully clamped. Isotropic material
+                              assumptions and mesh convergence must be reviewed.
+                              Exaggerated deformation is a display aid.
+                            </p>
+                          </div>
+                        </>
+                      )}
                     </>
                   )}
                   {workspace === "cfd" && (
@@ -5361,7 +5549,8 @@ export default function App() {
                         !selectedId ||
                         feaPreflightPending ||
                         !feaPreflight?.can_run ||
-                        (feaOptions.load_mode === "cfd_pressure" &&
+                        (feaOptions.element_model !== "plate" &&
+                          feaOptions.load_mode === "cfd_pressure" &&
                           !canTransferCfd)
                       }
                     >

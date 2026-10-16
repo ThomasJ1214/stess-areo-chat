@@ -2,7 +2,9 @@
 
 These drafts preserve unfinished work for the next engineering pass. They are
 text files outside the application package and are not installed solver options.
-Neither has production integration. Initial plate references below cover only
+The plate kernel now has a separately tested application implementation in
+rocket_workbench/solvers/plate_elements.py and plate_fea.py for original flat
+fins; see docs/STRUCTURAL.md. This text is an archival draft, not a runtime import. Initial plate references below cover only
 the tested element and square-plate cases.
 
 - `plate_fea.py.txt`: proposed MITC4 thin-plate element, meshing and static solve.
@@ -18,5 +20,4 @@ accuracy warnings until verified replacements are integrated.
 
 Initial rectangular plate references are now repeatable through
 `../validate_plate_draft.py`; see [the evidence and remaining limits](../PLATE_REFERENCE.md).
-The prototype still has no application integration. The MUSCL draft remains
-unvalidated.
+The MUSCL draft remains unvalidated and unintegrated.

@@ -248,6 +248,15 @@ const cfdSteps: TutorialStep[] = [
 
 const structureSteps: TutorialStep[] = [
   {
+    title: "Choose solid or fin plate elements",
+    instruction:
+      "For an original flat trapezoidal or triangular fin, select Original fins · MITC4 plates in FEA element model. Choose signed differential pressure or estimated directional aerodynamic loading. Explicitly acknowledge any isotropic composite surrogate. The exposed root is fully clamped at the body surface.",
+    check:
+      "Mesh readiness identifies the plate model and its exact quadrilateral count. Refine the in-plane mesh and compare displacement, energy and stress away from the clamp. Pressure sign reverses bending; body acceleration contributes only its normal inertial load.",
+    workspace: "structure",
+    note: "This is static flat-plate FEA, not curved shells, CAD midsurface extraction, laminate/joint failure or transient plate response. Solid elements remain available for actual material volumes and retain thickness-resolving mesh guards.",
+  },
+  {
     title: "Choose the part and its material",
     instruction:
       "Select a component in the tree or 3D view. Check its material density, Young's modulus, Poisson's ratio, and yield strength in Design. Use beam/fin estimates for quick screening, or configure finite element analysis for a closed solid part.",
@@ -259,7 +268,7 @@ const structureSteps: TutorialStep[] = [
   {
     title: "Choose a physically meaningful support",
     instruction:
-      "Set Clamp type, axis, and side to represent where the part is attached. For original procedural fins, use Fin radial root. A Coordinate plane clamp fixes nodes at the selected coordinate extreme.",
+      "For solid FEA, set Clamp type, axis, and side to represent where the part is attached. For original procedural fins, use Fin radial root. A Coordinate plane clamp fixes nodes at the selected coordinate extreme.",
     check:
       "The fixed region is the real load path. A convenient but unrealistic clamp can substantially change peak stress and deformation.",
     workspace: "structure",
@@ -277,9 +286,9 @@ const structureSteps: TutorialStep[] = [
     instruction:
       "Leave Automatic mesh sizing on and inspect Mesh readiness. The recommendation applies automatically only if it fits the current element budget. Use recommended mesh may raise that budget within 300,000 elements. For manual refinement, turn automatic sizing off and set Target mesh size. Choose Run finite element analysis when ready.",
     check:
-      "Keep original-part mesh size at or below thickness/2. If the whole thin part exceeds the permitted budget, choose Use beam/fin estimates where supported or import a smaller physical CAD part with justified local supports/loads. Repair ambiguous/open solids before solving.",
+      "For solid FEA, keep original-part mesh size at or below thickness/2. Plate mesh size instead controls in-plane resolution and does not require volume layers. If the whole thin part exceeds the permitted budget, choose Use beam/fin estimates where supported or import a smaller physical CAD part with justified local supports/loads. Repair ambiguous/open solids before solving.",
     workspace: "structure",
-    note: "Shell FEA and region cutting are not included. CAD thickness is unknown; the scale-based suggestion is a starting mesh and does not prove bending resolution. A passing readiness check does not validate supports, loads or convergence.",
+    note: "Curved-shell FEA, CAD midsurface extraction and region cutting are not included. CAD thickness is unknown; the scale-based suggestion is a starting mesh and does not prove bending resolution. A passing readiness check does not validate supports, loads or convergence.",
   },
   {
     title: "Read the stress field carefully",
@@ -403,7 +412,7 @@ export const tutorialTours: TutorialTour[] = [
     id: "structure",
     title: "Structures",
     description:
-      "Choose material, supports, loads, and check a solid FEA result.",
+      "Choose solid or original-fin plate elements, supports, loads, and inspect actual FEA results.",
     steps: structureSteps,
   },
   {

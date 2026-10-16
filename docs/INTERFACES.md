@@ -188,7 +188,7 @@ Preflight `can_run` concerns current solid-validity/thickness/resource checks,
 not validated FEA loading/supports. Original thin parts retain mesh size no
 greater than thickness/2. Imported CAD thickness is unknown and a scale-based
 suggestion does not guarantee bending resolution. Counts are estimates; native
-meshing still enforces the actual element cap. The app provides neither shell
+meshing still enforces the actual element cap. The app provides neither curved-shell
 FEA nor an in-app region-cutting tool.
 
 Motor service requests use a fixed HTTPS provider and bounded responses, not
@@ -291,3 +291,12 @@ resolved laminar Navier–Stokes. Neither CFD model is RANS/LES or predicts
 validated transonic/high-Reynolds-number rocket drag. Euler omits skin friction;
 Laminar molecular transport does not establish boundary-layer resolution.
 Explicit unsupported component and solver limitations must be visible.
+
+Plate FEA uses the existing fea job/preflight endpoints with element_model:plate.
+See STRUCTURAL.md for the strict geometry/material/load scope. Results expose
+mesh_kind:plate_midsurface, plate_quads and triangulated surface_faces, with empty
+tetrahedra, world vertices/displacements and recovered nodal stresses. Per-fin
+loads, bases, root nodes, local slope rotations, Gauss stresses, balance and
+energy are retained in fins; conventions distinguish these from solid fields.
+The renderer uses actual surface_faces for this mesh kind. Plate requests remove
+inactive solid clamp/traction/CFD controls and never transfer CFD pressure.

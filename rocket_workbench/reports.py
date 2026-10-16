@@ -365,6 +365,11 @@ svg text{font:11px system-ui,sans-serif;fill:#45586b}.grid{stroke:#dce5ec;stroke
             body += _section("Excluded failed samples", _table(result["failures"]))
     else:
         body += _section("Calculation summary", _cfd_content(result) if kind == "cfd" else _pairs(result.get("summary", {})))
+    if kind == "fea" and result.get("mesh_kind") == "plate_midsurface":
+        body += _section("Individual fin loads and equilibrium", _table(result.get("fins", []),
+            ["fin_index", "normal_world", "surface_pressure_pa", "inertial_pressure_pa", "applied_force_n",
+             "reaction_force_n", "applied_moment_nm", "reaction_moment_nm", "strain_energy_j",
+             "force_balance_relative_error", "moment_balance_relative_error", "relative_equilibrium_residual"]))
     if isinstance(inputs, Mapping) and inputs:
         provenance = {key: value for key, value in inputs.items() if key not in {"conditions", "options"}}
         body += _section("Run identity and source provenance", _pairs(provenance))

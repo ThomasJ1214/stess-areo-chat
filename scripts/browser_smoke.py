@@ -683,6 +683,31 @@ def main():
             receipt.append("Thin original airframe has thickness-resolving mesh guidance, truthful whole-part budget limits and disabled misleading solid FEA")
 
             navigate("Design")
+            page.get_by_role("button", name="Fiberglass fins", exact=True).click()
+            navigate("Structures")
+            page.get_by_label("FEA element model", exact=True).select_option("plate")
+            page.get_by_role("button", name="Allow isotropic plate composite surrogate", exact=True).click()
+            page.get_by_label("Target mesh size", exact=True).fill("0.04")
+            page.get_by_label("Signed fin pressure", exact=True).fill("-0.1")
+            plate = job("Run finite element analysis", timeout=120)
+            assert plate["mesh_kind"] == "plate_midsurface" and not plate["tetrahedra"]
+            assert abs(plate["inputs"]["options"]["plate_pressure_pa"] + 100) < 1e-10
+            assert len(plate["surface_faces"]) == 2*len(plate["plate_quads"])
+            assert plate["summary"]["max_displacement_m"] > 0 and plate["summary"]["max_von_mises_pa"] > 0
+            assert plate["summary"]["safety_factor"] is None
+            assert plate["summary"]["force_balance_relative_error"] < 1e-6
+            expect(page.get_by_text("Plate quadrilaterals", exact=True)).to_be_visible()
+            expect(viewport).to_have_attribute("data-fea-mesh-kind", "plate_midsurface")
+            expect(viewport).to_have_attribute("data-force-source", "plate_resultants")
+            page.get_by_role("button", name="Deformation", exact=True).click()
+            expect(page.get_by_role("button", name="Deformation", exact=True)).to_have_attribute("aria-pressed", "true")
+            (args.artifacts / "plate-fea.json").write_text(json.dumps(plate,indent=2,allow_nan=False),"utf8")
+            page.screenshot(path=str(args.artifacts / "plate-fea.png"),full_page=True)
+            page.get_by_role("button", name="Deformation", exact=True).click()
+            page.get_by_label("FEA element model", exact=True).select_option("solid")
+            receipt.append("Real original-fin MITC4 plate solve, explicit composite scope, actual stress/deformation geometry and per-fin force/moment balance; solid controls restore independently")
+
+            navigate("Design")
             page.get_by_role("button", name="Payload bay — replace with CAD", exact=True).click()
             page.get_by_role("button", name="Geometry", exact=True).click()
             asset = upload('input[accept=".step,.stp,.stl,.obj,.ply"]', ROOT / "examples" / "synthetic_payload.step", "import/geometry")

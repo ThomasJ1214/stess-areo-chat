@@ -21,6 +21,10 @@ export const defaultCfdOptions = {
   flight_end_s: 1,
 };
 export const defaultFeaOptions = {
+  element_model: "solid",
+  plate_load_mode: "pressure",
+  plate_pressure_pa: 1000,
+  plate_allow_isotropic_surrogate: false,
   component_id: "",
   mesh_size: 0.015,
   max_elements: 30000,
@@ -166,7 +170,19 @@ export function cfdRequestOptions(
 /** Send an explicit pressure only when the selected load is uniform pressure. */
 export function feaRequestOptions(options: Record<string, unknown>) {
   const result = { ...options };
-  if (result.load_mode !== "uniform_pressure") delete result.load_pressure_pa;
+  if (result.element_model === "plate") {
+    for (const key of [
+      "load_mode",
+      "load_pressure_pa",
+      "clamp_type",
+      "clamp_axis",
+      "clamp_side",
+      "traction_pa",
+      "cfd_job_id",
+    ])
+      delete result[key];
+  } else if (result.load_mode !== "uniform_pressure")
+    delete result.load_pressure_pa;
   return result;
 }
 

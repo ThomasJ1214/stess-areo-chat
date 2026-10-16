@@ -122,6 +122,68 @@ heatmap. Inspect the exported nodal beam values for the actual span distribution
 This capability does not remove solid-FEA thickness/mesh guards or create bonds
 between merely touching CAD parts.
 
+## Static original-fin plate FEA
+
+Select `element_model:plate` for original external trapezoidal or triangular
+finsets. This solves actual planform quadrilaterals with MITC4 Reissner–Mindlin
+bending and transverse shear, using 2×2 Gauss integration and edge-midpoint
+covariant shear tying. It has three DOFs per node: transverse displacement and
+two positive slope rotations. Thickness is integrated analytically. The in-plane
+mesh is not a coarse volume mesh, so the solid thickness/2 guard does not apply
+to this separate model. The solid solver and its guards remain unchanged.
+
+The exact root chord lies on the body surface and all three root DOFs are fixed.
+Sweep, taper, triangular tips, fin azimuth/cant and original radial placement
+are retained in the displayed world midsurface. Source solids, CAD, mass data,
+neighboring geometry and project files are never rewritten. Only exposed fin
+planforms are modeled; tabs, adhesive, body flexibility, membrane loads and
+connections are excluded. CAD/freeform/elliptical fins and curved shells are
+rejected. Thickness must not exceed 10% of span or root chord. Explicit material
+assignment is required. Composite names require an isotropic-surrogate
+acknowledgement and do not receive a laminate strength ratio.
+
+Loads are either signed prescribed differential pressure on every fin or an
+original-reference aerodynamic finset resultant resolved into normal forces.
+For N>=3 equally spaced uncanted fins, `F_i = (2/N) n_i dot F_resultant` and
+`p_i=F_i/actual_planform_area`. The latter is a uniform load distribution, not
+CFD pressure, chordwise CP loading or a resolved spanwise pressure field. It
+rejects unavailable component breakdowns and explicitly out-of-domain aero
+conditions. Canted/one/two-fin aerodynamic partitions are unsupported; their
+prescribed-pressure cases remain usable. Optional specific support acceleration
+adds only `p_inertia=-rho thickness (acceleration dot normal)`. In-plane loading
+and automatic gravity are excluded. No CFD transfer is accepted for plate FEA.
+
+Each fin is solved independently on CPU with SciPy sparse direct factorization.
+The exact shared mesh budget is 20–20,000 quadrilaterals across all fins.
+Cancellation and free-DOF residual checks are retained. Inspect individual fin
+forces and moments: symmetric pressures may cancel a net force while every fin
+still bends. JSON records normals/bases, root nodes, slope rotations, actual
+loads/reactions, Gauss stresses and equilibrium. Top/bottom bending and assumed
+parabolic transverse shear define recovered von Mises stress. Displayed nodal
+colors are area-weighted adjacent element peak values on a midsurface, not a
+3D solid stress field. The Forces overlay uses the actual combined per-fin
+plate resultant at its load centroid, with lengths scaled relative to the
+largest fin force and labels in the selected units. It replaces reference aero
+arrows in the plate workspace. Refine displacement, energy and stress away from clamp
+singularities; large displacement and exceeded strength remain warnings, not
+nonlinear failure calculations. This is static plate FEA, separate from the
+flight dynamic beam option; no transient plate, flutter or fluid–structure
+feedback is claimed.
+
+Options: `plate_load_mode:pressure|aero_resultant`, signed `plate_pressure_pa`,
+`plate_allow_isotropic_surrogate:true|false`, `mesh_size`, `max_elements`,
+`acceleration_m_s2:[x,y,z]`, and `backend:auto|cpu`. Solid `load_mode`/CFD-transfer
+requests are rejected. UI requests remove inactive solid controls. Model and
+options persist in projects and immutable run-input snapshots.
+
+Independent automated checks in `test_plate_fea.py` cover Navier square-plate
+references at three thickness ratios with mesh refinement, distorted constant-
+curvature patches, geometry rejection, an exact cylindrical cantilever
+Reissner–Mindlin reference, bending-stress refinement, placement objectivity,
+force/moment/energy balance, directional aero partition, body loading and
+cancellation. API/export tests exercise the real job path. These verify the
+specified mathematical models, not actual rocket laminate/joint strength.
+
 ## Actual solid finite element analysis
 
 `structure.solve_fea` runs linear static 3D elasticity on the selected component
@@ -382,6 +444,10 @@ arbitrary rocket structures, CAD topology, aerodynamic pressure predictions,
 composite allowables, or every GPU/driver combination.
 
 ## References
+
+* K. J. Bathe and E. N. Dvorkin, "A four-node plate bending element based on
+  Mindlin/Reissner plate theory and a mixed interpolation," *International
+  Journal for Numerical Methods in Engineering* 21 (1985), 367–383.
 
 * S. P. Timoshenko and J. M. Gere, *Mechanics of Materials*: Euler–Bernoulli
   beam, annular section and elementary shear formulas.

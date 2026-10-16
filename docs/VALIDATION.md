@@ -1,5 +1,22 @@
 # Validation checkpoint
 
+## 0.3.4 original-fin plate source pass
+
+The new MITC4 static flat-plate path preserves original swept/tapered/triangular
+fin planforms, actual azimuth/cant/radial placement, measured thickness and
+explicit materials. It uses per-fin root clamps, signed differential pressure
+or declared original-reference directional aero resultants and transverse
+material-density inertial loads. Source CAD/solids, project geometry and mass
+data are unchanged. Solid guards remain active; curved shells, CAD midsurfaces,
+laminates, joints, CFD transfer and transient plates are unsupported.
+
+Local checks passed 539 Python tests, 89 frontend tests, production build,
+24 plate-specific kernel/adapter/API/export checks and native Qt
+shell/software-WebGL/API/project startup. The expanded 34-workflow browser run passed; a final rerun also checks
+plate force arrows/deformation. Packaged Windows verification must pass separately before
+presenting this source as a verified 0.3.4 download. The verified 0.3.3 installer
+below does not contain plate FEA.
+
 ## Verified 0.3.3 release
 
 The default original-fin beam integrator now propagates the complete modal

@@ -13,6 +13,34 @@ import {
 } from "./workspaceSettings";
 
 describe("portable analysis setup", () => {
+  it("keeps plate requests distinct from stale solid/CFD load controls", () => {
+    const request = feaRequestOptions({
+      ...defaultFeaOptions,
+      element_model: "plate",
+      load_mode: "cfd_pressure",
+      cfd_job_id: "old",
+      plate_load_mode: "pressure",
+      plate_pressure_pa: -20,
+    });
+    expect(request).toMatchObject({
+      element_model: "plate",
+      plate_load_mode: "pressure",
+      plate_pressure_pa: -20,
+    });
+    for (const field of [
+      "load_mode",
+      "load_pressure_pa",
+      "cfd_job_id",
+      "clamp_type",
+      "traction_pa",
+    ])
+      expect(request).not.toHaveProperty(field);
+    expect(
+      restoreSettings({ ...restoreSettings(), fea_options: request })
+        .fea_options.plate_pressure_pa,
+    ).toBe(-20);
+    expect(restoreSettings().fea_options.element_model).toBe("solid");
+  });
   it("opens older projects with documented defaults and preserves saved conditions", () => {
     expect(restoreSettings().conditions).toEqual(defaultConditions);
     const saved = restoreSettings({
