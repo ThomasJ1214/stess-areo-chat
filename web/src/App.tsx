@@ -621,7 +621,13 @@ export default function App() {
             launchPlayback.current = false;
           }
           if (jobKind === "fea")
-            setOverlays((o) => ({ ...o, stress: true, deformation: false }));
+            setOverlays((o) => ({
+              ...o,
+              stress: true,
+              deformation: false,
+              forces:
+                next.result.mesh_kind === "plate_midsurface" ? true : o.forces,
+            }));
           if (jobKind === "cfd") {
             setCfdFrameIndex(0);
             setOverlays((o) => ({ ...o, flow: true, pressure: true }));
@@ -1608,7 +1614,15 @@ export default function App() {
                   label="Forces"
                   value={overlays.forces}
                   onChange={() => toggleOverlay("forces")}
-                  disabled={workspace === "flight" ? !row : !aero}
+                  disabled={
+                    workspace === "flight"
+                      ? !row
+                      : !aero &&
+                        !(
+                          workspace === "structure" &&
+                          fea?.mesh_kind === "plate_midsurface"
+                        )
+                  }
                 />
                 <Toggle
                   label="Wireframe"
@@ -2315,13 +2329,13 @@ export default function App() {
                     </div>
                     <Fidelity data={structural} />
                   </details>
-                ) : (
+                ) : !fea ? (
                   <Empty icon={Layers} title="Understand the load path.">
                     Run beam and fin estimates for fast screening, or select a
                     component and run solid or original-fin plate finite element
                     analysis with an explicit clamp and load.
                   </Empty>
-                )}
+                ) : null}
                 {fea && (
                   <>
                     <div className="section-heading">

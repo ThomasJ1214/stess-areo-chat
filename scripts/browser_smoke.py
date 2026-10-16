@@ -328,6 +328,29 @@ def main():
             expect(page.get_by_label("Mach override", exact=True)).to_be_visible()
             receipt.append("Engineering question-mark definitions are clickable, stay on-screen and support keyboard dismissal/focus without changing input labels")
 
+            # Plate FEA must be usable before any aerodynamic analysis exists.
+            cold_snapshot = args.artifacts / "cold-plate-original.rocket.json"
+            cold_snapshot.write_text(json.dumps(context.request.get(base + "/api/project").json()), "utf8")
+            navigate("Design")
+            page.get_by_role("button", name="Fiberglass fins", exact=True).click()
+            navigate("Structures")
+            expect(page.get_by_role("button", name="Forces", exact=True)).to_be_disabled()
+            page.get_by_label("FEA element model", exact=True).select_option("plate")
+            page.get_by_role("button", name="Allow isotropic plate composite surrogate", exact=True).click()
+            page.get_by_label("Target mesh size", exact=True).fill("0.05")
+            page.get_by_label("Signed fin pressure", exact=True).fill("-0.1")
+            cold_plate = job("Run finite element analysis", timeout=120)
+            assert abs(cold_plate["inputs"]["options"]["plate_pressure_pa"] + 100) < 1e-10
+            expect(page.get_by_role("button", name="Forces", exact=True)).to_be_enabled()
+            expect(page.locator(".viewport")).to_have_attribute("data-force-source", "plate_resultants")
+            expect(page.get_by_text("Plate quadrilaterals", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Deformation", exact=True).click()
+            expect(page.get_by_role("button", name="Deformation", exact=True)).to_have_attribute("aria-pressed", "true")
+            page.screenshot(path=str(args.artifacts / "cold-plate.png"), full_page=True)
+            page.get_by_role("button", name="Deformation", exact=True).click()
+            upload('input[accept=".json,.rocket"]', cold_snapshot, "project/load")
+            receipt.append("Cold-start plate FEA needs no prior aerodynamic calculation: signed UI pressure, usable force toggle, actual plate vectors and deformation; source project restores")
+
             # This is the real catalog API/curve parser/import transaction with
             # only its external transport controlled. Exercise an unavailable
             # provider and an explicit review before adding the synthetic motor.
