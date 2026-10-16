@@ -792,7 +792,7 @@ def solve(project, conditions, configuration_id: str | None = None,
             reynolds_number=rho_inf * speed * length_reference / viscosity_inf,
             estimated_numerical_diffusivity_m2_s=numerical_diffusivity,
             estimated_numerical_to_molecular_diffusivity_ratio=numerical_diffusivity / kinematic_viscosity_inf,
-            estimate_scope="Characteristic first-order Rusanov estimate 0.5*(freestream sound speed+speed)*maximum cell spacing divided by molecular kinematic viscosity. Diagnostic scaling only; not a measured error bound, turbulence model or resolved boundary-layer proof.",
+            estimate_scope="Characteristic first-order Rusanov estimate 0.5*(freestream sound speed+speed)*maximum cell spacing divided by molecular kinematic viscosity. Baseline reference only for MUSCL; not its effective reconstructed dissipation. Diagnostic scaling only; not a measured error bound, turbulence model or resolved boundary-layer proof.",
         )
         warnings.append(f"Laminar transport resolution: initial freestream Reynolds number based on rocket extent is {transport_diagnostics['reynolds_number']:.3g}. Characteristic Rusanov numerical-to-molecular diffusivity ratio is approximately {transport_diagnostics['estimated_numerical_to_molecular_diffusivity_ratio']:.3g}; on coarse rocket grids numerical diffusion can vastly dominate physical viscosity. Adding viscosity does not validate boundary-layer thickness, transition, skin friction or drag. Perform grid/domain studies against independent reference data.")
     fluid_count = int(np.sum(~solid_cpu))

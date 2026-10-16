@@ -282,14 +282,15 @@ def test_exterior_connectivity_follows_flux_faces_and_never_modifies_input():
     assert not cfd._exterior_flow_mask(opened)[3, 3, 3]
 
 
+@pytest.mark.parametrize("scheme", ["first_order", "muscl_mc"])
 @pytest.mark.parametrize("mach", [0.2, 2.0])
-def test_real_geometry_solve_produces_positive_pressure_and_real_loads(monkeypatch, mach):
+def test_real_geometry_solve_produces_positive_pressure_and_real_loads(monkeypatch, mach, scheme):
     import rocket_workbench.geometry as geometry
     mesh = trimesh.creation.box(extents=[0.4, 0.1, 0.1])
     monkeypatch.setattr(geometry, "project_mesh", lambda *args, **kwargs: mesh)
     messages = []
     result = cfd.solve(Project(), Conditions(mach=mach, wind_speed=0, angle_of_attack=0),
-                       options={"grid_resolution": 12, "backend": "cpu"},
+                       options={"grid_resolution": 12, "backend": "cpu", "spatial_scheme": scheme},
                        cancelled=_cancel_after_steps(12),
                        progress=lambda fraction, message: messages.append((fraction, message)))
     assert result["backend"] == "numpy-cpu"

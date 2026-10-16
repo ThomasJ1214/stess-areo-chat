@@ -42,7 +42,7 @@ Fface = (Fleft + Fright)/2 - amax*(Uright-Uleft)/2
 amax = max(abs(normal velocity) + sound speed) on the two sides
 ```
 
-Forward Euler advances the unsplit sum of the three flux divergences. The
+The baseline Forward Euler method advances the unsplit sum of the three flux divergences. The
 time step uses the full multidimensional bound
 `dt = CFL / max(sum_i((abs(velocity_i)+sound speed)/spacing_i))`.
 Nonpositive density/pressure states are rejected and the step is retried with
@@ -164,7 +164,7 @@ problem is solved analytically at the wall: compression uses the normal-shock
 Rankine–Hugoniot curve, and expansion uses the isentropic rarefaction curve.
 The exact slip-wall flux has zero mass, tangential momentum, and energy transport
 across the stationary wall; its pressure is the normal momentum flux. Fluid/fluid
-faces retain first-order Rusanov flux. This avoids the negative wall pressures
+faces use shared Rusanov flux with the selected reconstruction. This avoids the negative wall pressures
 that a dissipative Rusanov reflection can produce during strong expansions.
 Pressure resultant and
 moment are integrated over **all** exposed solid faces using gauge pressure
@@ -377,6 +377,8 @@ rocket extent. These reference values explicitly identify **initial** freestream
 time zero; a launch profile can later change the boundary conditions. Its
 `estimated_numerical_to_molecular_diffusivity_ratio` uses the characteristic
 first-order estimate `0.5*(sound_speed+speed)*maximum_spacing / (mu/rho)`.
+For MUSCL this remains a baseline reference estimate, not a measurement of its
+effective reconstructed dissipation.
 Large ratios, commonly orders of magnitude above one on coarse rocket grids,
 warn that numerical diffusion can swamp the added physical transport. This is
 a scaling diagnostic, not a measured error bound, turbulence prediction or
@@ -485,7 +487,7 @@ The finite-volume CPU/GPU kernels reuse already recovered primitive states for
 the Rusanov Euler fluxes. This removes redundant full-grid work without changing
 the conservative flux, reflected-wall pressure or positivity checks.
 Laminar transport uses the same NumPy/CuPy array namespace and backend selection.
-Physical GPU execution of the new laminar path still requires a hardware test;
+Physical GPU execution of the laminar and MUSCL paths still requires a hardware test;
 CPU reference tests and offline CUDA compiler checks do not establish it.
 
 ## Why thin features need refinement

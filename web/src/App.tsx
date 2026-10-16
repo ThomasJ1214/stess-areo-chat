@@ -4808,7 +4808,7 @@ export default function App() {
                         onChange={(physics_model) =>
                           setCfdOptions({ ...cfdOptions, physics_model })
                         }
-                        hint="Euler resolves inviscid compressible pressure flow. Experimental laminar Navier–Stokes adds molecular viscosity and heat conduction. Neither includes turbulent boundary layers, transition or wall functions; a coarse first-order rocket grid cannot establish accurate skin-friction drag."
+                        hint="Euler resolves inviscid compressible pressure flow. Experimental laminar Navier–Stokes adds molecular viscosity and heat conduction. Neither includes turbulent boundary layers, transition or wall functions; a coarse Cartesian rocket grid cannot establish accurate skin-friction drag."
                       >
                         <option value="euler">
                           Euler · inviscid pressure flow
@@ -5270,7 +5270,7 @@ export default function App() {
                         <AlertTriangle size={15} />
                         <p>
                           {cfdOptions.physics_model === "laminar"
-                            ? "Experimental laminar Navier–Stokes includes molecular viscosity and heat conduction with no-slip walls. Coarse first-order grids can be dominated by numerical diffusion."
+                            ? "Experimental laminar Navier–Stokes includes molecular viscosity and heat conduction with no-slip walls. Coarse Cartesian grids can be dominated by numerical diffusion."
                             : "Experimental inviscid compressible Euler computes pressure forces with slip walls, omitting molecular viscous drag."}{" "}
                           Neither mode includes turbulence closure, transition
                           or validated transonic drag. Check residuals,

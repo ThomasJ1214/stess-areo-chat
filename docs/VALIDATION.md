@@ -10,10 +10,13 @@ and start-of-step launch-profile/source sampling. The current source is not yet
 a verified 0.3.5 Windows download.
 
 Local full regression passed 558 Python tests. The final targeted run passed
-36 reconstruction/mode tests, including the two added changing-boundary and
-invalid-second-stage cases. Clean-source CI must confirm the final suite count. The frontend passed
-90 tests and production type/build checks. Browser/Windows verification remain
-separate release gates.
+36 reconstruction/mode tests, including the added changing-boundary and
+invalid-second-stage cases, plus four actual Mach-0.2/Mach-2 geometry cases
+covering both methods. Clean-source CI must confirm the final suite count. The frontend passed
+90 tests and production type/build checks. The real-browser run passed all
+36 workflows, including actual laminar MUSCL/SSPRK2 inputs, method labels and
+finite solved loads. Engine smoke and locked native imports passed at 0.3.5.
+Windows packaging and original-download verification remain separate gates.
 
 Independent nondimensional reference measurements:
 
